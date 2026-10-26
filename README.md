@@ -142,19 +142,22 @@ reason is reported.
    - In `sdk-core`, also `src/**`.
    - In `sdk-template`, also `copier.yml`, `copier.yaml`, `scripts/**`, the template
      origin of every path protected in a source (the `template/` prefix, with or without
-     a `.jinja` suffix: `template/hatch.toml` and `template/hatch.toml.jinja` among them),
-     any path under `template/` with Jinja (`{{` or `{%`) in its name, and
-     `template/pyproject.toml.jinja` when its dependency block changes
+     a `.jinja` suffix: `template/hatch.toml` and `template/hatch.toml.jinja` among
+     them), any path under `template/` with Jinja (`{{` or `{%`) in its name,
+     and `template/pyproject.toml.jinja` when its dependency block changes
      (`[project] dependencies`, `[project.optional-dependencies]`, `[dependency-groups]`,
      and the build and install tables above), read past Jinja, `#` comments and strings
-     (basic, literal and multi-line), so a bracket in a comment or a string opens nothing;
-     when it ends inside a multi-line string or a Jinja tag; when any changed line of it
-     carries `{{`, `{%` or `{#`; and, as a second net should that reading go wrong, when
-     any changed line of it, read on its own at any depth, looks like a header or a key of
-     `[tool.uv]`, `[build-system]`, `[tool.hatch]`, `[project.scripts]`,
-     `[project.gui-scripts]`, `[project.entry-points]`, `[dependency-groups]` or
-     `[project.optional-dependencies]` (`[tool.uv]`, `tool.uv.index-url = ...`,
-     `uv.index-url = ...` under `[tool]`).
+     (basic, literal and multi-line), so a bracket in a comment or a string opens nothing,
+     and with headers and keys read as TOML spells them (bare and quoted parts, anything
+     inside the quotes, spaces and tabs around the dots and the name), a header or key
+     with a backslash in it refused outright as protected, whatever it names, since a
+     basic-string escape (`"\u0075v"`) can spell any name; when it ends inside a
+     multi-line string or a Jinja tag; when any changed line of it carries `{{`, `{%` or
+     `{#`; and, as a second net should that reading go wrong, when any changed line of
+     it, read on its own at any depth, looks like a header or a key of `[tool.uv]`,
+     `[build-system]`, `[tool.hatch]`, `[project.scripts]`, `[project.gui-scripts]`,
+     `[project.entry-points]`, `[dependency-groups]` or `[project.optional-dependencies]`
+     (`[tool.uv]`, `tool.uv.index-url = ...`, `uv.index-url = ...` under `[tool]`).
    - In this repository, every pull request.
 4. **First surface**: a `src/xippios/**/tasks.py` whose `__all__` was empty or absent
    names at least one task: `human`. An `__all__` that cannot be read statically is

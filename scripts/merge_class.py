@@ -25,9 +25,10 @@ collected; the first ``human`` decides the class, the later ones only add to the
    differs from the render (an adapter changed by hand); in sdk-template, the template
    origin of every path protected in a source, any path under ``template/`` with Jinja in
    its name, the dependency, build and install tables of ``template/pyproject.toml.jinja``
-   (read past Jinja, comments and strings; one that ends inside a multi-line string is
-   human), any changed line of it that carries Jinja, and any changed line of it that
-   looks like one of those tables or their keys; in ``xippios/.github`` every pull request.
+   (read past Jinja, comments and strings, keys as TOML spells them, a key or header with
+   a backslash refused; one that ends inside a multi-line string is human), any changed
+   line of it that carries Jinja, and any changed line of it that looks like one of those
+   tables or their keys; in ``xippios/.github`` every pull request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
    names at least one task. Bootstrap: in a source whose base exports no task, any
    changed file under ``src/``.
@@ -786,9 +787,18 @@ def exported_names(source: bytes | None) -> list[str] | None:
     return names
 
 
-_TABLE = re.compile(r"^\[\s*([^\[\]]+?)\s*\]\s*(?:#.*)?$")
-_ARRAY_TABLE = re.compile(r"^\[\[\s*([^\[\]]+?)\s*\]\]\s*(?:#.*)?$")
-_KEY = re.compile(r"^([A-Za-z0-9_.\"' -]+?)\s*=(.*)$")
+# A key as TOML spells it: basic strings (escapes included) and literal strings, whatever
+# they hold, and any other character but a quote, ``=`` (for a key) or a bracket (for a
+# header); so spaces and tabs around the dots and the name, and a blanked Jinja
+# expression, belong to the key (``_toml_name`` strips them). A quote opens a string and
+# never stands alone, and no whitespace is matched outside the name: each line has one
+# reading, so a long line cannot make the match backtrack.
+_STRING = r""""(?:[^"\\]|\\.)*"|'[^']*'"""
+_KEY_NAME = rf"""(?:{_STRING}|[^"'=])+?"""
+_HEADER_NAME = rf"""(?:{_STRING}|[^"'\[\]])+?"""
+_TABLE = re.compile(rf"^\[({_HEADER_NAME})\]\s*(?:#.*)?$")
+_ARRAY_TABLE = re.compile(rf"^\[\[({_HEADER_NAME})\]\]\s*(?:#.*)?$")
+_KEY = re.compile(rf"^({_KEY_NAME})=(.*)$")
 # The dependency lists of a pyproject: these tables and keys, and everything below them.
 DEPENDENCY_NAMES = (
     "project.dependencies",
@@ -810,11 +820,22 @@ BUILD_NAMES = (
 
 
 def _toml_name(text: str) -> str:
+    """A dotted key or header name, its parts stripped of spaces, tabs and quotes.
+
+    A dot inside a quoted part splits it too, which only adds parts: a protected name has
+    no dot in its parts, so it reads the same. An escape is left as written (``_escaped``).
+    """
     return ".".join(part.strip().strip("\"'") for part in text.split("."))
 
 
+def _escaped(name: str) -> bool:
+    """Whether a key or header carries a backslash: a basic-string escape can spell any name."""
+    return "\\" in name
+
+
 def _in_block(name: str, names: Iterable[str]) -> bool:
-    return any(name == top or name.startswith(top + ".") for top in names)
+    """Whether ``name`` is one of ``names`` or below one; a name with an escape always is."""
+    return _escaped(name) or any(name == top or name.startswith(top + ".") for top in names)
 
 
 def _nesting(text: str) -> int:
@@ -922,7 +943,9 @@ def dependency_block(
     ``[project.entry-points.*]``, whether written as tables, as dotted keys or as multi-line
     values, Jinja lines included; each line with its table. Headers, keys and brackets are
     read past Jinja, comments and strings (``toml_lines``): a bracket in a comment or a
-    string opens nothing, and a header inside a multi-line string is none.
+    string opens nothing, and a header inside a multi-line string is none. A header or key
+    is read as TOML spells it (quoted parts with any content, spaces and tabs around the
+    dots); one with a backslash belongs to the block whatever it names (``_in_block``).
     """
     if text is None:
         return None
@@ -987,7 +1010,7 @@ NET_NAMES = (
     "dependency-groups",
     "project.optional-dependencies",
 )
-_HEADER_LIKE = re.compile(r"\[\[?\s*([^\[\]]+?)\s*\]")
+_HEADER_LIKE = re.compile(rf"\[\[?({_HEADER_NAME})\]")
 
 
 def looks_protected(line: str, names: Iterable[str] = NET_NAMES) -> bool:
@@ -997,7 +1020,7 @@ def looks_protected(line: str, names: Iterable[str] = NET_NAMES) -> bool:
     a tail of a name (``tool.uv.index-url``, ``uv.index-url`` under ``[tool]``,
     ``scripts.x`` under ``[project]``, a bare ``uv``) or lead to one (``tool``, ``project``:
     an inline table can hold it). Without its context, in a string, an array or a comment
-    the line counts all the same.
+    the line counts all the same, and so does a header or key with a backslash in it.
     """
     text = line.strip()
     header = _HEADER_LIKE.match(text)
@@ -1006,6 +1029,8 @@ def looks_protected(line: str, names: Iterable[str] = NET_NAMES) -> bool:
     key = _KEY.match(text)
     if key is None:
         return False
+    if _escaped(key.group(1)):
+        return True
     parts = _toml_name(key.group(1)).split(".")
     for name in names:
         target = name.split(".")

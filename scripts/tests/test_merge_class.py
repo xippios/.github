@@ -6,6 +6,7 @@ prove on its own (the rulesets and identities it cannot).
 
 import os
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -1435,6 +1436,59 @@ def test_template_scan_reads_past_comments_and_strings(
     assert result.merge_class == (mc.HUMAN if hits else mc.AUTO)
 
 
+EVIL = '"https://evil.example/simple"'
+IN_PROJECT = 'version = "0.1.0"\n'
+
+
+@pytest.mark.parametrize(
+    ("added", "line"),
+    [
+        (f'\n[tool."\\u0075v"]\nindex-url = {EVIL}\n', '[tool."\\u0075v"]'),
+        (f'\n[tool]\n"\\u0075v".index-url = {EVIL}\n', f'"\\u0075v".index-url = {EVIL}'),
+        (f"\n[tool]\nuv\t.index-url = {EVIL}\n", f"uv\t.index-url = {EVIL}"),
+        ('entry-points\t.pytest11.evil = "evil.plugin"\n', None),
+        ('"gui-\\u0073cripts".evil = "os:system"\n', None),
+        (
+            '\n[tool."h\\u0061tch".build.hooks.custom]\npath = "hatch_build.py"\n',
+            '[tool."h\\u0061tch".build.hooks.custom]',
+        ),
+        (f"\n[tool\t.\tuv]\nindex-url = {EVIL}\n", "[tool\t.\tuv]"),
+        (f"\n[ tool . uv ]\nindex-url = {EVIL}\n", "[ tool . uv ]"),
+        ('entry-points.pytest11."a/b" = "evil.plugin"\n', None),
+        ('\n[tool.uv.sources."a[b"]\ngit = "https://evil.example/x"\n', '[tool.uv.sources."a[b"]'),
+    ],
+    ids=[
+        "esc-header",
+        "esc-dotted-key",
+        "tab-dotted-key",
+        "tab-entry-point",
+        "esc-gui-scripts",
+        "esc-hatch-hook",
+        "tab-header",
+        "spaced-header",
+        "quoted-entry-point-name",
+        "bracket-in-a-quoted-header",
+    ],
+)
+def test_every_toml_spelling_of_a_protected_table_is_human(
+    tmp_path: Path, added: str, line: str | None
+) -> None:
+    """The review's variants: a key or header spelled with tabs, spaces or an escape.
+
+    A variant with no ``line`` is added under ``[project]``, where it is its own line.
+    """
+    if line is None:
+        head = TEMPLATE_PYPROJECT.replace(IN_PROJECT, IN_PROJECT + added, 1)
+        line = added.strip()
+    else:
+        head = TEMPLATE_PYPROJECT + added
+    assert head != TEMPLATE_PYPROJECT
+    pr = make_pr(tmp_path, template_repo_files(), {"template/pyproject.toml.jinja": head})
+    result = classify(pr, repo="xippios/sdk-template")
+    assert [f.text for f in result.findings if f.rule == 3] == [BLOCK, net(line)]
+    assert result.merge_class == mc.HUMAN
+
+
 @pytest.mark.parametrize(
     ("line", "looks"),
     [
@@ -1456,15 +1510,56 @@ def test_template_scan_reads_past_comments_and_strings(
         ('hatch.build.hooks.custom.path = "x.py"', True),
         ('"entry-points".pytest11.p = "x.y"', True),
         ("dependency-groups.dev = []", True),
+        ("[ tool . uv ]", True),
+        ("[tool\t.\tuv]", True),
+        ('[tool."\\u0075v"]', True),
+        ('[tool."h\\u0061tch".build.hooks.custom]', True),
+        ('[tool.uv.sources."a[b"]', True),
+        ('[project.entry-points."a]b"]', True),
+        ('uv\t.index-url = "x"', True),
+        ('"\\u0075v".index-url = "x"', True),
+        ('entry-points\t.pytest11.evil = "x"', True),
+        ('"gui-\\u0073cripts".evil = "os:system"', True),
+        ('entry-points.pytest11."a/b" = "x"', True),
+        ('scripts."x!" = "os:system"', True),
+        ('"\\u0061" = 1', True),  # an escape spells any name: refused outright
         ("line-length = 100", False),
         ('name = "xippios-x"', False),
         ('"tests/**" = ["D", "ANN"]', False),
         ('requires = ["hatchling>=1.27"]', False),
         ('"build-system",', False),
+        ('description = "a\\tb"', False),  # a backslash in a value is no key
+        ('"[tool.uv]" = 1', False),
     ],
 )
 def test_looks_protected(line: str, looks: bool) -> None:
     assert mc.looks_protected(line) is looks
+
+
+@pytest.mark.parametrize(
+    ("line", "name"),
+    [
+        ("[ tool . uv ]", "tool.uv"),
+        ('[tool."a]b"]  # c', "tool.a]b"),
+        ("[[ tool.uv.index ]]", "tool.uv.index"),
+        ('uv\t.\t"index-url" = "x"', "uv.index-url"),
+        ("'a=b'.c = 1", "a=b.c"),
+    ],
+)
+def test_headers_and_keys_are_read_as_toml_spells_them(line: str, name: str) -> None:
+    match = mc._TABLE.match(line) or mc._ARRAY_TABLE.match(line) or mc._KEY.match(line)
+    assert match is not None
+    assert mc._toml_name(match.group(1)) == name
+
+
+def test_a_long_line_is_read_in_linear_time() -> None:
+    """One reading per line: a long run of spaces or strings cannot make a match backtrack."""
+    lines = ["[" + " " * 50_000 + "x", "a" + " " * 50_000 + "b", '"a" ' * 25_000 + "["]
+    start = time.perf_counter()
+    for line in lines:
+        assert not mc.looks_protected(line)
+        assert mc.dependency_block(line) == []
+    assert time.perf_counter() - start < 5
 
 
 def test_toml_lines_tell_strings_comments_and_jinja_apart() -> None:
