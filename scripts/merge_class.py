@@ -25,8 +25,9 @@ collected; the first ``human`` decides the class, the later ones only add to the
    differs from the render (an adapter changed by hand); in sdk-template, the template
    origin of every path protected in a source, any path under ``template/`` with Jinja in
    its name, the dependency, build and install tables of ``template/pyproject.toml.jinja``
-   and any changed line of it that carries Jinja; in ``xippios/.github`` every pull
-   request.
+   (read past Jinja, comments and strings; one that ends inside a multi-line string is
+   human), any changed line of it that carries Jinja, and any changed line of it that
+   looks like one of those tables or their keys; in ``xippios/.github`` every pull request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
    names at least one task. Bootstrap: in a source whose base exports no task, any
    changed file under ``src/``.
@@ -820,6 +821,96 @@ def _nesting(text: str) -> int:
     return text.count("[") + text.count("{") - text.count("]") - text.count("}")
 
 
+_JINJA_CLOSE = {"{{": "}}", "{%": "%}", "{#": "#}"}
+
+
+def _blank_jinja(text: str) -> tuple[str, bool]:
+    """``text`` with every Jinja expression, tag and comment blanked, line breaks kept.
+
+    Jinja reads the template before TOML does, inside TOML strings and comments too. The
+    second value says whether one is still open at the end.
+    """
+    out: list[str] = []
+    i = 0
+    while i < len(text):
+        close = _JINJA_CLOSE.get(text[i : i + 2])
+        if close is None:
+            out.append(text[i])
+            i += 1
+            continue
+        end = text.find(close, i + 2)
+        stop = len(text) if end == -1 else end + 2
+        out.append(re.sub(r"[^\n]", " ", text[i:stop]))
+        if end == -1:
+            return "".join(out), True
+        i = stop
+    return "".join(out), False
+
+
+@dataclass(frozen=True)
+class TomlLine:
+    """One line of a pyproject template as the dependency scan reads it."""
+
+    raw: str
+    # Jinja blanked and the comment cut, strings kept: where headers and keys are read.
+    code: str
+    # ``code`` without its strings: where brackets are counted.
+    bare: str
+    # The line starts inside a multi-line string.
+    in_string: bool
+
+
+def toml_lines(text: str) -> tuple[list[TomlLine], str | None]:
+    """The lines of a pyproject template, with Jinja, comments and strings told apart.
+
+    Jinja first, as copier renders it (``_blank_jinja``); then TOML: a ``#`` outside a
+    string cuts the rest of its line, and basic and literal strings, one-line and
+    multi-line (between three quotes), stay in ``code`` and leave ``bare``. The second
+    value names what is still open at the end (a multi-line string, a Jinja tag), or None.
+    """
+    blanked, jinja_open = _blank_jinja(text)
+    lines: list[TomlLine] = []
+    quote: str | None = None  # the open string's delimiter: one quote or three
+    for raw, line in zip(text.split("\n"), blanked.split("\n"), strict=True):
+        in_string = quote is not None
+        code: list[str] = []
+        bare: list[str] = []
+        i = 0
+        while i < len(line):
+            char = line[i]
+            if quote is None:
+                if char == "#":
+                    break
+                if char in "\"'":
+                    quote = line[i : i + 3] if line.startswith(char * 3, i) else char
+                    code.append(quote)
+                    i += len(quote)
+                    continue
+                code.append(char)
+                bare.append(char)
+                i += 1
+            elif char == "\\" and quote[0] == '"':  # an escape in a basic string
+                code.append(line[i : i + 2])
+                i += 2
+            elif line.startswith(quote, i):
+                # A multi-line string may end in up to two more quotes, which it contains.
+                end = i + len(quote)
+                while len(quote) == 3 and end < len(line) and line[end] == quote[0]:
+                    end += 1
+                code.append(line[i:end])
+                i = end
+                quote = None
+            else:
+                code.append(char)
+                i += 1
+        if quote in {'"', "'"}:
+            quote = None  # a one-line string ends with its line
+        lines.append(TomlLine(raw, "".join(code), "".join(bare), in_string))
+    if quote is not None:
+        return lines, "a multi-line string"
+    return lines, "a Jinja tag" if jinja_open else None
+
+
 def dependency_block(
     text: str | None, names: Iterable[str] = DEPENDENCY_NAMES + BUILD_NAMES
 ) -> list[str] | None:
@@ -829,7 +920,9 @@ def dependency_block(
     ``[project.optional-dependencies]``, ``[dependency-groups]``, ``[build-system]``,
     ``[tool.uv]``, ``[tool.hatch]``, ``[project.scripts]``, ``[project.gui-scripts]`` and
     ``[project.entry-points.*]``, whether written as tables, as dotted keys or as multi-line
-    values, Jinja lines included; each line with its table.
+    values, Jinja lines included; each line with its table. Headers, keys and brackets are
+    read past Jinja, comments and strings (``toml_lines``): a bracket in a comment or a
+    string opens nothing, and a header inside a multi-line string is none.
     """
     if text is None:
         return None
@@ -837,43 +930,100 @@ def dependency_block(
     table = ""
     depth = 0
     keep = False
-    for raw in text.splitlines():
-        line = raw.strip()
-        if depth > 0:
+    for line in toml_lines(text)[0]:
+        stripped = line.raw.strip()
+        if depth > 0 or line.in_string:
             if keep:
-                block.append(f"{table}: {line}")
-            depth += _nesting(line)
+                block.append(f"{table}: {stripped}")
+            depth += _nesting(line.bare)
             continue
-        header = _TABLE.match(line) or _ARRAY_TABLE.match(line)
+        code = line.code.strip()
+        header = _TABLE.match(code) or _ARRAY_TABLE.match(code)
         if header:
             table = _toml_name(header.group(1))
             continue
         if _in_block(table, names):
-            if line:
-                block.append(f"{table}: {line}")
-            depth = max(_nesting(line), 0)
+            if stripped:
+                block.append(f"{table}: {stripped}")
+            depth = max(_nesting(line.bare), 0)
             keep = True
             continue
-        key = _KEY.match(line)
+        key = _KEY.match(code)
         if key:
             name = _toml_name(f"{table}.{key.group(1)}" if table else key.group(1))
             keep = _in_block(name, names)
             if keep:
-                block.append(f"{table}: {line}")
-            depth = max(_nesting(key.group(2)), 0)
+                block.append(f"{table}: {stripped}")
+            depth = max(_nesting(line.bare), 0)
     return block
+
+
+def _changed_lines(before: str | None, after: str | None) -> list[str]:
+    """The lines a diff of two texts adds, removes, changes or moves, both sides."""
+    old = before.splitlines() if before is not None else []
+    new = after.splitlines() if after is not None else []
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    changed: list[str] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "equal":
+            changed += [*old[i1:i2], *new[j1:j2]]
+    return changed
 
 
 def jinja_lines_changed(before: str | None, after: str | None) -> bool:
     """Whether a line that carries Jinja was added, removed, changed or moved."""
-    old = before.splitlines() if before is not None else []
-    new = after.splitlines() if after is not None else []
-    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        lines = [*old[i1:i2], *new[j1:j2]]
-        if tag != "equal" and any(mark in line for line in lines for mark in _JINJA):
+    return any(mark in line for line in _changed_lines(before, after) for mark in _JINJA)
+
+
+# The second net over a pyproject template's changed lines: these tables, named by a line
+# read on its own.
+NET_NAMES = (
+    "tool.uv",
+    "build-system",
+    "tool.hatch",
+    "project.scripts",
+    "project.gui-scripts",
+    "project.entry-points",
+    "dependency-groups",
+    "project.optional-dependencies",
+)
+_HEADER_LIKE = re.compile(r"\[\[?\s*([^\[\]]+?)\s*\]")
+
+
+def looks_protected(line: str, names: Iterable[str] = NET_NAMES) -> bool:
+    """Whether a line, read on its own, could name one of ``names`` or a key below one.
+
+    A table header (``[tool.uv]``, ``[[tool.uv.index]]``), or a key whose parts begin with
+    a tail of a name (``tool.uv.index-url``, ``uv.index-url`` under ``[tool]``,
+    ``scripts.x`` under ``[project]``, a bare ``uv``) or lead to one (``tool``, ``project``:
+    an inline table can hold it). Without its context, in a string, an array or a comment
+    the line counts all the same.
+    """
+    text = line.strip()
+    header = _HEADER_LIKE.match(text)
+    if header:
+        return _in_block(_toml_name(header.group(1)), names)
+    key = _KEY.match(text)
+    if key is None:
+        return False
+    parts = _toml_name(key.group(1)).split(".")
+    for name in names:
+        target = name.split(".")
+        if parts == target[: len(parts)]:
+            return True
+        if any(parts[: len(target) - i] == target[i:] for i in range(len(target))):
             return True
     return False
+
+
+def protected_lines_changed(before: str | None, after: str | None) -> list[str]:
+    """The changed lines (``_changed_lines``) that look protected (``looks_protected``)."""
+    found: list[str] = []
+    for line in _changed_lines(before, after):
+        text = line.strip()
+        if looks_protected(text) and text not in found:
+            found.append(text)
+    return found
 
 
 def build_routes(source: bytes | None) -> dict[str, object]:
@@ -1318,10 +1468,23 @@ def classify(
         after = read_blob(workdir, head_sha, TEMPLATE_PYPROJECT)
         old_text = before.decode() if before is not None else None
         new_text = after.decode() if after is not None else None
+        still_open = toml_lines(new_text)[1] if new_text is not None else None
+        if still_open:
+            add(Finding(3, f"{TEMPLATE_PYPROJECT} ends inside {still_open}"))
         if dependency_block(old_text) != dependency_block(new_text):
             add(Finding(3, f"the dependency block of {TEMPLATE_PYPROJECT} changed"))
         if jinja_lines_changed(old_text, new_text):
             add(Finding(3, f"a line that carries Jinja changed in {TEMPLATE_PYPROJECT}"))
+        # A second net, should the scan above misread the file: the changed lines alone.
+        looks = protected_lines_changed(old_text, new_text)
+        if looks:
+            add(
+                Finding(
+                    3,
+                    f"a changed line of {TEMPLATE_PYPROJECT} looks like a dependency, build or "
+                    f"install table: {'; '.join(looks)}",
+                )
+            )
     # In every repository: where the package is built and installed from, and what it
     # installs. The dependency lists stay free.
     if "pyproject.toml" in remaining:

@@ -1235,6 +1235,14 @@ BLOCK = "the dependency block of template/pyproject.toml.jinja changed"
 JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja"
 
 
+def net(*lines: str) -> str:
+    """The second net's reason for the changed lines that look like a protected table."""
+    return (
+        "a changed line of template/pyproject.toml.jinja looks like a dependency, build or "
+        f"install table: {'; '.join(lines)}"
+    )
+
+
 @pytest.mark.parametrize(
     ("old", "new", "hits"),
     [
@@ -1256,29 +1264,41 @@ JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja
         ),
         ("[tool.uv.sources]\n", "[tool.uv.sources]\nother = { path = '../other' }\n", [BLOCK]),
         ('requires = ["hatchling>=1.27"]', 'requires = ["hatchling>=1.27", "evil"]', [BLOCK]),
-        ("[tool.ruff]\n", '[[tool.uv.index]]\nurl = "https://x.invalid"\n\n[tool.ruff]\n', [BLOCK]),
-        ("[tool.ruff]\n", '[tool.uv]\noverride-dependencies = ["a"]\n\n[tool.ruff]\n', [BLOCK]),
-        ("[tool.ruff]\n", '[tool.uv]\nindex-url = "https://x.invalid"\n\n[tool.ruff]\n', [BLOCK]),
+        (
+            "[tool.ruff]\n",
+            '[[tool.uv.index]]\nurl = "https://x.invalid"\n\n[tool.ruff]\n',
+            [BLOCK, net("[[tool.uv.index]]")],
+        ),
+        (
+            "[tool.ruff]\n",
+            '[tool.uv]\noverride-dependencies = ["a"]\n\n[tool.ruff]\n',
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            "[tool.ruff]\n",
+            '[tool.uv]\nindex-url = "https://x.invalid"\n\n[tool.ruff]\n',
+            [BLOCK, net("[tool.uv]")],
+        ),
         ("[project.scripts]\n", '[project.scripts]\nevil = "os:system"\n', [BLOCK]),
         (
             "[tool.ruff]\n",
             '[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]\n',
-            [BLOCK],
+            [BLOCK, net("[tool.hatch.build.hooks.custom]")],
         ),
         (
             "[tool.ruff]\n",
             '[tool.hatch.metadata.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]\n',
-            [BLOCK],
+            [BLOCK, net("[tool.hatch.metadata.hooks.custom]")],
         ),
         (
             "[tool.ruff]\n",
             '[tool.hatch.version]\nsource = "code"\npath = "x.py"\n\n[tool.ruff]\n',
-            [BLOCK],
+            [BLOCK, net("[tool.hatch.version]")],
         ),
         (
             "[dependency-groups]\n",
             '[project.entry-points.pytest11]\nplugin = "x.y"\n\n[dependency-groups]\n',
-            [BLOCK],
+            [BLOCK, net("[project.entry-points.pytest11]")],
         ),
         ('description = "Typed client', 'description = "A typed client', [JINJA_LINE]),
         ("line-length = 100\n", 'line-length = 100\nsrc = ["{{ source_slug }}"]\n', [JINJA_LINE]),
@@ -1317,6 +1337,152 @@ def test_template_dependency_block_and_jinja_lines_are_protected(
     )
     result = classify(pr, repo="xippios/sdk-template")
     assert [f.text for f in result.findings if f.rule == 3] == hits
+
+
+# As in the real template, the protected tables come first and [tool.ruff] last: a scan
+# that loses its place in [tool.ruff] loses nothing of the base's block.
+DEMO_TEMPLATE = TEMPLATE_PYPROJECT.replace("[tool.ruff]\nline-length = 100\n\n", "") + (
+    '\n[tool.ruff]\nline-length = 100\ntarget-version = "py312"\n'
+)
+EVIL_INDEX = '\n[tool.uv]\nindex-url = "https://evil.example/simple"\n'
+OPEN_STRING = "template/pyproject.toml.jinja ends inside a multi-line string"
+# A line Jinja closes, which the scan reads as an open bracket: it loses its place there.
+ODD_JINJA = "src = [{{ '\"src\"]' }}\n"
+
+
+@pytest.mark.parametrize(
+    ("base", "head", "hits"),
+    [
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", "line-length = 100  # wrapped [docs\n")
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", 'line-length = 100\nx = "{[docs"\n')
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", "line-length = 100\nx = '[docs'\n")
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", 'line-length = 100\nx = "\\"[docs"\n')
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE.replace(
+                'description = "Typed client for {{ source_name }}"',
+                'description = """Typed client\n[tool.ruff]\n"""',
+            ),
+            DEMO_TEMPLATE.replace(
+                'description = "Typed client for {{ source_name }}"',
+                'description = """Typed client\n[tool.ruff]\n"""\nscripts = { evil = "os:system" }',
+            ),
+            [BLOCK, net('scripts = { evil = "os:system" }')],
+        ),
+        (DEMO_TEMPLATE, DEMO_TEMPLATE + 'notes = """\nnever closed\n', [OPEN_STRING]),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE + "{# never closed\n",
+            ["template/pyproject.toml.jinja ends inside a Jinja tag", JINJA_LINE],
+        ),
+        (
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA),
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA) + EVIL_INDEX,
+            [net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA),
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA)
+            + '\n[tool]\nuv.index-url = "https://evil.example/simple"\n',
+            [net('uv.index-url = "https://evil.example/simple"')],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", "line-length = 120  # [wider]\n"),
+            [],
+        ),
+    ],
+    ids=[
+        "tpldemo-comment-bracket",
+        "basic-string-bracket",
+        "literal-string-bracket",
+        "escaped-quote",
+        "multi-line-string-hides-a-header",
+        "unterminated-multi-line-string",
+        "unterminated-jinja",
+        "net-alone-header",
+        "net-alone-dotted-key",
+        "comment-only",
+    ],
+)
+def test_template_scan_reads_past_comments_and_strings(
+    tmp_path: Path, base: str, head: str, hits: list[str]
+) -> None:
+    """The review's tpldemo: ``[docs`` in a comment hid an appended ``[tool.uv]``."""
+    files = {**template_repo_files(), "template/pyproject.toml.jinja": base}
+    pr = make_pr(tmp_path, files, {"template/pyproject.toml.jinja": head})
+    result = classify(pr, repo="xippios/sdk-template")
+    assert [f.text for f in result.findings if f.rule == 3] == hits
+    assert result.merge_class == (mc.HUMAN if hits else mc.AUTO)
+
+
+@pytest.mark.parametrize(
+    ("line", "looks"),
+    [
+        ("[tool.uv]", True),
+        ("[[tool.uv.index]]", True),
+        ("  [tool.hatch.build]  # indented, with a comment", True),
+        ('[tool."uv".sources]', True),
+        ("[build-system]", True),
+        ("[project.optional-dependencies]", True),
+        ("[tool.ruff]", False),
+        ("[project]", False),
+        ("[project.urls]", False),
+        ('tool.uv.index-url = "x"', True),
+        ('uv.index-url = "x"', True),
+        ('uv = { index-url = "x" }', True),
+        ("tool = { uv = {} }", True),
+        ('scripts.evil = "os:system"', True),
+        ('build-system.requires = ["evil"]', True),
+        ('hatch.build.hooks.custom.path = "x.py"', True),
+        ('"entry-points".pytest11.p = "x.y"', True),
+        ("dependency-groups.dev = []", True),
+        ("line-length = 100", False),
+        ('name = "xippios-x"', False),
+        ('"tests/**" = ["D", "ANN"]', False),
+        ('requires = ["hatchling>=1.27"]', False),
+        ('"build-system",', False),
+    ],
+)
+def test_looks_protected(line: str, looks: bool) -> None:
+    assert mc.looks_protected(line) is looks
+
+
+def test_toml_lines_tell_strings_comments_and_jinja_apart() -> None:
+    text = (
+        'a = """x [\n'
+        "[tool.uv]\n"
+        'y""""  # closed, with one quote of its own [\n'
+        "b = '''{'''\n"
+        'c = "\\" ["\n'
+        "{# [ #}d = {{ '[' }}\n"
+    )
+    lines, still_open = mc.toml_lines(text)
+    assert still_open is None
+    assert [line.in_string for line in lines] == [False, True, True, False, False, False, False]
+    assert [line.bare.strip() for line in lines] == ["a =", "", "", "b =", "c =", "d =", ""]
+    assert lines[2].code.strip() == 'y""""'
+    assert mc.toml_lines('a = """\n')[1] == "a multi-line string"
+    assert mc.toml_lines("a = 1\n{% if x\n")[1] == "a Jinja tag"
 
 
 SOURCE_PYPROJECT = (
