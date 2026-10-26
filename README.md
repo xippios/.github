@@ -123,8 +123,9 @@ reason is reported.
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
      template renders them, so rule 2 trusts them when identical to the render),
      `.mcp.json`, `CLAUDE.local.md`, `.pre-commit-config.yaml`, `.secrets.baseline`,
-     `hatch.toml` (hatchling merges a root `hatch.toml` over `[tool.hatch]`),
-     `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
+     `hatch.toml` (hatchling merges a root `hatch.toml` over `[tool.hatch]`), `uv.toml`
+     (uv reads a root `uv.toml` as it reads `[tool.uv]`, and ignores `[tool.uv]` when both
+     exist), `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
      `docs/definition-of-done.md`; and a change in `pyproject.toml` to where the package
      is built and installed from or to what it installs: `[build-system]`, `[tool.uv]`
      (index, sources, override-dependencies, ...), the whole `[tool.hatch]` (the packaged
@@ -142,8 +143,8 @@ reason is reported.
    - In `sdk-core`, also `src/**`.
    - In `sdk-template`, also `copier.yml`, `copier.yaml`, `scripts/**`, the template
      origin of every path protected in a source (the `template/` prefix, with or without
-     a `.jinja` suffix: `template/hatch.toml` and `template/hatch.toml.jinja` among
-     them), any path under `template/` with Jinja (`{{` or `{%`) in its name,
+     a `.jinja` suffix: `template/hatch.toml`, `template/uv.toml` and their `.jinja`
+     forms among them), any path under `template/` with Jinja (`{{` or `{%`) in its name,
      and `template/pyproject.toml.jinja` when its dependency block changes
      (`[project] dependencies`, `[project.optional-dependencies]`, `[dependency-groups]`,
      and the build and install tables above), read past Jinja, `#` comments and strings

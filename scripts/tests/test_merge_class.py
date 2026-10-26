@@ -1089,6 +1089,7 @@ def test_literals_compare_as_yaml_loads_them(answer: str, default: str, same: bo
         ".mcp.json",
         "CLAUDE.local.md",
         "hatch.toml",
+        "uv.toml",
     ],
 )
 def test_protected_path_is_human(tmp_path: Path, template: Path, path: str) -> None:
@@ -1732,17 +1733,24 @@ def test_tool_hatch_is_a_build_route_in_every_repository(
 
 
 @pytest.mark.parametrize("repo", [SOURCE, "xippios/sdk-core", "xippios/sdk-template"])
-def test_a_root_hatch_toml_is_protected_in_every_repository(
-    tmp_path: Path, template: Path, repo: str
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        ("hatch.toml", '[version]\nsource = "code"\npath = "x.py"\n'),
+        ("uv.toml", 'index-url = "https://evil.example/simple"\n'),
+    ],
+)
+def test_a_root_hatch_or_uv_toml_is_protected_in_every_repository(
+    tmp_path: Path, template: Path, repo: str, path: str, content: str
 ) -> None:
-    """hatchling merges a root ``hatch.toml`` over ``[tool.hatch]``: a new one is human."""
+    """A root hatch.toml merges over [tool.hatch]; uv reads a root uv.toml before [tool.uv]."""
     base = source_base(template) if repo == SOURCE else {"README.md": "x\n"}
     base["pyproject.toml"] = SOURCE_PYPROJECT
-    hatch_toml = '[version]\nsource = "code"\npath = "x.py"\n'
-    pr = make_pr(tmp_path, base, {"hatch.toml": hatch_toml})
-    result = classify(pr, repo=repo)
+    pr = make_pr(tmp_path, base, {path: content})
+    render = FakeRender(rendered(template)) if repo == SOURCE else None
+    result = classify(pr, repo=repo, render=render, template=template)
     assert [f.text for f in result.findings if f.human] == [
-        "protected path hatch.toml (matches hatch.toml)"
+        f"protected path {path} (matches {path})"
     ]
 
 
@@ -1778,6 +1786,8 @@ def test_an_unreadable_pyproject_is_human(tmp_path: Path, template: Path) -> Non
         ("template/docs/definition-of-done.md", True),
         ("template/hatch.toml", True),
         ("template/hatch.toml.jinja", True),
+        ("template/uv.toml", True),
+        ("template/uv.toml.jinja", True),
         ("template/src/xippios/{{ package_dir }}/mcp.py.jinja", True),  # Jinja in the name
         ("template/{{ _copier_conf.answers_file }}.jinja", True),
         ("template/{% if x %}.github{% endif %}/ci.yml", True),

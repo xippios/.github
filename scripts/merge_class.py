@@ -107,6 +107,8 @@ PROTECTED = (
     ".secrets.baseline",
     # hatchling merges a root hatch.toml over [tool.hatch], a build route (BUILD_NAMES).
     "hatch.toml",
+    # uv reads a root uv.toml as it reads [tool.uv], and in its place when both exist.
+    "uv.toml",
     "docs/conventions.md",
     "docs/adr/**",
     "docs/review-checklist.md",
