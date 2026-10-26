@@ -97,14 +97,17 @@ def template(tmp_path: Path) -> Path:
     return repo
 
 
-def answers(src_path: Path | str, ref: str = "v0.2.0") -> str:
+def answers(
+    src_path: Path | str, ref: str = "v0.2.0", core: str = "0.2.0", slug: str = "usda-psd"
+) -> str:
     return (
         "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n"
         f"_commit: {ref}\n"
         f"_src_path: {src_path}\n"
         "api_key_env: ''\n"
+        f"core_version: {core}\n"
         "import_path: usda.psd\n"
-        "source_slug: usda-psd\n"
+        f"source_slug: {slug}\n"
     )
 
 
@@ -413,6 +416,63 @@ def test_source_specific_workflow_is_human(tmp_path: Path, template: Path) -> No
     assert result.merge_class == mc.HUMAN
     assert [f.text for f in result.findings if f.human] == [
         "protected path .github/workflows/siblings.yml (matches .github/**)"
+    ]
+
+
+# --- rule 2: the answers file ------------------------------------------------------------
+
+
+def test_answer_change_other_than_the_free_keys_is_human(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, slug="usda-psd2")
+    files = rendered(template)
+    files[".copier-answers.yml"] = answers(template, slug="usda-psd2")
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert ".copier-answers.yml" in result.trusted  # the render writes the answers back
+    assert [f.text for f in result.findings if f.human] == ["answers changed: source_slug"]
+
+
+def test_commit_moving_backward_is_human(tmp_path: Path, template: Path) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.2.0")
+    files = rendered(template)
+    files[".copier-answers.yml"] = answers(template, "v0.1.0")
+    pr = make_pr(tmp_path, base, {".copier-answers.yml": answers(template, "v0.1.0")})
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert result.trusted == [".copier-answers.yml"]
+    assert [f.text for f in result.findings if f.human] == [
+        "_commit changes from v0.2.0 to v0.1.0, not forward along the template's main"
+    ]
+
+
+@pytest.mark.parametrize("render", [False, True], ids=["no-render", "render"])
+def test_core_version_bump_alone_is_auto(tmp_path: Path, template: Path, render: bool) -> None:
+    head_answers = answers(template, "v0.1.0", core="0.2.1")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files) if render else None, template=template)
+    assert result.merge_class == mc.AUTO
+    assert result.trusted == ([".copier-answers.yml"] if render else [])
+
+
+def test_commit_moving_forward_with_a_core_bump_is_auto(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, "v0.2.0", core="0.2.1")
+    files = rendered(template)
+    files[".copier-answers.yml"] = changes[".copier-answers.yml"] or ""
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert result.merge_class == mc.AUTO
+
+
+def test_commit_change_without_the_template_is_human(tmp_path: Path, template: Path) -> None:
+    """Under --no-render nothing can show that _commit moved forward."""
+    pr = make_pr(tmp_path, source_base(template), adoption(template))
+    result = classify(pr)
+    assert [f.text for f in result.findings if f.human and f.rule == 2] == [
+        "_commit changes from v0.1.0 to v0.2.0, not checked against the template"
     ]
 
 

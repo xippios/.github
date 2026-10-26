@@ -10,7 +10,9 @@ collected; the first ``human`` decides the class, the later ones only add to the
    ``_skip_if_exists`` pattern) that is byte-identical to the template rendered at the
    head's ``_commit`` with the head's answers leaves the changed set. The render runs at
    the SHA ``_commit`` resolves to on the template's main. A render that fails trusts
-   nothing.
+   nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
+   along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
+   ``human``.
 3. Protected paths in what remains; in ``xippios/.github`` every pull request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
    names at least one task.
@@ -53,6 +55,9 @@ TEMPLATE_BRANCH = "main"
 COPIER_SPEC = "copier>=9,<10"
 RENDER_TIMEOUT = 900  # seconds, for the template clone and for the render each
 ANSWERS_FILE = ".copier-answers.yml"
+# The answers a pull request changes without a human: _commit moving forward along the
+# template's main (checked against the template), and the core pins.
+FREE_ANSWERS = frozenset({"_commit", "core_version", "core_git_ref"})
 
 PROTECTED = (
     ".github/**",
@@ -359,6 +364,53 @@ def answer_scalar(entries: Sequence[tuple[str | None, list[str]]], key: str) -> 
     return None
 
 
+def _text(source: bytes) -> str:
+    """Decode a file for comparison; undecodable bytes stay distinct (surrogate escapes)."""
+    return source.decode("utf-8", errors="surrogateescape")
+
+
+def answer_table(source: bytes | None) -> dict[str, list[str]]:
+    """Each top-level answer's lines by key, comments and blank lines left out."""
+    table: dict[str, list[str]] = {}
+    if source is None:
+        return table
+    for key, lines in answer_entries(_text(source)):
+        if key is None:
+            continue
+        kept = [line.rstrip() for line in lines if line.strip() and line.lstrip()[:1] != "#"]
+        table.setdefault(key, []).extend(kept)
+    return table
+
+
+def answers_commit(source: bytes | None) -> str | None:
+    """The ``_commit`` of an answers file, or None when absent or not a scalar."""
+    return answer_scalar(answer_entries(_text(source)), "_commit") if source is not None else None
+
+
+def answer_changes(before: bytes | None, after: bytes | None, forward: bool | None) -> list[str]:
+    """Rule 2's human reasons for a change to the answers file.
+
+    ``forward`` says whether the head's ``_commit`` descends from the base's on the
+    template's main: None when the template could not be checked (``--no-render``, a
+    failed clone, a ``_commit`` the render refused), which leaves any change human.
+    """
+    old, new = answer_table(before), answer_table(after)
+    keys = sorted(k for k in (old.keys() | new.keys()) - FREE_ANSWERS if old.get(k) != new.get(k))
+    reasons = [f"answers changed: {', '.join(keys)}"] if keys else []
+    if old.get("_commit") != new.get("_commit"):
+        old_commit, new_commit = answers_commit(before), answers_commit(after)
+        if (old_commit is None or old_commit != new_commit) and forward is not True:
+            how = (
+                "not forward along the template's main"
+                if forward is False
+                else "not checked against the template"
+            )
+            reasons.append(
+                f"_commit changes from {old_commit or 'none'} to {new_commit or 'none'}, {how}"
+            )
+    return reasons
+
+
 def answers_data(entries: Sequence[tuple[str | None, list[str]]]) -> str:
     """The answers without ``_commit`` and ``_src_path``, for ``copier copy --data-file``."""
     kept = [
@@ -630,6 +682,20 @@ class Trust:
     template_ref: str | None
     note: str | None
     template_sha: str | None = None
+    # Whether the head's _commit descends from the base's on the template's main; None
+    # when unchanged or not checked.
+    commit_forward: bool | None = None
+
+
+def _moves_forward(clone: Path, old: str, new_sha: str) -> bool:
+    """Whether the template commit ``old`` is an ancestor of ``new_sha``."""
+    if not _GIT_REF.fullmatch(old):
+        return False
+    try:
+        old_sha = resolve(clone, old)
+    except ClassifyError:
+        return False
+    return _git(clone, "merge-base", "--is-ancestor", old_sha, new_sha, check=False).returncode == 0
 
 
 def trust_rendered(
@@ -638,12 +704,20 @@ def trust_rendered(
     changed: Sequence[str],
     template_url: str,
     renderer: Renderer,
+    base_commit: str | None = None,
 ) -> Trust:
-    """Rule 2: the changed template-owned files that are byte-identical to the render."""
+    """Rule 2: the changed template-owned files that are byte-identical to the render.
+
+    ``base_commit`` is the base's ``_commit``; when the head's differs, the template clone
+    also tells whether it moved forward.
+    """
     answers = read_blob(workdir, head, ANSWERS_FILE)
     if answers is None:
         return Trust([], None, f"no {ANSWERS_FILE} on the head; nothing is trusted")
-    entries = answer_entries(answers.decode())
+    try:
+        entries = answer_entries(answers.decode())
+    except UnicodeDecodeError:
+        return Trust([], None, f"{ANSWERS_FILE} is not UTF-8; nothing is trusted")
     commit = answer_scalar(entries, "_commit")
     src_path = answer_scalar(entries, "_src_path")
     import_path = answer_scalar(entries, "import_path")
@@ -657,9 +731,12 @@ def trust_rendered(
         return Trust([], commit, note)
     with tempfile.TemporaryDirectory(prefix="merge-class-") as tmp:
         scratch = Path(tmp)
+        forward: bool | None = None
         try:
             clone = _clone_template(template_url, scratch)
             sha = _on_main(clone, commit)
+            if base_commit is not None and base_commit != commit:
+                forward = _moves_forward(clone, base_commit, sha)
             raw_patterns = _skip_list(clone, sha)
             package_dir = import_path.replace(".", "/")
             rendered_patterns = [
@@ -676,7 +753,8 @@ def trust_rendered(
             # the check and copier's own clone.
             renderer(template_url, sha, data_file, dest)
         except RenderError as exc:
-            return Trust([], commit, f"render failed, nothing is trusted: {exc}")
+            note = f"render failed, nothing is trusted: {exc}"
+            return Trust([], commit, note, commit_forward=forward)
         trusted: list[str] = []
         for path in changed:
             if matches_any(path, patterns):
@@ -687,7 +765,7 @@ def trust_rendered(
                 continue
             if rendered.read_bytes() == ours:
                 trusted.append(path)
-    return Trust(trusted, commit, None, sha)
+    return Trust(trusted, commit, None, sha, forward)
 
 
 # --- classification ----------------------------------------------------------------------
@@ -727,9 +805,12 @@ def classify(
         if entry is None or entry[1] != "tree":
             add(Finding(1, "scaffold: the base has no src/ directory"))
 
-    # 2. Render trust
+    # 2. Render trust, and the answers file
+    before_answers = read_blob(workdir, fork, ANSWERS_FILE)
+    after_answers = read_blob(workdir, head_sha, ANSWERS_FILE)
     if render:
-        trust = trust_rendered(workdir, head_sha, changed, template_url, renderer)
+        base_commit = answers_commit(before_answers)
+        trust = trust_rendered(workdir, head_sha, changed, template_url, renderer, base_commit)
     else:
         trust = Trust([], None, "render skipped (--no-render); nothing is trusted")
     result.trusted = trust.trusted
@@ -737,6 +818,10 @@ def classify(
     result.template_sha = trust.template_sha
     if trust.note:
         add(Finding(2, trust.note, human=False))
+    # Over the changed set, not what remains: the render writes the answers back as they are.
+    if ANSWERS_FILE in changed:
+        for reason in answer_changes(before_answers, after_answers, trust.commit_forward):
+            add(Finding(2, reason))
     remaining = [p for p in changed if p not in set(trust.trusted)]
     result.remaining = remaining
 
