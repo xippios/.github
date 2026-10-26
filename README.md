@@ -81,7 +81,11 @@ reason is reported.
    value, a Jinja default or a question unknown there it is `human` ("answers added with
    non-default values"). `_commit` moving to an older or an unrelated commit is `human`,
    and so is any `_commit` change or added answer the template could not be checked for
-   (`--no-render`, a failed clone, a `_commit` the render refused).
+   (`--no-render`, a failed clone, a `_commit` the render refused). A `core_git_ref`
+   changed to a non-empty value must name a `v*` tag of `xippios/sdk-core`, its `main`,
+   or a commit on its `main` (read from a clone without trees and blobs; a branch other
+   than `main` can move and is no pin), else `human` ("core pinned off main"); under
+   `--no-render` or a failed clone such a change is `human` too.
 3. **Protected paths** in what remains: `human`.
    - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
@@ -194,8 +198,9 @@ python3 <this clone>/scripts/merge_class.py --repo xippios/<repo> --base origin/
 
 It prints `class=auto` or `class=human` with the reasons, the trusted and the remaining
 files; `--summary <file>` appends the markdown summary, `--no-render` skips rule 2's
-render (nothing is trusted, and a `_commit` change is `human`), `--template-url` points
-rule 2 at another template clone. Exit status: 0 `auto`, 1 `human`, 2 when the
+render and the core pin check (nothing is trusted, and a `_commit` or `core_git_ref`
+change is `human`), `--template-url` and `--core-url` point rule 2 at other clones of the
+template and of sdk-core. Exit status: 0 `auto`, 1 `human`, 2 when the
 classification itself failed.
 
 The checks of this repository:

@@ -14,7 +14,9 @@ collected; the first ``human`` decides the class, the later ones only add to the
    nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
    ``human``; an answer the base lacks (a question a template release added) is free
-   when it equals the question's literal default at the head's ``_commit``.
+   when it equals the question's literal default at the head's ``_commit``. A
+   ``core_git_ref`` changed to a non-empty value must name a commit on sdk-core's main or
+   a ``v*`` tag.
 3. Protected paths in what remains; everywhere, also the build and install tables of
    ``pyproject.toml``; in a source, also a template-owned file under ``src/`` that
    differs from the render (an adapter changed by hand); in sdk-template, the template
@@ -33,8 +35,9 @@ rules 2 to 5) is against the merge base of base and head, which is the base itse
 pull request is up to date with its branch. The branch name is no input.
 
 Standard library only, so a workflow runs it with the runner's ``python3``; the render
-calls ``uvx copier``. Nothing from the pull request is executed: its files are read as git
-objects, and git clone, uv and copier run in a temporary directory outside the checkout.
+calls ``uvx copier``, the core pin check clones sdk-core. Nothing from the pull request is
+executed: its files are read as git objects, and git clone, uv and copier run in a
+temporary directory outside the checkout.
 
 Exit status: 0 for ``auto``, 1 for ``human``, 2 when the classification itself failed.
 """
@@ -60,6 +63,10 @@ AUTO = "auto"
 HUMAN = "human"
 
 DEFAULT_TEMPLATE_URL = "https://github.com/xippios/sdk-template.git"
+DEFAULT_CORE_URL = "https://github.com/xippios/sdk-core.git"
+# A core_git_ref other than empty names a commit on this branch of sdk-core, or a v* tag.
+CORE_BRANCH = "main"
+CORE_PIN = "core_git_ref"
 # The template's _commit is trusted only when it is on this branch of the template.
 TEMPLATE_BRANCH = "main"
 COPIER_SPEC = "copier>=9,<10"
@@ -140,7 +147,7 @@ class ClassifyError(RuntimeError):
 
 
 class RenderError(RuntimeError):
-    """The template could not be rendered or its settings not read; nothing is trusted."""
+    """A clone, the render or the template's settings failed: nothing trusted or checked."""
 
 
 Renderer = Callable[[str, str, Path, Path], None]
@@ -875,24 +882,28 @@ def copier_render(template_url: str, vcs_ref: str, data_file: Path, dest: Path) 
         raise RenderError(f"copier exited {proc.returncode}: {tail}")
 
 
-def _clone_template(template_url: str, scratch: Path) -> Path:
-    """A bare-bones clone of the template (no checkout), with its tags and its main."""
-    clone = scratch / "template"
+def _clone(url: str, clone: Path, *options: str) -> Path:
+    """Clone ``url`` into ``clone``, outside any checkout; RenderError when it fails."""
     try:
         proc = subprocess.run(
-            ["git", "clone", "--quiet", "--no-checkout", "--", template_url, str(clone)],
-            cwd=scratch,
+            ["git", "clone", "--quiet", *options, "--", url, str(clone)],
+            cwd=clone.parent,
             capture_output=True,
             check=False,
             env=_env(),
             timeout=RENDER_TIMEOUT,
         )
     except subprocess.TimeoutExpired as exc:
-        raise RenderError(f"cloning {template_url} timed out") from exc
+        raise RenderError(f"cloning {url} timed out") from exc
     if proc.returncode != 0:
         detail = proc.stderr.decode(errors="replace").strip()
-        raise RenderError(f"cannot clone {template_url}: {detail}")
+        raise RenderError(f"cannot clone {url}: {detail}")
     return clone
+
+
+def _clone_template(template_url: str, scratch: Path) -> Path:
+    """A bare-bones clone of the template (no checkout), with its tags and its main."""
+    return _clone(template_url, scratch / "template", "--no-checkout")
 
 
 def _on_main(clone: Path, commit: str) -> str:
@@ -948,6 +959,64 @@ def _moves_forward(clone: Path, old: str, new_sha: str) -> bool:
     except ClassifyError:
         return False
     return _git(clone, "merge-base", "--is-ancestor", old_sha, new_sha, check=False).returncode == 0
+
+
+def core_ref_on_main(core_url: str, ref: str) -> bool:
+    """Whether ``ref`` is a ``v*`` tag of sdk-core, its main, or a commit on its main.
+
+    Read from a clone without trees and blobs, which holds every commit and tag. A branch
+    other than main is no pin on main, since it can move off it. RenderError when the
+    clone fails.
+    """
+    if not _GIT_REF.fullmatch(ref):
+        return False
+    with tempfile.TemporaryDirectory(prefix="merge-class-core-") as tmp:
+        clone = _clone(core_url, Path(tmp) / "sdk-core", "--bare", "--filter=tree:0")
+        main = f"refs/heads/{CORE_BRANCH}"
+        if ref.startswith("v"):
+            tag = _git(clone, "rev-parse", "--verify", "--quiet", f"refs/tags/{ref}", check=False)
+            if tag.returncode == 0:
+                return True
+        if ref == CORE_BRANCH:
+            branch = _git(clone, "rev-parse", "--verify", "--quiet", main, check=False)
+            return branch.returncode == 0
+        if not re.fullmatch(r"[0-9a-f]{7,40}", ref):
+            return False
+        try:
+            sha = resolve(clone, ref)
+        except ClassifyError:
+            return False
+        if not sha.startswith(ref):  # a ref of that name, not the commit
+            return False
+        return _git(clone, "merge-base", "--is-ancestor", sha, main, check=False).returncode == 0
+
+
+def core_pin_reason(
+    before: bytes | None, after: bytes | None, render: bool, core_url: str
+) -> str | None:
+    """Rule 2's human reason against a ``core_git_ref`` the pull request sets, or None.
+
+    A ``core_git_ref`` changed to a non-empty value must be a ``v*`` tag of sdk-core, its
+    main, or a commit on its main (``core_ref_on_main``); one that cannot be checked
+    (``--no-render``, a failed clone) is human too. Emptied or removed, it is free.
+    """
+    old, new = answer_table(before), answer_table(after)
+    if CORE_PIN not in new or old.get(CORE_PIN) == new.get(CORE_PIN):
+        return None
+    ref = answer_scalar(answer_entries(_text(after or b"")), CORE_PIN)
+    if ref == "":
+        return None
+    if ref is None:
+        return f"core pinned off main: {CORE_PIN} is no plain scalar"
+    if not render:
+        return f"{CORE_PIN} changes to {ref}, not checked against sdk-core"
+    try:
+        on_main = core_ref_on_main(core_url, ref)
+    except RenderError as exc:
+        return f"{CORE_PIN} changes to {ref}, not checked against sdk-core: {exc}"
+    if on_main:
+        return None
+    return f"core pinned off main: {CORE_PIN} {ref} is no commit on sdk-core's main and no v* tag"
 
 
 def trust_rendered(
@@ -1056,6 +1125,7 @@ def classify(
     render: bool = True,
     template_url: str = DEFAULT_TEMPLATE_URL,
     renderer: Renderer = copier_render,
+    core_url: str = DEFAULT_CORE_URL,
 ) -> Classification:
     """Classify the pull request from ``base`` to ``head`` of ``repo`` in ``workdir``."""
     base_sha = resolve(workdir, base)
@@ -1094,6 +1164,9 @@ def classify(
         forward, defaults = trust.commit_forward, trust.defaults
         for reason in answer_changes(before_answers, after_answers, forward, defaults):
             add(Finding(2, reason))
+        pin = core_pin_reason(before_answers, after_answers, render, core_url)
+        if pin is not None:
+            add(Finding(2, pin))
     remaining = [p for p in changed if p not in set(trust.trusted)]
     result.remaining = remaining
 
@@ -1276,6 +1349,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--template-url", default=DEFAULT_TEMPLATE_URL, help="the family template's git URL"
     )
+    parser.add_argument("--core-url", default=DEFAULT_CORE_URL, help="sdk-core's git URL")
     args = parser.parse_args(argv)
     output = os.environ.get("GITHUB_OUTPUT")
     try:
@@ -1286,6 +1360,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             workdir=args.workdir,
             render=not args.no_render,
             template_url=args.template_url,
+            core_url=args.core_url,
         )
     except (ClassifyError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
         detail = printable(str(exc))

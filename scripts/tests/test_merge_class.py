@@ -212,6 +212,7 @@ def classify(
     repo: str = SOURCE,
     render: FakeRender | None = None,
     template: Path | None = None,
+    core: Path | None = None,
 ) -> mc.Classification:
     if render is None:
         return mc.classify(repo=repo, base=pr.base, head=pr.head, workdir=pr.workdir, render=False)
@@ -222,6 +223,8 @@ def classify(
         workdir=pr.workdir,
         template_url=str(template),
         renderer=render,
+        # Offline: a test that changes core_git_ref passes its fake sdk-core.
+        core_url=str(core or pr.workdir.parent / "no-sdk-core"),
     )
 
 
@@ -642,6 +645,89 @@ def test_an_added_answer_without_the_template_is_human(tmp_path: Path, template:
     assert [f.text for f in result.findings if f.human] == [
         "answers added, not checked against the template: rate_limit_burst"
     ]
+
+
+@dataclass
+class Core:
+    path: Path
+    on_main: str
+    off_main: str
+
+
+@pytest.fixture
+def core(tmp_path: Path) -> Core:
+    """A fake sdk-core: two commits on main, v0.2.1 on the first, `feature` off main."""
+    repo = tmp_path / "sdk-core"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    first = commit(repo, {"README.md": "core\n"}, "first")
+    git(repo, "tag", "v0.2.1")
+    commit(repo, {"README.md": "core 2\n"}, "second")
+    git(repo, "checkout", "-q", "-b", "feature")
+    off = commit(repo, {"README.md": "off main\n"}, "off main")
+    git(repo, "tag", "rogue")
+    git(repo, "tag", "v9.9.9-rc")
+    git(repo, "checkout", "-q", "main")
+    return Core(repo, first, off)
+
+
+@pytest.mark.parametrize(
+    ("ref", "free"),
+    [
+        ("main", True),
+        ("on_main", True),
+        ("on_main_short", True),
+        ("v0.2.1", True),
+        ("v9.9.9-rc", True),  # a v* tag, wherever it points
+        ("''", True),
+        ("off_main", False),
+        ("feature", False),
+        ("rogue", False),
+        ("missing", False),
+        ("--upload-pack=touch", False),
+    ],
+)
+def test_core_pin_must_be_on_core_main_or_a_v_tag(
+    tmp_path: Path, template: Path, core: Core, ref: str, free: bool
+) -> None:
+    value = {
+        "on_main": core.on_main,
+        "on_main_short": core.on_main[:12],
+        "off_main": core.off_main,
+    }.get(ref, ref)
+    head_answers = answers(template, "v0.1.0", extra=f"core_git_ref: {value}\n")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files), template=template, core=core.path)
+    reason = (
+        f"core pinned off main: core_git_ref {value} is no commit on sdk-core's main and no v* tag"
+    )
+    assert [f.text for f in result.findings if f.human] == ([] if free else [reason])
+
+
+def test_core_pin_without_the_check_is_human(tmp_path: Path, template: Path) -> None:
+    head_answers = answers(template, "v0.1.0", extra="core_git_ref: main\n")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    no_render = classify(pr)
+    assert [f.text for f in no_render.findings if f.human] == [
+        "core_git_ref changes to main, not checked against sdk-core"
+    ]
+    failed = classify(pr, render=FakeRender(files), template=template)  # no sdk-core there
+    [text] = [f.text for f in failed.findings if f.human]
+    assert text.startswith("core_git_ref changes to main, not checked against sdk-core: cannot")
+
+
+def test_an_unchanged_or_removed_core_pin_is_not_checked(tmp_path: Path, template: Path) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.1.0", extra="core_git_ref: feature\n")
+    for root, extra in (("same", "core_git_ref: feature\n"), ("removed", "")):
+        (tmp_path / root).mkdir()
+        head_answers = answers(template, "v0.1.0", core="0.2.1", extra=extra)
+        pr = make_pr(tmp_path / root, base, {".copier-answers.yml": head_answers})
+        assert classify(pr).merge_class == mc.AUTO
 
 
 def test_question_defaults() -> None:
