@@ -1,0 +1,38 @@
+# CI of xippios/.github. The job `ci` is the check the `sdk-main-protection` ruleset
+# requires once this repository joins its list.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          enable-cache: false
+      - run: uvx ruff check scripts
+      - run: uvx ruff format --check scripts
+      - run: uv run --no-project --with pytest pytest scripts/tests -q
+
+  # Proof of the caller wiring: merge-class.yml called as a job, as a source's ci.yml would
+  # call it, giving the check `merge-class / merge-class`. Every pull request of this
+  # repository is human (rule 3), so this job fails by design and Johannes merges. It cannot
+  # carry `continue-on-error` (a job that calls a reusable workflow takes no such key) and
+  # needs none: `ci` does not depend on it, and no ruleset requires it here.
+  merge-class:
+    if: github.event_name == 'pull_request'
+    uses: ./.github/workflows/merge-class.yml
+    permissions:
+      contents: read
+      pull-requests: read
