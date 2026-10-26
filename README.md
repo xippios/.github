@@ -80,13 +80,14 @@ reason is reported.
    clone, a `_commit` the render refused).
 3. **Protected paths** in what remains: `human`.
    - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
-     `.claude/agents/**`, `.claude/hooks/**`, `.mcp.json`, `CLAUDE.local.md`,
-     `.pre-commit-config.yaml`, `.secrets.baseline`, `docs/conventions.md`,
-     `docs/adr/**`, `docs/review-checklist.md`, `docs/definition-of-done.md`.
-   - In a source, also `.claude/commands/**` (rendered by the template, so trusted when
-     identical to the render), and a template-owned file under `src/` that differs from
-     the render (an adapter changed by hand, which could expose tasks around rule 4);
-     without a render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
+     `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
+     template renders them, so rule 2 trusts them when identical to the render),
+     `.mcp.json`, `CLAUDE.local.md`, `.pre-commit-config.yaml`, `.secrets.baseline`,
+     `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
+     `docs/definition-of-done.md`.
+   - In a source, also a template-owned file under `src/` that differs from the render
+     (an adapter changed by hand, which could expose tasks around rule 4); without a
+     render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
      `src/xippios/` count as template-owned by name.
    - In `sdk-core`, also `src/**`.
    - In `sdk-template`, also `copier.yml`, `copier.yaml`, `scripts/**`, the template

@@ -73,6 +73,7 @@ PROTECTED = (
     ".claude/settings.local.json",
     ".claude/agents/**",
     ".claude/hooks/**",
+    ".claude/commands/**",
     ".mcp.json",
     "CLAUDE.local.md",
     ".pre-commit-config.yaml",
@@ -82,9 +83,6 @@ PROTECTED = (
     "docs/review-checklist.md",
     "docs/definition-of-done.md",
 )
-# Protected in a source only. The template renders them, so rule 2 trusts them when they
-# are identical to the render, and they are human when changed by hand.
-SOURCE_PROTECTED = (".claude/commands/**",)
 TEMPLATE_DIR = "template/"
 
 
@@ -105,7 +103,7 @@ PROTECTED_BY_REPO: dict[str, tuple[str, ...]] = {
         "copier.yml",
         "copier.yaml",
         "scripts/**",
-        *template_origins(PROTECTED + SOURCE_PROTECTED),
+        *template_origins(PROTECTED),
     ),
 }
 # In sdk-template, protected when its dependency block changes.
@@ -937,8 +935,6 @@ def classify(
     if name == ORG_REPOSITORY:
         add(Finding(3, f"every pull request of {repo} is human"))
     protected = PROTECTED + PROTECTED_BY_REPO.get(name, ())
-    if is_source(name):
-        protected += SOURCE_PROTECTED
     for path in remaining:
         hits = [p for p in protected if is_protected(path, p)]
         if hits:

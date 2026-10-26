@@ -580,6 +580,22 @@ def test_protected_path_is_human(tmp_path: Path, template: Path, path: str) -> N
     assert human_rules(result) == {3}
 
 
+@pytest.mark.parametrize(
+    "repo", [SOURCE, "xippios/sdk-core", "xippios/sdk-template", "xippios/.github", "xippios/x"]
+)
+def test_commands_are_protected_in_every_repository(
+    tmp_path: Path, template: Path, repo: str
+) -> None:
+    """sdk-core's and sdk-template's own commands too, not only the ones a source renders."""
+    path = ".claude/commands/release-prep.md"
+    pr = make_pr(tmp_path, source_base(template), {path: "changed\n"})
+    result = classify(pr, repo=repo)
+    assert human_rules(result) == {3}
+    assert f"protected path {path} (matches .claude/commands/**)" in [
+        f.text for f in result.findings if f.human
+    ]
+
+
 def test_rendered_command_is_trusted_when_identical_and_human_when_edited(
     tmp_path: Path, template: Path
 ) -> None:
