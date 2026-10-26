@@ -86,22 +86,38 @@ reason is reported.
    reported as `human`). Nothing is trusted when the render or the template clone fails,
    when `_src_path` is not `https://github.com/xippios/sdk-template.git`, when `_commit`
    is not a plain git ref, or when it is not on the template's `main`.
-   **Answers**: a change to `.copier-answers.yml` other than `_commit` moving forward
-   along the template's `main` (the base's `_commit` an ancestor of the head's),
-   `core_version` or `core_git_ref` is a session change: `human`, with the keys as the
-   reason. An answer the base lacks (a question a template release added) is free when
-   its value equals the question's literal default (one plain or quoted scalar without
-   `{{`, `{%` or `{#`) in the template's `copier.yml` at the head's `_commit`; with another
-   value, a Jinja default or a question unknown there it is `human` ("answers added with
-   non-default values"). `_commit` moving to an older or an unrelated commit is `human`,
-   and so is any `_commit` change or added answer the template could not be checked for
-   (`--no-render`, a failed clone, a `_commit` the render refused). A non-empty
-   `core_git_ref` on the head must name a `v*` tag of `xippios/sdk-core`, its `main`, or
-   a commit on its `main` (read from a clone without trees and blobs; a branch other than
-   `main` can move and is no pin), else `human` ("core pinned off main"), whether or not
-   the pull request changes it, so every pull request is `human` while core is pinned off
-   `main`; when sdk-core cannot be cloned it is `human` too, and under `--no-render` a
-   change to a non-empty value is.
+   **Answers file**: the head's `.copier-answers.yml` is read only inside a subset of
+   YAML: every line at column 0 blank, a `#` comment or `key: value` with an unquoted
+   plain key, no top-level key twice, and no continuation line under `_commit`,
+   `core_version` or `core_git_ref`. Outside it the pull request is `human` and nothing
+   is trusted, since YAML, and so copier, may read a key or a value the classifier does
+   not see (a quoted key, the later of two duplicates). When the answers file changed, or
+   when rule 2 trusts any file, it must also be byte-identical to the `.copier-answers.yml`
+   copier writes back in the render, `_commit` and `_src_path` as copier writes them;
+   otherwise the pull request is `human` ("answers file is not in copier's canonical
+   form") and nothing is trusted. A changed answers file no render could check
+   (`--no-render`, a failed clone or render) is `human` as well.
+   **Answers**: in that form, a changed answer other than `_commit` moving forward along
+   the template's `main` (the base's `_commit` an ancestor of the head's), `core_version`
+   or `core_git_ref` is a session change: `human`, with the keys as the reason. An answer
+   the base lacks (a question a template release added) is free when its value equals the
+   question's literal default (one plain or quoted scalar without `{{`, `{%` or `{#`) in
+   the template's `copier.yml` at the head's `_commit`; with another value, a Jinja
+   default or a question unknown there it is `human` ("answers added with non-default
+   values"). `_commit` moving to an older or an unrelated commit is `human`, and so is a
+   `_commit` change or an added answer the template could not be checked for
+   (`--no-render`, a failed clone, a `_commit` the render refused).
+   **Core pin**: a non-empty `core_git_ref` on the head is read in uv's order, which takes
+   a git `rev` as a branch of `xippios/sdk-core` first, then as a tag, then as a commit. A
+   branch of that name must be `main`; else a tag of that name must be a `v*` tag; else the
+   ref must be 7 to 40 hex characters, name no branch and no tag, and resolve to a commit
+   on `main` (read from a clone without trees and blobs). Anything else is `human` ("core
+   pinned off main or a tag"), whether or not the pull request changes it, so every pull
+   request is `human` while core is pinned off `main`; when sdk-core cannot be cloned it
+   is `human` too, and under `--no-render` a change to a non-empty value is. The check
+   sees the refs of the moment: a branch created in sdk-core later with a pinned tag's
+   name would take the pin over at the next `uv lock`, which sdk-core's branch rules have
+   to prevent.
 3. **Protected paths** in what remains: `human`.
    - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
@@ -130,8 +146,15 @@ reason is reported.
      any path under `template/` with Jinja (`{{` or `{%`) in its name, and
      `template/pyproject.toml.jinja` when its dependency block changes
      (`[project] dependencies`, `[project.optional-dependencies]`, `[dependency-groups]`,
-     and the build and install tables above) or any changed line of it carries `{{`,
-     `{%` or `{#`.
+     and the build and install tables above), read past Jinja, `#` comments and strings
+     (basic, literal and multi-line), so a bracket in a comment or a string opens nothing;
+     when it ends inside a multi-line string or a Jinja tag; when any changed line of it
+     carries `{{`, `{%` or `{#`; and, as a second net should that reading go wrong, when
+     any changed line of it, read on its own at any depth, looks like a header or a key of
+     `[tool.uv]`, `[build-system]`, `[tool.hatch]`, `[project.scripts]`,
+     `[project.gui-scripts]`, `[project.entry-points]`, `[dependency-groups]` or
+     `[project.optional-dependencies]` (`[tool.uv]`, `tool.uv.index-url = ...`,
+     `uv.index-url = ...` under `[tool]`).
    - In this repository, every pull request.
 4. **First surface**: a `src/xippios/**/tasks.py` whose `__all__` was empty or absent
    names at least one task: `human`. An `__all__` that cannot be read statically is
@@ -236,9 +259,9 @@ python3 <this clone>/scripts/merge_class.py --repo xippios/<repo> --base origin/
 
 It prints `class=auto` or `class=human` with the reasons, the trusted and the remaining
 files; `--summary <file>` appends the markdown summary, `--no-render` skips rule 2's
-render and the core pin check (nothing is trusted, and a `_commit` or `core_git_ref`
-change is `human`), `--template-url` and `--core-url` point rule 2 at other clones of the
-template and of sdk-core. Exit status: 0 `auto`, 1 `human`, 2 when the
+render and the core pin check (nothing is trusted, and any change to
+`.copier-answers.yml` is `human`), `--template-url` and `--core-url` point rule 2 at other
+clones of the template and of sdk-core. Exit status: 0 `auto`, 1 `human`, 2 when the
 classification itself failed.
 
 The checks of this repository:

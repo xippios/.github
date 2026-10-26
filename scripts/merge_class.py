@@ -615,7 +615,7 @@ def answer_changes(
 
     ``forward`` says whether the head's ``_commit`` descends from the base's on the
     template's main: None when the template could not be checked (``--no-render``, a
-    failed clone, a ``_commit`` the render refused), which leaves any change human.
+    failed clone, a ``_commit`` the render refused), which leaves any change of it human.
     ``defaults`` are the template's questions at the head's ``_commit`` with their
     literal defaults (``question_defaults``), None when the template could not be read:
     an answer the base lacks is free when it equals its question's literal default, and
