@@ -58,7 +58,9 @@ DEFAULT_TEMPLATE_URL = "https://github.com/xippios/sdk-template.git"
 # The template's _commit is trusted only when it is on this branch of the template.
 TEMPLATE_BRANCH = "main"
 COPIER_SPEC = "copier>=9,<10"
-RENDER_TIMEOUT = 900  # seconds, for the template clone and for the render each
+# Seconds, for the template clone and for the render each: both end well inside the
+# workflow job's 20 minutes, so a hung one still yields a classification and its reasons.
+RENDER_TIMEOUT = 300
 ANSWERS_FILE = ".copier-answers.yml"
 # The answers a pull request changes without a human: _commit moving forward along the
 # template's main (checked against the template), and the core pins.
