@@ -1,0 +1,172 @@
+# The family review of the xippios SDK family: the Claude Code action, under the Claude
+# GitHub App's identity, applies the review checklist from sdk-core's main to the pull
+# request and returns a verdict. `ready` passes the check; `not ready` fails it and posts
+# the findings as one PR comment. The checklist, conventions, definition of done and ADRs
+# are read from sdk-core's main, never from the pull request.
+#
+# Two wirings (decided 2026-10-26): required by a ruleset as a workflow (`on: pull_request`,
+# check `family-review`), or called as a job from a repository's ci.yml with
+# `secrets: inherit` (`on: workflow_call`, check `family-review / family-review`).
+#
+# Until the org secret ANTHROPIC_API_KEY exists, the job writes a notice and ends green, and
+# no ruleset requires the check. A pull request from a fork never gets the secret; its
+# review cannot run, so the check fails rather than pass unreviewed.
+name: family-review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  family-review:
+    name: family-review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # A new push supersedes the review of the previous head.
+    concurrency:
+      group: family-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Check for the org secret
+        id: gate
+        env:
+          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          if [ "$HAS_KEY" = "true" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          elif [ "$HEAD_REPO" != "$REPO" ]; then
+            echo "family-review: a pull request from a fork gets no secrets; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          else
+            echo "family-review: no ANTHROPIC_API_KEY org secret; review skipped (required by no ruleset until it exists)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out the pull request head with full history
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Into a directory the pull request cannot shadow: actions/checkout empties a target
+      # that is not already a clone of the repository it checks out.
+      - name: Check out the family documents from main of xippios/sdk-core
+        if: steps.gate.outputs.run == 'true'
+        uses: actions/checkout@v7
+        with:
+          repository: xippios/sdk-core
+          ref: main
+          path: .sdk-core-main
+          persist-credentials: false
+
+      - name: Review
+        id: review
+        if: steps.gate.outputs.run == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            You are the `family-review` check of the xippios SDK family. You review and
+            return a verdict; you change nothing: no edits, no commits, no comments.
+
+            Pull request: ${{ github.repository }}#${{ github.event.pull_request.number }}.
+            Base: ${{ github.event.pull_request.base.sha }}. Head:
+            ${{ github.event.pull_request.head.sha }}, checked out in the working directory
+            with full history.
+
+            1. Read `.sdk-core-main/docs/review-checklist.md` and apply it, in its order, to
+               this pull request's diff against its base
+               (`git diff ${{ github.event.pull_request.base.sha }}...HEAD`, and
+               `git log --oneline ${{ github.event.pull_request.base.sha }}..HEAD`).
+            2. `.sdk-core-main` is sdk-core's main. Read the family documents from there and
+               never from the pull request: `.sdk-core-main/docs/conventions.md`,
+               `.sdk-core-main/docs/definition-of-done.md`, and the ADRs under
+               `.sdk-core-main/docs/adr/` that the checklist and the conventions cite. Check
+               every claim about the upstream API against the pull request's own
+               `docs/upstream/`.
+            3. Read the pull request's description with
+               `gh pr view ${{ github.event.pull_request.number }} --json title,body` and judge
+               its definition-of-done checklist and its `## Decisions taken` block as the
+               checklist says. The `ci` result is in
+               `gh pr checks ${{ github.event.pull_request.number }}`; a `ci` still pending is
+               no finding, since `ci` is required on its own.
+            4. Never read or print `.envrc`, `.env` or a variable ending in `_API_KEY`.
+            5. Return the verdict, `ready` or `not ready` (any blocking finding makes it
+               `not ready`), and every finding: its file (empty when it concerns the pull
+               request as a whole), its line (null when there is none), whether it blocks,
+               and its text in one or two sentences.
+          claude_args: |
+            --max-turns 60
+            --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(gh pr view:*),Bash(gh pr checks:*)"
+            --disallowedTools "Edit,MultiEdit,Write,NotebookEdit,WebFetch,WebSearch"
+            --json-schema '{"type":"object","properties":{"verdict":{"type":"string","enum":["ready","not ready"]},"findings":{"type":"array","items":{"type":"object","properties":{"file":{"type":"string"},"line":{"type":["integer","null"]},"blocking":{"type":"boolean"},"text":{"type":"string"}},"required":["file","line","blocking","text"],"additionalProperties":false}}},"required":["verdict","findings"],"additionalProperties":false}'
+
+      # The structured output arrives through the environment, never interpolated into the
+      # script. No output (the action skipped or stopped early) is no verdict, and fails.
+      - name: Verdict
+        if: steps.gate.outputs.run == 'true'
+        env:
+          RESULT: ${{ steps.review.outputs.structured_output }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          python3 -I - <<'PY'
+          import json
+          import os
+          import subprocess
+          import sys
+
+          def summary(text):
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
+                  handle.write(text)
+
+          raw = os.environ.get("RESULT", "").strip()
+          if not raw:
+              text = (
+                  "## family-review: no verdict\n\nThe review returned no structured output "
+                  "(skipped by the action, or stopped before its verdict); the check fails.\n"
+              )
+              summary(text)
+              print(text)
+              sys.exit(1)
+          result = json.loads(raw)
+          findings = result.get("findings") or []
+          blocking = any(f.get("blocking") for f in findings)
+          verdict = "ready" if result.get("verdict") == "ready" and not blocking else "not ready"
+          lines = [f"## family-review: `{verdict}`", ""]
+          for finding in findings:
+              where = finding.get("file") or "the pull request"
+              if finding.get("line"):
+                  where += f":{finding['line']}"
+              kind = "blocking" if finding.get("blocking") else "non-blocking"
+              lines.append(f"- **{kind}** `{where}`: {str(finding.get('text', '')).strip()}")
+          if not findings:
+              lines.append("No findings.")
+          body = "\n".join(lines) + "\n"
+          summary(body)
+          print(body)
+          if verdict == "ready":
+              sys.exit(0)
+          posted = subprocess.run(
+              ["gh", "pr", "comment", os.environ["PR"], "--repo", os.environ["REPO"],
+               "--body-file", "-"],
+              input=body, text=True, check=False,
+          )
+          if posted.returncode != 0:
+              print("family-review: posting the PR comment failed", file=sys.stderr)
+          sys.exit(1)
+          PY
