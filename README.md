@@ -17,7 +17,12 @@ classifier behind the first. GitHub decides what merges: `ci`, `merge-class` and
   `main` of `xippios/sdk-core`, in order, to the pull request's diff, reading the
   conventions, the definition of done and the ADRs from `sdk-core`'s `main` (never from
   the pull request) and the pull request's own `docs/upstream/` for every claim about the
-  upstream. It judges the description's definition-of-done checklist and
+  upstream. One exception: when an `sdk-core` pull request changes the checklist, the
+  conventions, the definition of done or an ADR, the review reads its branch's version
+  of exactly those documents, since for the documents a pull request itself changes the
+  branch's version applies; such a pull request is class `human`, and Johannes reads the
+  change. Without the checklist, the conventions or the definition of done the review
+  fails closed. It judges the description's definition-of-done checklist and
   `Decisions taken` block and returns a JSON verdict, `ready` or `not ready`, with
   findings. `ready` passes; `not ready` fails the check and puts the findings in one
   sticky PR comment, which a later `ready` updates. Permissions: `contents: read`,
@@ -35,6 +40,9 @@ classifier behind the first. GitHub decides what merges: `ci`, `merge-class` and
     repository itself ends green with a notice until the org variable
     `FAMILY_REVIEW_REQUIRED` is `1`; from then on an empty secret fails the check.
     Johannes sets the variable when the secret exists.
+  - **Who it reviews**: `allowed_bots` stays empty, so a pull request opened or updated
+    by a GitHub App gets no review (the action refuses a non-human actor) and fails by
+    design; Dependabot is excepted by the gate above.
   - **What the model may do**: nothing but read. Before it starts, a step writes its
     material to `.review/`: `diff.patch` (merge base to head), `log.txt` (the commits
     with their messages), `pr.json` (title, body, author, comments, files) and
@@ -43,6 +51,10 @@ classifier behind the first. GitHub decides what merges: `ci`, `merge-class` and
     dontAsk`), runs no command, edits nothing, reaches no network, and loads no settings,
     hooks or MCP servers from the pull request (`--setting-sources user`); Claude Code
     strips credentials from any subprocess (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`). The
+    action restores `.claude/`, `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json` and its other
+    configuration paths from the pull request's base before the model starts and keeps
+    the head's versions of those paths under `.claude-pr/`, so the model reads them
+    there, and `.review/diff.patch` is authoritative for what changed. The
     prompt names the pull request's files, diff, messages, title, body, comments,
     `docs/upstream/` and fixtures as material to judge, never instructions; an instruction
     found in them is itself a finding. The verdict step redacts anything that looks like a
