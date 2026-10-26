@@ -42,6 +42,7 @@ import ast
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -221,8 +222,13 @@ def changed_files(workdir: Path, old: str, new: str) -> list[str]:
         "-z",
         old,
         new,
-    ).stdout.decode()
+    ).stdout.decode("utf-8", errors="surrogateescape")
     return sorted(p for p in out.split("\0") if p)
+
+
+def plain_path(path: str) -> bool:
+    """Whether ``path`` is relative, with no empty, ``.`` or ``..`` component."""
+    return not path.startswith("/") and all(part not in {"", ".", ".."} for part in path.split("/"))
 
 
 def tree_entry(workdir: Path, rev: str, path: str) -> tuple[str, str, str] | None:
@@ -840,15 +846,25 @@ def trust_rendered(
             return Trust([], commit, note, commit_forward=forward)
         trusted: list[str] = []
         owned: list[str] = []
+        root = dest.resolve()
         for path in changed:
-            if matches_any(path, patterns):
-                continue  # filled by the session; never trusted
+            if not plain_path(path) or matches_any(path, patterns):
+                continue  # no file of the render, or filled by the session; never trusted
             rendered = dest / path
-            if rendered.is_symlink() or not rendered.is_file():
+            if (
+                rendered.is_symlink()
+                or not rendered.is_file()
+                or not rendered.resolve().is_relative_to(root)
+            ):
                 continue  # the template does not render it
             owned.append(path)
-            ours = read_blob(workdir, head, path)
-            if ours is not None and rendered.read_bytes() == ours:
+            entry = tree_entry(workdir, head, path)
+            if entry is None or entry[1] != "blob" or entry[0] not in REGULAR_FILE_MODES:
+                continue  # deleted, a symlink or a submodule on the head
+            # The executable bit is part of the file: a mode-only difference is no match.
+            mode = "100755" if rendered.stat().st_mode & stat.S_IXUSR else "100644"
+            ours = _git(workdir, "cat-file", "blob", entry[2]).stdout
+            if entry[0] == mode and rendered.read_bytes() == ours:
                 trusted.append(path)
     return Trust(trusted, commit, None, sha, forward, owned)
 
@@ -883,6 +899,10 @@ def classify(
     result = Classification(repo, base_sha, head_sha, fork, changed)
     name = _repo_name(repo)
     add = result.findings.append
+    # git never writes such a path; a tree crafted to carry one is never trusted.
+    for path in changed:
+        if not plain_path(path):
+            add(Finding(2, f"{path} is no plain relative path; never trusted"))
 
     # 1. Scaffold, sources only: sdk-template and .github have no src/ at all
     if is_source(name):
@@ -973,6 +993,28 @@ def classify(
 
 # --- output ------------------------------------------------------------------------------
 
+
+def printable(text: str) -> str:
+    """``text`` on one line: backticks and non-printable characters as escapes.
+
+    File names and answers come from the pull request; escaped, a name cannot break out of
+    its code span or its line in the summary, nor forge a line of the report.
+    """
+    out: list[str] = []
+    for char in text:
+        if char != "`" and char.isprintable():
+            out.append(char)
+            continue
+        code = ord(char)
+        if code < 0x100:
+            out.append(f"\\x{code:02x}")
+        elif code < 0x10000:
+            out.append(f"\\u{code:04x}")
+        else:
+            out.append(f"\\U{code:08x}")
+    return "".join(out)
+
+
 _RULE_NAMES = {
     1: "scaffold",
     2: "render trust",
@@ -999,16 +1041,16 @@ def summary_markdown(result: Classification) -> str:
         for finding in result.findings:
             effect = "human" if finding.human else "note"
             name = _RULE_NAMES[finding.rule]
-            lines.append(f"- rule {finding.rule} ({name}, {effect}): {finding.text}")
+            lines.append(f"- rule {finding.rule} ({name}, {effect}): {printable(finding.text)}")
     if not any(f.human for f in result.findings):
         lines.append("- rule 6: no rule says human, so `auto`")
-    ref = f" at `{result.template_ref}`" if result.template_ref else ""
+    ref = f" at `{printable(result.template_ref)}`" if result.template_ref else ""
     if result.template_sha:
         ref += f" (`{result.template_sha[:12]}`)"
     lines += ["", f"### Trusted: byte-identical to the template{ref} ({len(result.trusted)})", ""]
-    lines += [f"- `{p}`" for p in result.trusted] or ["- none"]
+    lines += [f"- `{printable(p)}`" for p in result.trusted] or ["- none"]
     lines += ["", f"### Remaining changed files ({len(result.remaining)})", ""]
-    lines += [f"- `{p}`" for p in result.remaining] or ["- none"]
+    lines += [f"- `{printable(p)}`" for p in result.remaining] or ["- none"]
     return "\n".join(lines) + "\n"
 
 
@@ -1017,12 +1059,14 @@ def report_text(result: Classification) -> str:
     lines = [f"class={result.merge_class}"]
     for finding in result.findings:
         effect = "human" if finding.human else "note"
-        lines.append(f"rule {finding.rule} ({effect}): {finding.text}")
-    ref = f" at {result.template_ref}" if result.template_ref else ""
+        lines.append(f"rule {finding.rule} ({effect}): {printable(finding.text)}")
+    ref = f" at {printable(result.template_ref)}" if result.template_ref else ""
     if result.template_sha:
         ref += f" ({result.template_sha[:12]})"
-    lines.append(f"trusted{ref} ({len(result.trusted)}): {', '.join(result.trusted) or '-'}")
-    lines.append(f"remaining ({len(result.remaining)}): {', '.join(result.remaining) or '-'}")
+    trusted = ", ".join(map(printable, result.trusted)) or "-"
+    remaining = ", ".join(map(printable, result.remaining)) or "-"
+    lines.append(f"trusted{ref} ({len(result.trusted)}): {trusted}")
+    lines.append(f"remaining ({len(result.remaining)}): {remaining}")
     return "\n".join(lines)
 
 
@@ -1063,10 +1107,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             render=not args.no_render,
             template_url=args.template_url,
         )
-    except (ClassifyError, subprocess.TimeoutExpired, OSError) as exc:
-        print(f"class={HUMAN}\nmerge-class failed: {exc}", file=sys.stderr)
+    except (ClassifyError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+        detail = printable(str(exc))
+        print(f"class={HUMAN}\nmerge-class failed: {detail}", file=sys.stderr)
         _append(output, f"class={HUMAN}\n")
-        _append(args.summary, f"## merge-class: classification failed\n\n{exc}\n")
+        _append(args.summary, f"## merge-class: classification failed\n\n{detail}\n")
         return 2
     print(report_text(result))
     _append(output, f"class={result.merge_class}\n")

@@ -155,9 +155,15 @@ def rendered(template: Path) -> dict[str, str]:
 class FakeRender:
     """Stands in for copier: writes fixed files, or fails like a render that cannot run."""
 
-    def __init__(self, files: dict[str, str], error: str | None = None) -> None:
+    def __init__(
+        self,
+        files: dict[str, str],
+        error: str | None = None,
+        executable: frozenset[str] = frozenset(),
+    ) -> None:
         self.files = files
         self.error = error
+        self.executable = executable
         self.calls: list[tuple[str, str, str]] = []
 
     def __call__(self, template_url: str, vcs_ref: str, data_file: Path, dest: Path) -> None:
@@ -168,6 +174,8 @@ class FakeRender:
             target = dest / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
+            if path in self.executable:
+                target.chmod(0o755)
 
 
 def classify(
@@ -375,6 +383,51 @@ def test_missing_answers_file_trusts_nothing(tmp_path: Path, template: Path) -> 
     result = classify(pr, render=FakeRender(rendered(template)), template=template)
     assert result.trusted == []
     assert any("no .copier-answers.yml" in n for n in notes(result))
+
+
+@pytest.mark.parametrize("side", ["head", "render"])
+def test_a_mode_only_difference_is_not_trusted(tmp_path: Path, template: Path, side: str) -> None:
+    """Rule 2 compares the executable bit too: 100755 against 100644 is no match."""
+    path = "tests/conftest.py"
+    pr = make_pr(tmp_path, source_base(template), {path: "conftest v2\n"})
+    if side == "head":
+        (pr.workdir / path).chmod(0o755)
+        pr.head = commit(pr.workdir, {}, "chmod +x")
+    render = FakeRender(
+        rendered(template), executable=frozenset({path} if side == "render" else ())
+    )
+    result = classify(pr, render=render, template=template)
+    assert result.trusted == []
+    assert result.remaining == [path]
+
+
+def test_a_symlink_at_a_template_owned_path_is_never_trusted(
+    tmp_path: Path, template: Path
+) -> None:
+    path = "tests/conftest.py"
+    pr = make_pr(tmp_path, source_base(template), {"tests/real.py": "conftest v2\n"})
+    (pr.workdir / path).unlink()
+    (pr.workdir / path).symlink_to("real.py")
+    pr.head = commit(pr.workdir, {}, "symlink")
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert path in result.remaining
+    assert path not in result.trusted
+
+
+def test_a_path_that_is_not_plain_is_never_trusted_and_reported(
+    tmp_path: Path, template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git writes no such path; a crafted tree could. The render's ../escape is never read."""
+    real = mc.changed_files
+    odd = ["../escape", "/etc/passwd", "tests//conftest.py", "tests/./conftest.py"]
+    monkeypatch.setattr(mc, "changed_files", lambda *args: sorted([*real(*args), *odd]))
+    files = {**rendered(template), "../escape": "conftest v2\n"}
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert result.trusted == ["tests/conftest.py"]
+    assert sorted(f.text for f in result.findings if f.human) == sorted(
+        f"{path} is no plain relative path; never trusted" for path in odd
+    )
 
 
 # --- rules 2 and 3: adoption ---------------------------------------------------------------
@@ -829,6 +882,25 @@ def test_cli_writes_class_output_and_summary(
     assert text.startswith("## merge-class: `human`")
     assert "protected path .github/workflows/extra.yml" in text
     assert "### Remaining changed files (1)" in text
+
+
+def test_file_names_are_escaped_in_the_summary_and_the_report(
+    tmp_path: Path,
+    template: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    name = ".github/evil`name\n- rule 6: no rule says human.yml"
+    pr = make_pr(tmp_path, source_base(template), {name: "x\n"})
+    summary = tmp_path / "summary.md"
+    args = ["--repo", SOURCE, "--base", pr.base, "--head", pr.head, "--workdir", str(pr.workdir)]
+    assert mc.main([*args, "--no-render", "--summary", str(summary)]) == 1
+    escaped = ".github/evil\\x60name\\x0a- rule 6: no rule says human.yml"
+    out = capsys.readouterr().out
+    text = summary.read_text()
+    for report in (out, text):
+        assert escaped in report
+        assert "\n- rule 6" not in report
+    assert f"- `{escaped}`" in text
 
 
 def test_cli_auto_exits_zero(tmp_path: Path, template: Path) -> None:
