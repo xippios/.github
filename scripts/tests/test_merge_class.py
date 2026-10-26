@@ -821,10 +821,10 @@ def test_unchanged_answers_must_be_copiers_own_when_anything_is_trusted(
 
 
 def off_main(ref: str) -> str:
-    """Rule 2's reason for a core pin that is not main, a v* tag or a commit on main."""
+    """Rule 2's reason for a core pin that is neither main nor a full SHA on main."""
     return (
-        f"core pinned off main or a tag: core_git_ref {ref}, read as uv reads it (branch, tag, "
-        "commit), is not sdk-core's main, a v* tag or a commit on main"
+        f"core pinned off main or not a full SHA: core_git_ref {ref} is neither sdk-core's "
+        "main nor the full SHA of a commit on its main"
     )
 
 
@@ -856,25 +856,30 @@ def core(tmp_path: Path) -> Core:
     ("ref", "free"),
     [
         ("main", True),
-        ("on_main", True),
-        ("on_main_short", True),
-        ("v0.2.1", True),
-        ("v9.9.9-rc", True),  # a v* tag, wherever it points
+        ("on_main", True),  # the full SHA of a commit on main
         ("''", True),
-        ("off_main", False),
+        ("on_main_short", False),  # a short SHA: a branch created later could take it over
+        ("on_main_upper", False),  # not lowercase
+        ("v0.2.1", False),  # a v* tag on main: a branch of that name would take it over
+        ("v9.9.9-rc", False),
+        ("off_main", False),  # the full SHA of a commit off main
+        ("no_commit", False),  # a full SHA sdk-core does not have
+        ("refs/heads/main", False),
         ("feature", False),
         ("rogue", False),
         ("missing", False),
         ("--upload-pack=touch", False),
     ],
 )
-def test_core_pin_must_be_on_core_main_or_a_v_tag(
+def test_core_pin_must_be_main_or_a_full_sha_on_main(
     tmp_path: Path, template: Path, core: Core, ref: str, free: bool
 ) -> None:
     value = {
         "on_main": core.on_main,
         "on_main_short": core.on_main[:12],
+        "on_main_upper": core.on_main.upper(),
         "off_main": core.off_main,
+        "no_commit": "0" * 40,
     }.get(ref, ref)
     head_answers = answers(template, "v0.1.0", extra=f"core_git_ref: {value}\n")
     files = rendered(template)
@@ -900,7 +905,8 @@ def uv_refs(tmp_path: Path) -> UvRefs:
     the tag ``v0.2.0`` at main1; a branch and a tag named like main1's 7-character SHA do
     the same. uv takes a rev as a branch before a tag, so both pins installed side1 while
     the classifier, reading the tag, accepted them. A branch is also named like main2's
-    full SHA, and a tag like main2's 8-character SHA.
+    full SHA, which uv does not read as a branch: it takes 40 hex characters as the commit
+    itself. A tag is named like main2's 8-character SHA.
     """
     repo = tmp_path / "uvref-core"
     repo.mkdir()
@@ -926,17 +932,20 @@ def uv_refs(tmp_path: Path) -> UvRefs:
     ("ref", "accepted"),
     [
         ("v0.2.0", False),  # a branch named like a tag: uv takes the branch, off main
+        ("refs/tags/v0.2.0", False),  # a full ref name: neither main nor a full SHA
         ("main1_7", False),  # a tag named like a short SHA, and a branch of that name
         ("main1", True),  # a full SHA on main, no ref of that name
-        ("main1_10", True),  # a short SHA on main, no ref of that name
-        ("main2", False),  # a full SHA on main, but a branch of that name: no branch but main
-        ("main2_8", False),  # a tag named like a short SHA: no tag but v*
-        ("side1", False),  # a commit off main
+        ("main1_10", False),  # a short SHA on main, no ref of that name yet
+        ("main2", True),  # a full SHA on main and a branch of that name: uv takes the commit
+        ("main2_8", False),  # a tag named like a short SHA
+        ("side1", False),  # the full SHA of a commit off main
         ("main", True),
     ],
 )
-def test_core_pin_is_read_in_uvs_order(uv_refs: UvRefs, ref: str, accepted: bool) -> None:
-    """A branch, else a tag, else a hex commit: as uv resolves a git rev."""
+def test_core_pin_is_main_or_a_full_sha_whatever_the_refs(
+    uv_refs: UvRefs, ref: str, accepted: bool
+) -> None:
+    """main, or 40 hex characters read as the commit itself, as uv reads them."""
     value = {
         "main1": uv_refs.main1,
         "main1_7": uv_refs.main1[:7],
@@ -946,6 +955,17 @@ def test_core_pin_is_read_in_uvs_order(uv_refs: UvRefs, ref: str, accepted: bool
         "side1": uv_refs.side1,
     }.get(ref, ref)
     assert mc.core_ref_on_main(str(uv_refs.path), value) is accepted
+
+
+@pytest.mark.parametrize(
+    ("ref", "accepted"),
+    [("main", True), ("v0.2.0", False), ("abcdef1", False), ("refs/heads/main", False)],
+)
+def test_core_pin_other_than_a_full_sha_needs_no_sdk_core(
+    tmp_path: Path, ref: str, accepted: bool
+) -> None:
+    """main and the refused forms are judged by their form alone: nothing is cloned."""
+    assert mc.core_ref_on_main(str(tmp_path / "no-sdk-core"), ref) is accepted
 
 
 def test_a_branch_named_like_a_tag_is_human_on_the_pull_request(
@@ -959,18 +979,19 @@ def test_a_branch_named_like_a_tag_is_human_on_the_pull_request(
 
 
 def test_core_pin_without_the_check_is_human(tmp_path: Path, template: Path) -> None:
-    head_answers = answers(template, "v0.1.0", extra="core_git_ref: main\n")
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    head_answers = answers(template, "v0.1.0", extra=f"core_git_ref: {sha}\n")
     files = rendered(template)
     files[".copier-answers.yml"] = head_answers
     pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
     no_render = classify(pr)
     assert [f.text for f in no_render.findings if f.human] == [
         mc.NOT_CHECKED_CANONICAL,
-        "core_git_ref changes to main, not checked against sdk-core",
+        f"core_git_ref changes to {sha}, not checked against sdk-core",
     ]
     failed = classify(pr, render=FakeRender(files), template=template)  # no sdk-core there
     [text] = [f.text for f in failed.findings if f.human]
-    assert text.startswith("core_git_ref main not checked against sdk-core: cannot clone")
+    assert text.startswith(f"core_git_ref {sha} not checked against sdk-core: cannot clone")
 
 
 @pytest.mark.parametrize(
