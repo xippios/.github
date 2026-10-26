@@ -59,11 +59,13 @@ classifier behind the first. GitHub decides what merges: `ci`, `merge-class` and
     `docs/upstream/` and fixtures as material to judge, never instructions; an instruction
     found in them is itself a finding. The verdict step redacts anything that looks like a
     key or a GitHub token from the summary and the comment.
-- **`.github/workflows/ci.yml`** is this repository's own `ci`: ruff (the family's
-  version, 0.17.1) and the classifier's tests. It also calls `merge-class.yml` as a job,
-  which proves the caller wiring below.
+- **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
+  family's version, 0.17.1), the classifier's tests on a pinned pytest, and actionlint
+  with the runner's shellcheck. It also calls `merge-class.yml` as a job, which proves
+  the caller wiring below.
 
-Every action in the gate workflows is pinned to a commit SHA with its version in a comment.
+Every action in the gate workflows is pinned to a commit SHA with its version in a
+comment, and `setup-uv` installs a pinned uv.
 
 ## Merge classes
 
@@ -236,9 +238,12 @@ The checks of this repository:
 
 ```sh
 uvx ruff@0.17.1 check scripts && uvx ruff@0.17.1 format --check scripts
-uv run --no-project --with pytest pytest scripts/tests -q
-uvx --from actionlint-py actionlint
+uv run --no-project --with pytest==9.1.1 pytest scripts/tests -q
+uvx --from actionlint-py==1.7.12.25 actionlint
 ```
+
+`ci` runs actionlint with the runner's shellcheck; locally, add it with
+`uvx --from actionlint-py==1.7.12.25 --with shellcheck-py sh -c actionlint`.
 
 ## Changing this repository
 

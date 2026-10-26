@@ -71,6 +71,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           if [ "$AUTHOR" = "dependabot[bot]" ] && [ "$ACTOR" = "dependabot[bot]" ]; then
+            # The backticks are Markdown for the summary, not a command substitution.
+            # shellcheck disable=SC2016
             echo 'family-review: Dependabot PR, reviewed by `ci` only' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           elif [ "$HAS_KEY" = "true" ]; then

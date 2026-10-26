@@ -14,17 +14,21 @@ jobs:
   ci:
     name: ci
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
+          version: "0.13.5"
           enable-cache: false
       # The family's ruff (the rev of the template's ruff-pre-commit hook).
       - run: uvx ruff@0.17.1 check scripts
       - run: uvx ruff@0.17.1 format --check scripts
-      - run: uv run --no-project --with pytest pytest scripts/tests -q
+      - run: uv run --no-project --with pytest==9.1.1 pytest scripts/tests -q
+      # actionlint runs the runner's shellcheck on every `run:` script.
+      - run: uvx --from actionlint-py==1.7.12.25 actionlint
 
   # Proof of the caller wiring: merge-class.yml called as a job, as a source's ci.yml would
   # call it, giving the check `merge-class / merge-class`. Every pull request of this
