@@ -1010,6 +1010,11 @@ JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja
         ("[tool.ruff]\n", '[tool.uv]\nindex-url = "https://x.invalid"\n\n[tool.ruff]\n', [BLOCK]),
         ("[project.scripts]\n", '[project.scripts]\nevil = "os:system"\n', [BLOCK]),
         (
+            "[tool.ruff]\n",
+            '[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]\n',
+            [BLOCK],
+        ),
+        (
             "[dependency-groups]\n",
             '[project.entry-points.pytest11]\nplugin = "x.y"\n\n[dependency-groups]\n',
             [BLOCK],
@@ -1030,6 +1035,7 @@ JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja
         "uv-override-dependencies",
         "uv-index-url",
         "scripts",
+        "hatch-build-hooks",
         "entry-points",
         "jinja-description",
         "jinja-line-added",
@@ -1062,6 +1068,9 @@ dev = ["pytest>=8"]
 [build-system]
 requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xippios"]
 
 [tool.ruff]
 line-length = 100
@@ -1130,6 +1139,37 @@ def test_build_routes_are_protected_in_every_repository(tmp_path: Path, repo: st
     result = classify(pr, repo=repo)
     assert [f.text for f in result.findings if f.human] == [
         "build or install routes changed in pyproject.toml: build-system"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("repo", "old", "new"),
+    [
+        (SOURCE, 'packages = ["src/xippios"]', 'packages = ["src/xippios", "src/evil"]'),
+        (
+            "xippios/sdk-core",
+            "[tool.ruff]",
+            '[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]',
+        ),
+        (
+            "xippios/sdk-template",
+            "[tool.ruff]",
+            '[tool.hatch.build]\nexclude = ["/x"]\n\n[tool.ruff]',
+        ),
+    ],
+    ids=["source-wheel-target", "core-build-hook", "template-build-table"],
+)
+def test_tool_hatch_build_is_a_build_route_in_every_repository(
+    tmp_path: Path, template: Path, repo: str, old: str, new: str
+) -> None:
+    """``[tool.hatch.build]`` and its sub-tables: the packaged paths, targets, build hooks."""
+    assert old in SOURCE_PYPROJECT
+    base = source_base(template) if repo == SOURCE else {"README.md": "x\n"}
+    base["pyproject.toml"] = SOURCE_PYPROJECT
+    pr = make_pr(tmp_path, base, {"pyproject.toml": SOURCE_PYPROJECT.replace(old, new, 1)})
+    result = classify(pr, repo=repo)
+    assert [f.text for f in result.findings if f.human] == [
+        "build or install routes changed in pyproject.toml: tool.hatch.build"
     ]
 
 

@@ -110,11 +110,13 @@ reason is reported.
      `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
      `docs/definition-of-done.md`; and a change in `pyproject.toml` to where the package
      is built and installed from or to what it installs: `[build-system]`, `[tool.uv]`
-     (index, sources, override-dependencies, ...), `[project.scripts]`,
-     `[project.gui-scripts]` or `[project.entry-points.*]` ("build or install routes
-     changed"). The dependency lists stay free. `.github/**` protects the workflow
-     definitions, not the code a workflow runs with a secret: the tests and scripts that
-     `live.yml` runs with a key can merge `auto`, and the family review reads them.
+     (index, sources, override-dependencies, ...), `[tool.hatch.build]` (the packaged
+     paths, `[tool.hatch.build.targets.*]`, `[tool.hatch.build.hooks.*]`),
+     `[project.scripts]`, `[project.gui-scripts]` or `[project.entry-points.*]` ("build or
+     install routes changed"). The dependency lists stay free. `.github/**` protects the
+     workflow definitions, not the code a workflow runs with a secret: the tests and
+     scripts that `live.yml` runs with a key can merge `auto`, and the family review reads
+     them.
    - In a source, also a template-owned file under `src/` that differs from the render
      (an adapter changed by hand, which could expose tasks around rule 4); without a
      render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
