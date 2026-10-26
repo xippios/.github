@@ -208,6 +208,14 @@ workflows carry `on: pull_request` (types `opened`, `synchronize`, `reopened`, `
 | Required workflow (a ruleset requires the workflow from this repository, `ref` `main`) | `merge-class` | `family-review` |
 | Caller (a repository's `gates.yml` calls the workflow as a job) | `merge-class / merge-class` | `family-review / family-review` |
 
+A skipped caller job reports one check named after the caller job alone (`merge-class`,
+`family-review`), never the slash-joined context, and GitHub counts a skipped check as
+passing. So a ruleset must never require the bare names: while `GATES_CALLER` is unset, a
+switched-off `gates.yml` would satisfy both. In caller mode a ruleset requires the
+slash-joined contexts, and only once the variable is set in every repository the ruleset
+targets; requiring them earlier leaves every pull request pending. The required-workflow
+rule has no such gap.
+
 In caller mode a repository carries its own caller file, `.github/workflows/gates.yml`,
 beside `ci.yml`. It runs on `pull_request` with
 `types: [opened, synchronize, reopened, edited]`: a caller's `on: pull_request` without
