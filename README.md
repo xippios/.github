@@ -107,16 +107,18 @@ reason is reported.
    values"). `_commit` moving to an older or an unrelated commit is `human`, and so is a
    `_commit` change or an added answer the template could not be checked for
    (`--no-render`, a failed clone, a `_commit` the render refused).
-   **Core pin**: a non-empty `core_git_ref` on the head is read in uv's order, which takes
-   a git `rev` as a branch of `xippios/sdk-core` first, then as a tag, then as a commit. A
-   branch of that name must be `main`; else a tag of that name must be a `v*` tag; else the
-   ref must be 7 to 40 hex characters, name no branch and no tag, and resolve to a commit
-   on `main` (read from a clone without trees and blobs). Anything else is `human` ("core
-   pinned off main or a tag"), whether or not the pull request changes it, so every pull
-   request is `human` while core is pinned off `main`; when sdk-core cannot be cloned it
-   is `human` too, and under `--no-render` a change to a non-empty value is. The check
-   sees the refs of the moment: a branch created in sdk-core later with a pinned tag's
-   name would take the pin over at the next `uv lock` ("Known limits" below).
+   **Core pin**: a non-empty `core_git_ref` on the head is accepted in two forms only:
+   `main`, which uv reads as the branch of `xippios/sdk-core` before any tag or commit, and
+   a full SHA (40 lowercase hex characters) of a commit on sdk-core's `main` (read from a
+   clone without trees and blobs). uv takes a full SHA as the commit itself, so no branch
+   or hex-named tag can take it over. Every other form (a `v*` tag, a short hex, a branch
+   name, `refs/...`) is `human` ("core pinned off main or not a full SHA") without a
+   lookup: each names a ref that can move, or one that a branch created later by its name
+   would take over at the next `uv lock`, since uv reads a branch first. The pin is
+   checked whether or not the pull request changes it, so every pull request is `human`
+   while core is pinned off `main` or by another form; when sdk-core cannot be cloned to
+   check a full SHA it is `human` too, and under `--no-render` a change to a non-empty
+   value is.
 3. **Protected paths** in what remains: `human`.
    - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
@@ -187,10 +189,12 @@ answers are escaped in the summary and the report.
 - `template/pyproject.toml.jinja` is judged by a text scan, since a Jinja template is not
   TOML. Its structural replacement, rendering the template at base and head and comparing
   the protected tables with a TOML parser, is a follow-up.
-- A classification holds for the refs as they stand when it runs: the core pin check reads
-  sdk-core's branches and tags of that moment. A branch or tag created later can take a
-  checked pin over, so sdk-core needs a branch ruleset that forbids `v*` and hex-like
-  branch names and a tag ruleset that restricts the creation of `v*` tags to Johannes.
+- The core pin check accepts only `main` and a full SHA, the two forms no ref created
+  later can take over in uv's reading. A tag or a short commit name read anywhere else
+  (by a human, by a tool) can still be shadowed by a branch created later; the classifier
+  cannot see that, so it rests on the rulesets below: the `v*` tag ruleset of every
+  `sdk-*` repository and the branch ruleset on sdk-core that forbids `v*` and hex-like
+  branch names.
 
 ## Wiring and check contexts
 
@@ -256,10 +260,13 @@ offer it is Johannes's at gate 2.
   and nothing else. Bypass actor Johannes, mode "pull requests only": the bypass button
   is how a `human` pull request merges, and it bypasses nothing but the class. In caller
   mode it is created once every repository carries `gates.yml`.
-- **Tag ruleset** on `refs/tags/v*` of the `sdk-*` repositories: creation, update and
-  deletion restricted; bypass actors GitHub Actions, so the release workflow can tag (or,
-  where the editor does not offer it, the App whose installation token that workflow
-  uses), and Johannes, who stays until every source tags its own releases.
+- **Tag ruleset** on `refs/tags/v*`, one for every `sdk-*` repository, sdk-core
+  included: creation, update and deletion restricted; the only bypass actors, so the
+  only creators of `v*` tags, are GitHub Actions, for the release workflow (or, where the
+  editor does not offer it, the App whose installation token that workflow uses), and
+  Johannes. sdk-core tags its own releases from 0.2.1 like every repository.
+- **Branch ruleset on sdk-core**: forbids branch names matching `v*` and hex-like names,
+  so a branch created later cannot shadow a tag or a short commit name.
 
 ## Running the classifier locally
 
