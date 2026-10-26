@@ -17,8 +17,9 @@ collected; the first ``human`` decides the class, the later ones only add to the
    when it equals the question's literal default at the head's ``_commit``. The answers
    file is read only inside a subset of YAML (``answers_problems``), and when it changed
    or anything is trusted it must be byte-identical to the one copier writes back in the
-   render. A non-empty ``core_git_ref`` on the head must name a commit on sdk-core's main
-   or a ``v*`` tag.
+   render. A non-empty ``core_git_ref`` on the head, read in uv's order (a branch, else
+   a tag, else a commit), must be sdk-core's main, a ``v*`` tag, or a hex commit on main
+   that names no branch and no tag.
 3. Protected paths in what remains; everywhere, also the build and install tables of
    ``pyproject.toml``; in a source, also a template-owned file under ``src/`` that
    differs from the render (an adapter changed by hand); in sdk-template, the template
@@ -67,7 +68,7 @@ HUMAN = "human"
 
 DEFAULT_TEMPLATE_URL = "https://github.com/xippios/sdk-template.git"
 DEFAULT_CORE_URL = "https://github.com/xippios/sdk-core.git"
-# A core_git_ref other than empty names a commit on this branch of sdk-core, or a v* tag.
+# A core_git_ref other than empty is this branch of sdk-core, a v* tag, or a commit on it.
 CORE_BRANCH = "main"
 CORE_PIN = "core_git_ref"
 # The template's _commit is trusted only when it is on this branch of the template.
@@ -1048,33 +1049,37 @@ def _moves_forward(clone: Path, old: str, new_sha: str) -> bool:
     return _git(clone, "merge-base", "--is-ancestor", old_sha, new_sha, check=False).returncode == 0
 
 
-def core_ref_on_main(core_url: str, ref: str) -> bool:
-    """Whether ``ref`` is a ``v*`` tag of sdk-core, its main, or a commit on its main.
+def _has_ref(clone: Path, refname: str) -> bool:
+    """Whether the full ``refname`` (``refs/heads/x``, ``refs/tags/x``) exists in ``clone``."""
+    return _git(clone, "show-ref", "--verify", "--quiet", refname, check=False).returncode == 0
 
-    Read from a clone without trees and blobs, which holds every commit and tag. A branch
-    other than main is no pin on main, since it can move off it. RenderError when the
-    clone fails.
+
+def core_ref_on_main(core_url: str, ref: str) -> bool:
+    """Whether ``ref`` pins sdk-core to its main, a ``v*`` tag or a commit on its main.
+
+    Read in uv's order, which takes a ``rev`` as a branch first, then as a tag, then as a
+    commit: a branch of that name must be main (any other can move off it); else a tag of
+    that name must be a ``v*`` tag; else the ref must be 7 to 40 hex characters naming a
+    commit on main. Read from a clone without trees and blobs, which holds every branch,
+    tag and commit. RenderError when the clone fails.
     """
     if not _GIT_REF.fullmatch(ref):
         return False
     with tempfile.TemporaryDirectory(prefix="merge-class-core-") as tmp:
         clone = _clone(core_url, Path(tmp) / "sdk-core", "--bare", "--filter=tree:0")
-        main = f"refs/heads/{CORE_BRANCH}"
-        if ref.startswith("v"):
-            tag = _git(clone, "rev-parse", "--verify", "--quiet", f"refs/tags/{ref}", check=False)
-            if tag.returncode == 0:
-                return True
-        if ref == CORE_BRANCH:
-            branch = _git(clone, "rev-parse", "--verify", "--quiet", main, check=False)
-            return branch.returncode == 0
+        if _has_ref(clone, f"refs/heads/{ref}"):
+            return ref == CORE_BRANCH
+        if _has_ref(clone, f"refs/tags/{ref}"):
+            return ref.startswith("v")
         if not re.fullmatch(r"[0-9a-f]{7,40}", ref):
             return False
         try:
             sha = resolve(clone, ref)
         except ClassifyError:
             return False
-        if not sha.startswith(ref):  # a ref of that name, not the commit
+        if not sha.startswith(ref):  # a ref of another kind by that name, not the commit
             return False
+        main = f"refs/heads/{CORE_BRANCH}"
         return _git(clone, "merge-base", "--is-ancestor", sha, main, check=False).returncode == 0
 
 
@@ -1083,12 +1088,13 @@ def core_pin_reason(
 ) -> str | None:
     """Rule 2's human reason against the head's ``core_git_ref``, or None.
 
-    A non-empty ``core_git_ref`` on the head must be a ``v*`` tag of sdk-core, its main,
-    or a commit on its main (``core_ref_on_main``), whether or not the pull request changes
-    it: while core is pinned off main, every pull request is human. One that cannot be
-    checked (a failed clone) is human too; under ``--no-render`` a change to a non-empty
-    value is. Empty or absent, there is no pin. An answers file outside the reader's
-    subset (``answers_problems``) is human: YAML may read a pin this reader does not see.
+    A non-empty ``core_git_ref`` on the head must be, read in uv's order, sdk-core's main,
+    a ``v*`` tag or a commit on its main (``core_ref_on_main``), whether or not the pull
+    request changes it: while core is pinned off main, every pull request is human. One
+    that cannot be checked (a failed clone) is human too; under ``--no-render`` a change to
+    a non-empty value is. Empty or absent, there is no pin. An answers file outside the
+    reader's subset (``answers_problems``) is human: YAML may read a pin this reader does
+    not see.
     """
     if answers_problems(after):
         return f"{CORE_PIN} not read: {ANSWERS_FILE} lies outside the subset the classifier reads"
@@ -1099,7 +1105,7 @@ def core_pin_reason(
     if ref == "":
         return None
     if ref is None:
-        return f"core pinned off main: {CORE_PIN} is no plain scalar"
+        return f"core pinned off main or a tag: {CORE_PIN} is no plain scalar"
     if not render:
         changed = old.get(CORE_PIN) != new.get(CORE_PIN)
         return f"{CORE_PIN} changes to {ref}, not checked against sdk-core" if changed else None
@@ -1109,7 +1115,10 @@ def core_pin_reason(
         return f"{CORE_PIN} {ref} not checked against sdk-core: {exc}"
     if on_main:
         return None
-    return f"core pinned off main: {CORE_PIN} {ref} is no commit on sdk-core's main and no v* tag"
+    return (
+        f"core pinned off main or a tag: {CORE_PIN} {ref}, read as uv reads it (branch, tag, "
+        "commit), is not sdk-core's main, a v* tag or a commit on main"
+    )
 
 
 def trust_rendered(

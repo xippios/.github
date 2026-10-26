@@ -819,6 +819,14 @@ def test_unchanged_answers_must_be_copiers_own_when_anything_is_trusted(
     assert [f.text for f in result.findings if f.human] == ([mc.NOT_CANONICAL] if human else [])
 
 
+def off_main(ref: str) -> str:
+    """Rule 2's reason for a core pin that is not main, a v* tag or a commit on main."""
+    return (
+        f"core pinned off main or a tag: core_git_ref {ref}, read as uv reads it (branch, tag, "
+        "commit), is not sdk-core's main, a v* tag or a commit on main"
+    )
+
+
 @dataclass
 class Core:
     path: Path
@@ -872,10 +880,81 @@ def test_core_pin_must_be_on_core_main_or_a_v_tag(
     files[".copier-answers.yml"] = head_answers
     pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
     result = classify(pr, render=FakeRender(files), template=template, core=core.path)
-    reason = (
-        f"core pinned off main: core_git_ref {value} is no commit on sdk-core's main and no v* tag"
-    )
-    assert [f.text for f in result.findings if f.human] == ([] if free else [reason])
+    assert [f.text for f in result.findings if f.human] == ([] if free else [off_main(value)])
+
+
+@dataclass
+class UvRefs:
+    path: Path
+    main1: str
+    main2: str
+    side1: str
+
+
+@pytest.fixture
+def uv_refs(tmp_path: Path) -> UvRefs:
+    """sdk-core as the review's uvref1 demo built it: refs named like tags and like SHAs.
+
+    main holds main1 and main2, side1 is off main. The branch ``v0.2.0`` points at side1,
+    the tag ``v0.2.0`` at main1; a branch and a tag named like main1's 7-character SHA do
+    the same. uv takes a rev as a branch before a tag, so both pins installed side1 while
+    the classifier, reading the tag, accepted them. A branch is also named like main2's
+    full SHA, and a tag like main2's 8-character SHA.
+    """
+    repo = tmp_path / "uvref-core"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    main1 = commit(repo, {"README.md": "main1\n"}, "main1")
+    main2 = commit(repo, {"README.md": "main2\n"}, "main2")
+    git(repo, "checkout", "-q", "-b", "side", main1)
+    side1 = commit(repo, {"README.md": "side1\n"}, "side1")
+    git(repo, "checkout", "-q", "main")
+    for refname, target in (
+        ("refs/heads/v0.2.0", side1),
+        ("refs/tags/v0.2.0", main1),
+        (f"refs/heads/{main1[:7]}", side1),
+        (f"refs/tags/{main1[:7]}", main1),
+        (f"refs/heads/{main2}", side1),
+        (f"refs/tags/{main2[:8]}", side1),
+    ):
+        git(repo, "update-ref", refname, target)
+    return UvRefs(repo, main1, main2, side1)
+
+
+@pytest.mark.parametrize(
+    ("ref", "accepted"),
+    [
+        ("v0.2.0", False),  # a branch named like a tag: uv takes the branch, off main
+        ("main1_7", False),  # a tag named like a short SHA, and a branch of that name
+        ("main1", True),  # a full SHA on main, no ref of that name
+        ("main1_10", True),  # a short SHA on main, no ref of that name
+        ("main2", False),  # a full SHA on main, but a branch of that name: no branch but main
+        ("main2_8", False),  # a tag named like a short SHA: no tag but v*
+        ("side1", False),  # a commit off main
+        ("main", True),
+    ],
+)
+def test_core_pin_is_read_in_uvs_order(uv_refs: UvRefs, ref: str, accepted: bool) -> None:
+    """A branch, else a tag, else a hex commit: as uv resolves a git rev."""
+    value = {
+        "main1": uv_refs.main1,
+        "main1_7": uv_refs.main1[:7],
+        "main1_10": uv_refs.main1[:10],
+        "main2": uv_refs.main2,
+        "main2_8": uv_refs.main2[:8],
+        "side1": uv_refs.side1,
+    }.get(ref, ref)
+    assert mc.core_ref_on_main(str(uv_refs.path), value) is accepted
+
+
+def test_a_branch_named_like_a_tag_is_human_on_the_pull_request(
+    tmp_path: Path, template: Path, uv_refs: UvRefs
+) -> None:
+    head_answers = answers(template, "v0.1.0", extra="core_git_ref: v0.2.0\n")
+    render = FakeRender({**rendered(template), ".copier-answers.yml": head_answers})
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=render, template=template, core=uv_refs.path)
+    assert [f.text for f in result.findings if f.human] == [off_main("v0.2.0")]
 
 
 def test_core_pin_without_the_check_is_human(tmp_path: Path, template: Path) -> None:
@@ -909,10 +988,7 @@ def test_a_pin_the_pull_request_does_not_change_is_checked_too(
     pr = make_pr(tmp_path, base, {"tests/test_new.py": "x\n"})
     renderer = FakeRender(rendered(template)) if render else None
     result = classify(pr, render=renderer, template=template, core=core.path)
-    reason = (
-        f"core pinned off main: core_git_ref {pin} is no commit on sdk-core's main and no v* tag"
-    )
-    assert [f.text for f in result.findings if f.human] == ([reason] if human else [])
+    assert [f.text for f in result.findings if f.human] == ([off_main(pin)] if human else [])
 
 
 def test_a_removed_or_emptied_core_pin_is_free(tmp_path: Path, template: Path) -> None:
