@@ -335,6 +335,21 @@ def test_render_failure_trusts_nothing(tmp_path: Path, template: Path) -> None:
     assert result.merge_class == mc.HUMAN
 
 
+def test_failed_template_clone_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    """The real clone fails (no repository at the URL): no render, no _commit check."""
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(tmp_path / "missing")
+    render = FakeRender(rendered(template))
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=tmp_path / "missing")
+    assert render.calls == []
+    assert result.trusted == []
+    assert any("render failed" in n and "cannot clone" in n for n in notes(result))
+    assert "_commit changes from v0.1.0 to v0.2.0, not checked against the template" in [
+        f.text for f in result.findings if f.human
+    ]
+
+
 def test_src_path_other_than_the_family_template_trusts_nothing(
     tmp_path: Path, template: Path
 ) -> None:
@@ -834,6 +849,13 @@ def test_release_pr_inside_the_subset_is_auto(tmp_path: Path, template: Path) ->
     assert result.merge_class == mc.AUTO
 
 
+def test_release_pr_with_check_siblings_is_auto(tmp_path: Path, template: Path) -> None:
+    """scripts/check-siblings.sh belongs to the release subset until the template owns it."""
+    changes = release(**{"scripts/check-siblings.sh": "#!/bin/sh\nexit 0\n"})
+    pr = make_pr(tmp_path, source_base(template), changes)
+    assert classify(pr).merge_class == mc.AUTO
+
+
 def test_release_pr_touching_tasks_is_human(tmp_path: Path, template: Path) -> None:
     changes = release(**{"src/xippios/usda/psd/tasks.py": '__all__ = ["get_data", "more"]\n'})
     pr = make_pr(tmp_path, source_base(template), changes)
@@ -858,6 +880,53 @@ def test_unchanged_version_is_no_release(tmp_path: Path, template: Path) -> None
         {"pyproject.toml": pyproject, "src/xippios/usda/psd/_client.py": "x\n"},
     )
     assert classify(pr).merge_class == mc.AUTO
+
+
+# --- inputs and reasons ------------------------------------------------------------------
+
+
+def test_the_branch_name_is_no_input(tmp_path: Path, template: Path) -> None:
+    """The class depends on the two commits alone: a release-shaped name changes nothing."""
+    pr = make_pr(tmp_path, source_base(template), {".github/workflows/extra.yml": "x\n"})
+    results = []
+    for branch in ("fix/extra", "chore/release-9.9.9", "chore/template-update-v9"):
+        git(pr.workdir, "branch", "-f", branch, pr.head)
+        results.append(classify(PR(pr.workdir, "main", branch)))
+    assert {
+        (r.head, r.merge_class, tuple(f.text for f in r.findings if f.human)) for r in results
+    } == {
+        (
+            pr.head,
+            mc.HUMAN,
+            ("protected path .github/workflows/extra.yml (matches .github/**)",),
+        )
+    }
+    assert "branch" not in mc.classify.__code__.co_varnames
+
+
+def test_a_pr_behind_its_base_is_compared_with_the_merge_base(
+    tmp_path: Path, template: Path
+) -> None:
+    """main moved on (a protected file) after the branch forked: not the PR's change."""
+    pr = make_pr(tmp_path, source_base(template), {"tests/test_new.py": "x\n"})
+    git(pr.workdir, "checkout", "-q", "main")
+    tip = commit(pr.workdir, {".github/workflows/ci.yml": "ci v9\n"}, "main moves on")
+    result = classify(PR(pr.workdir, tip, pr.head))
+    assert result.base == tip
+    assert result.merge_base == pr.base != tip
+    assert result.changed == ["tests/test_new.py"]
+    assert result.merge_class == mc.AUTO
+
+
+def test_every_reason_is_reported(tmp_path: Path, template: Path) -> None:
+    """The first human decides the class; the later rules still report theirs."""
+    base = source_base(template)
+    base["src/xippios/usda/psd/tasks.py"] = "__all__: list[str] = []\n"
+    changes = release(**{"src/xippios/usda/psd/tasks.py": '__all__ = ["get_data"]\n'})
+    changes[".github/workflows/extra.yml"] = "x\n"
+    pr = make_pr(tmp_path, base, changes)
+    result = classify(pr)
+    assert [f.rule for f in result.findings if f.human] == [3, 4, 5]
 
 
 # --- command line ------------------------------------------------------------------------
