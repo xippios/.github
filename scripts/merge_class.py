@@ -603,6 +603,10 @@ def _template_settings(template_url: str, commit: str, scratch: Path) -> tuple[s
     raise RenderError(f"the template has no copier.yml at {commit!r}")
 
 
+# A tag, a SHA or `git describe` output; never an option.
+_GIT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+/-]*")
+
+
 @dataclass
 class Trust:
     """The outcome of rule 2."""
@@ -630,6 +634,8 @@ def trust_rendered(
     if not commit or not src_path or not import_path:
         note = f"{ANSWERS_FILE} lacks _commit, _src_path or import_path; nothing trusted"
         return Trust([], commit, note)
+    if not _GIT_REF.fullmatch(commit):
+        return Trust([], commit, f"_commit {commit!r} is not a plain git ref; nothing trusted")
     if normalize_url(src_path) != normalize_url(template_url):
         note = f"_src_path {src_path} is not the family template {template_url}; nothing trusted"
         return Trust([], commit, note)

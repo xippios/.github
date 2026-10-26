@@ -309,6 +309,16 @@ def test_commit_not_on_the_template_main_trusts_nothing(tmp_path: Path, template
     assert any("not on the template's main" in n for n in notes(result))
 
 
+def test_commit_that_is_not_a_plain_ref_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, "--upload-pack=touch")
+    render = FakeRender(rendered(template))
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert any("not a plain git ref" in n for n in notes(result))
+
+
 def test_no_render_trusts_nothing(tmp_path: Path, template: Path) -> None:
     pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
     result = classify(pr)
