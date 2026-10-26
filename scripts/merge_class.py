@@ -13,7 +13,11 @@ collected; the first ``human`` decides the class, the later ones only add to the
    nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
    ``human``.
-3. Protected paths in what remains; in ``xippios/.github`` every pull request.
+3. Protected paths in what remains; in a source, also a template-owned file under
+   ``src/`` that differs from the render (an adapter changed by hand); in sdk-template,
+   the template origin of every path protected in a source, any path under ``template/``
+   with Jinja in its name, and the dependency block of ``template/pyproject.toml.jinja``;
+   in ``xippios/.github`` every pull request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
    names at least one task.
 5. Release: the ``[project]`` version of ``pyproject.toml`` changed, and what remains is
@@ -62,12 +66,34 @@ FREE_ANSWERS = frozenset({"_commit", "core_version", "core_git_ref"})
 PROTECTED = (
     ".github/**",
     ".claude/settings.json",
+    ".claude/settings.local.json",
+    ".claude/agents/**",
+    ".claude/hooks/**",
+    ".mcp.json",
+    "CLAUDE.local.md",
     ".pre-commit-config.yaml",
     ".secrets.baseline",
     "docs/conventions.md",
     "docs/adr/**",
     "docs/review-checklist.md",
+    "docs/definition-of-done.md",
 )
+# Protected in a source only. The template renders them, so rule 2 trusts them when they
+# are identical to the render, and they are human when changed by hand.
+SOURCE_PROTECTED = (".claude/commands/**",)
+TEMPLATE_DIR = "template/"
+
+
+def template_origins(patterns: Iterable[str]) -> tuple[str, ...]:
+    """Where the template renders a protected source path from: ``template/``, ``.jinja``."""
+    origins: list[str] = []
+    for pattern in patterns:
+        origins.append(TEMPLATE_DIR + pattern)
+        if not pattern.endswith("/**"):
+            origins.append(f"{TEMPLATE_DIR}{pattern}.jinja")
+    return tuple(origins)
+
+
 PROTECTED_BY_REPO: dict[str, tuple[str, ...]] = {
     "sdk-core": ("src/**",),
     # What is protected in a source is protected at its template origin.
@@ -75,15 +101,14 @@ PROTECTED_BY_REPO: dict[str, tuple[str, ...]] = {
         "copier.yml",
         "copier.yaml",
         "scripts/**",
-        "template/.github/**",
-        "template/.claude/settings.json",
-        "template/.claude/commands/**",
-        "template/.pre-commit-config.yaml",
-        "template/.secrets.baseline",
+        *template_origins(PROTECTED + SOURCE_PROTECTED),
     ),
 }
 # In sdk-template, protected when its dependency block changes.
 TEMPLATE_PYPROJECT = "template/pyproject.toml.jinja"
+# Template-owned modules under src/ by name, for when no render tells which files the
+# template owns (--no-render, a failed render).
+ADAPTER_MODULES = re.compile(r"src/xippios/(?:.+/)?(?:mcp|http|_version|api/__init__)\.py")
 # Every pull request of the organisation's .github repository is human.
 ORG_REPOSITORY = ".github"
 # The repositories named sdk-* that are not sources; rule 1 skips them.
@@ -522,41 +547,66 @@ def exported_names(source: bytes | None) -> list[str] | None:
 
 
 _TABLE = re.compile(r"^\[\s*([^\[\]]+?)\s*\]\s*(?:#.*)?$")
-_ARRAY_KEY = re.compile(r"^(dependencies|optional-dependencies)\s*=(.*)$")
+_ARRAY_TABLE = re.compile(r"^\[\[\s*([^\[\]]+?)\s*\]\]\s*(?:#.*)?$")
+_KEY = re.compile(r"^([A-Za-z0-9_.\"' -]+?)\s*=(.*)$")
+# The dependency block of a pyproject: these tables and keys, and everything below them.
+DEPENDENCY_NAMES = (
+    "project.dependencies",
+    "project.optional-dependencies",
+    "dependency-groups",
+    "tool.uv.sources",
+)
+
+
+def _toml_name(text: str) -> str:
+    return ".".join(part.strip().strip("\"'") for part in text.split("."))
+
+
+def _in_dependency_block(name: str) -> bool:
+    return any(name == top or name.startswith(top + ".") for top in DEPENDENCY_NAMES)
+
+
+def _nesting(text: str) -> int:
+    return text.count("[") + text.count("{") - text.count("]") - text.count("}")
 
 
 def dependency_block(text: str | None) -> list[str] | None:
-    """The ``[project]`` dependencies and the optional-dependencies of a pyproject template.
+    """The dependency block of a pyproject template, as stripped lines with their table.
 
-    Read as text, since a Jinja template is not TOML: the ``dependencies`` and
-    ``optional-dependencies`` arrays of ``[project]`` and the whole
-    ``[project.optional-dependencies]`` table, stripped lines, Jinja lines included.
+    Read as text, since a Jinja template is not TOML: ``[project] dependencies``,
+    ``[project.optional-dependencies]``, ``[dependency-groups]`` and ``[tool.uv.sources]``,
+    whether written as tables, as dotted keys or as multi-line values, Jinja lines included.
     """
     if text is None:
         return None
     block: list[str] = []
     table = ""
     depth = 0
+    keep = False
     for raw in text.splitlines():
         line = raw.strip()
         if depth > 0:
-            block.append(f"{table}: {line}")
-            depth += line.count("[") - line.count("]")
+            if keep:
+                block.append(f"{table}: {line}")
+            depth += _nesting(line)
             continue
-        header = _TABLE.match(line)
-        if header and not line.startswith("[["):
-            table = header.group(1).replace(" ", "")
+        header = _TABLE.match(line) or _ARRAY_TABLE.match(line)
+        if header:
+            table = _toml_name(header.group(1))
             continue
-        if table == "project.optional-dependencies":
+        if _in_dependency_block(table):
             if line:
                 block.append(f"{table}: {line}")
+            depth = max(_nesting(line), 0)
+            keep = True
             continue
-        array = _ARRAY_KEY.match(line) if table == "project" else None
-        if array:
-            block.append(f"{table}: {line}")
-            depth = array.group(2).count("[") - array.group(2).count("]")
-            if array.group(2).strip().startswith("{"):
-                depth = array.group(2).count("{") - array.group(2).count("}")
+        key = _KEY.match(line)
+        if key:
+            name = _toml_name(f"{table}.{key.group(1)}" if table else key.group(1))
+            keep = _in_dependency_block(name)
+            if keep:
+                block.append(f"{table}: {line}")
+            depth = max(_nesting(key.group(2)), 0)
     return block
 
 
@@ -685,6 +735,9 @@ class Trust:
     # Whether the head's _commit descends from the base's on the template's main; None
     # when unchanged or not checked.
     commit_forward: bool | None = None
+    # The changed paths the template owns (rendered, skip-listed by no pattern); None
+    # when there was no render to tell.
+    owned: list[str] | None = None
 
 
 def _moves_forward(clone: Path, old: str, new_sha: str) -> bool:
@@ -756,16 +809,18 @@ def trust_rendered(
             note = f"render failed, nothing is trusted: {exc}"
             return Trust([], commit, note, commit_forward=forward)
         trusted: list[str] = []
+        owned: list[str] = []
         for path in changed:
             if matches_any(path, patterns):
                 continue  # filled by the session; never trusted
-            ours = read_blob(workdir, head, path)
             rendered = dest / path
-            if ours is None or rendered.is_symlink() or not rendered.is_file():
-                continue
-            if rendered.read_bytes() == ours:
+            if rendered.is_symlink() or not rendered.is_file():
+                continue  # the template does not render it
+            owned.append(path)
+            ours = read_blob(workdir, head, path)
+            if ours is not None and rendered.read_bytes() == ours:
                 trusted.append(path)
-    return Trust(trusted, commit, None, sha, forward)
+    return Trust(trusted, commit, None, sha, forward, owned)
 
 
 # --- classification ----------------------------------------------------------------------
@@ -829,10 +884,23 @@ def classify(
     if name == ORG_REPOSITORY:
         add(Finding(3, f"every pull request of {repo} is human"))
     protected = PROTECTED + PROTECTED_BY_REPO.get(name, ())
+    if is_source(name):
+        protected += SOURCE_PROTECTED
     for path in remaining:
         hits = [p for p in protected if is_protected(path, p)]
         if hits:
             add(Finding(3, f"protected path {path} (matches {hits[0]})"))
+            continue
+        # An adapter changed by hand could expose tasks around rule 4.
+        if is_source(name) and path.startswith("src/"):
+            if trust.owned is not None and path in trust.owned:
+                add(Finding(3, f"{path} is template-owned and differs from the render"))
+            elif trust.owned is None and ADAPTER_MODULES.fullmatch(path):
+                add(Finding(3, f"{path} is template-owned and no render could compare it"))
+        # Jinja in a name can render to any path, a protected one included.
+        jinja = "{{" in path or "{%" in path
+        if name == "sdk-template" and path.startswith(TEMPLATE_DIR) and jinja:
+            add(Finding(3, f"{path} carries Jinja in its name under {TEMPLATE_DIR}"))
     if name == "sdk-template" and TEMPLATE_PYPROJECT in remaining:
         before = read_blob(workdir, fork, TEMPLATE_PYPROJECT)
         after = read_blob(workdir, head_sha, TEMPLATE_PYPROJECT)

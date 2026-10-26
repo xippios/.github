@@ -126,6 +126,7 @@ def source_base(template: Path) -> dict[str, str | None]:
         "src/xippios/usda/psd/__init__.py": "",
         "src/xippios/usda/psd/_client.py": "client\n",
         "src/xippios/usda/psd/mcp.py": "mcp v1\n",
+        "src/xippios/usda/psd/http.py": "http v1\n",
         "src/xippios/usda/psd/tasks.py": '__all__ = ["get_data"]\n',
         "src/xippios/usda/psd/reference/README.md": "reference\n",
         "tests/conftest.py": "conftest v1\n",
@@ -143,9 +144,11 @@ def rendered(template: Path) -> dict[str, str]:
         "README.md": "readme stub\n",
         "src/xippios/usda/psd/_client.py": "client stub\n",
         "src/xippios/usda/psd/mcp.py": "mcp v2\n",
+        "src/xippios/usda/psd/http.py": "http v2\n",
         "src/xippios/usda/psd/tasks.py": "__all__: list[str] = []\n",
         "src/xippios/usda/psd/reference/README.md": "reference stub\n",
         "tests/conftest.py": "conftest v2\n",
+        ".claude/commands/add-endpoint.md": "add an endpoint v2\n",
     }
 
 
@@ -233,6 +236,9 @@ def test_template_owned_file_identical_to_the_render_is_trusted(
     result = classify(pr, render=FakeRender(rendered(template)), template=template)
     assert result.trusted == ["tests/conftest.py"]
     assert result.remaining == ["src/xippios/usda/psd/mcp.py"]
+    assert [f.text for f in result.findings if f.human] == [
+        "src/xippios/usda/psd/mcp.py is template-owned and differs from the render"
+    ]
     assert result.template_ref == "v0.1.0"  # the head's _commit
     assert result.template_sha == git(template, "rev-parse", "v0.1.0^{commit}")
 
@@ -490,6 +496,13 @@ def test_commit_change_without_the_template_is_human(tmp_path: Path, template: P
         "docs/conventions.md",
         "docs/adr/0024-something.md",
         "docs/review-checklist.md",
+        "docs/definition-of-done.md",
+        ".claude/settings.local.json",
+        ".claude/agents/reviewer.md",
+        ".claude/hooks/guard.py",
+        ".claude/commands/add-endpoint.md",
+        ".mcp.json",
+        "CLAUDE.local.md",
     ],
 )
 def test_protected_path_is_human(tmp_path: Path, template: Path, path: str) -> None:
@@ -497,6 +510,56 @@ def test_protected_path_is_human(tmp_path: Path, template: Path, path: str) -> N
     result = classify(pr)
     assert result.merge_class == mc.HUMAN
     assert human_rules(result) == {3}
+
+
+def test_rendered_command_is_trusted_when_identical_and_human_when_edited(
+    tmp_path: Path, template: Path
+) -> None:
+    path = ".claude/commands/add-endpoint.md"
+    for content, expected in (("add an endpoint v2\n", mc.AUTO), ("edited by hand\n", mc.HUMAN)):
+        root = tmp_path / expected
+        root.mkdir()
+        pr = make_pr(root, source_base(template), {path: content})
+        result = classify(pr, render=FakeRender(rendered(template)), template=template)
+        assert result.merge_class == expected
+        assert (path in result.trusted) is (expected == mc.AUTO)
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "human"),
+    [
+        ("src/xippios/usda/psd/mcp.py", "mcp v2, edited\n", True),
+        ("src/xippios/usda/psd/http.py", None, True),  # deleted
+        ("src/xippios/usda/psd/_client.py", "client, fixed\n", False),  # skip-listed
+        ("src/xippios/usda/psd/models.py", "models\n", False),  # not rendered
+    ],
+)
+def test_template_owned_src_file_that_differs_from_the_render_is_human(
+    tmp_path: Path, template: Path, path: str, content: str | None, human: bool
+) -> None:
+    """Rule 3: an adapter changed by hand could expose tasks around rule 4."""
+    pr = make_pr(tmp_path, source_base(template), {path: content})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert human_rules(result) == ({3} if human else set())
+
+
+@pytest.mark.parametrize(
+    ("path", "human"),
+    [
+        ("src/xippios/usda/psd/mcp.py", True),
+        ("src/xippios/usda/psd/http.py", True),
+        ("src/xippios/usda/psd/_version.py", True),
+        ("src/xippios/usda/psd/api/__init__.py", True),
+        ("src/xippios/usda/psd/api/get_data.py", False),
+        ("src/xippios/usda/psd/_client.py", False),
+    ],
+)
+def test_without_a_render_the_adapters_are_template_owned_by_name(
+    tmp_path: Path, template: Path, path: str, human: bool
+) -> None:
+    pr = make_pr(tmp_path, source_base(template), {path: "edited\n"})
+    result = classify(pr)
+    assert human_rules(result) == ({3} if human else set())
 
 
 @pytest.mark.parametrize(("repo", "expected"), [("xippios/sdk-core", mc.HUMAN), (SOURCE, mc.AUTO)])
@@ -534,6 +597,19 @@ xippios-{{ source_slug }}-mcp = "xippios.{{ source_pkg }}.mcp:run"
 {% if needs_write_tools %}
 xippios-{{ source_slug }}-mcp-write = "xippios.{{ source_pkg }}.mcp_write:run"
 {% endif %}
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.uv.sources]
+{% if core_git_ref %}
+xippios-core = { git = "https://github.com/xippios/sdk-core", rev = "{{ core_git_ref }}" }
+{% endif %}
 """
 
 
@@ -559,9 +635,21 @@ def template_repo_files() -> dict[str, str | None]:
             'http = ["xippios-core[http]~={{ core_version }}", "uvicorn"]\n',
             True,
         ),
+        ('  "pytest>=8",\n', '  "pytest>=8",\n  "evil-plugin",\n', True),
+        ('rev = "{{ core_git_ref }}"', 'rev = "{{ core_git_ref }}", subdirectory = "x"', True),
+        ("[tool.uv.sources]\n", "[tool.uv.sources]\nother = { path = '../other' }\n", True),
         ('description = "Typed client', 'description = "A typed client', False),
+        ("line-length = 100", "line-length = 120", False),
     ],
-    ids=["dependencies", "optional-dependencies", "description"],
+    ids=[
+        "dependencies",
+        "optional-dependencies",
+        "dependency-groups",
+        "uv-sources",
+        "uv-sources-added",
+        "description",
+        "tool-ruff",
+    ],
 )
 def test_template_dependency_block_is_protected(
     tmp_path: Path, old: str, new: str, protected: bool
@@ -582,13 +670,28 @@ def test_template_dependency_block_is_protected(
     ("path", "protected"),
     [
         ("copier.yml", True),
+        ("copier.yaml", True),
         ("scripts/new-source.sh", True),
         ("template/.github/workflows/ci.yml", True),
+        ("template/.github/workflows/live.yml.jinja", True),
         ("template/.claude/settings.json", True),
+        ("template/.claude/settings.local.json", True),
+        ("template/.claude/agents/reviewer.md.jinja", True),
+        ("template/.claude/hooks/guard.py", True),
         ("template/.claude/commands/add-endpoint.md.jinja", True),
+        ("template/.mcp.json.jinja", True),
+        ("template/CLAUDE.local.md", True),
         ("template/.pre-commit-config.yaml", True),
         ("template/.secrets.baseline", True),
+        ("template/docs/conventions.md", True),
+        ("template/docs/adr/0001-layers.md", True),
+        ("template/docs/review-checklist.md.jinja", True),
+        ("template/docs/definition-of-done.md", True),
+        ("template/src/xippios/{{ package_dir }}/mcp.py.jinja", True),  # Jinja in the name
+        ("template/{{ _copier_conf.answers_file }}.jinja", True),
+        ("template/{% if x %}.github{% endif %}/ci.yml", True),
         ("template/README.md.jinja", False),
+        ("template/docs/upstream/FETCHED.md.jinja", False),
         ("tests/test_template.py", False),
     ],
 )
