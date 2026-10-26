@@ -4,9 +4,9 @@
 # in README.md and scripts/merge_class.py.
 #
 # Two wirings (decided 2026-10-26): required by a ruleset as a workflow (`on: pull_request`,
-# check `merge-class`), or called as a job from a repository's ci.yml (`on: workflow_call`,
-# check `merge-class / merge-class`). The caller runs on `pull_request` too, so
-# `github.event.pull_request` is there either way. The classifier is always read from main
+# check `merge-class`), or called as a job from a repository's caller workflow, gates.yml
+# (`on: workflow_call`, check `merge-class / merge-class`). The caller runs on
+# `pull_request` too, so `github.event.pull_request` is there either way. The classifier is always read from main
 # of xippios/.github, never from the pull request, so it changes only through a PR here.
 #
 # `edited` is among the types because a change of the base branch arrives as `edited`.

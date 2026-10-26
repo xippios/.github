@@ -11,7 +11,7 @@ classifier behind the first. GitHub decides what merges: `ci`, `merge-class` and
   with `scripts/merge_class.py`, always read from `main` of this repository. `auto` passes
   the check; `human` fails it, with the rules hit, the trusted files and the remaining
   changed files in the job summary. Permissions: `contents: read`. The job times out
-  after 20 minutes; the template clone and the render each after 5.
+  after 20 minutes; the template clone, the render and the sdk-core clone each after 5.
 - **`.github/workflows/family-review.yml`** runs the Claude Code action
   (`anthropics/claude-code-action`, v1.0.262). It applies `docs/review-checklist.md` from
   `main` of `xippios/sdk-core`, in order, to the pull request's diff, reading the
@@ -108,7 +108,9 @@ reason is reported.
      is built and installed from or what it installs, `[build-system]`, `[tool.uv]`
      (index, sources, override-dependencies, ...), `[project.scripts]`,
      `[project.gui-scripts]` or `[project.entry-points.*]` ("build or install routes
-     changed"). The dependency lists stay free.
+     changed"). The dependency lists stay free. `.github/**` protects the workflow
+     definitions, not the code a workflow runs with a secret: the tests and scripts that
+     `live.yml` runs with a key can merge `auto`, and the family review reads them.
    - In a source, also a template-owned file under `src/` that differs from the render
      (an adapter changed by hand, which could expose tasks around rule 4); without a
      render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
@@ -155,37 +157,48 @@ workflows carry `on: pull_request` (types `opened`, `synchronize`, `reopened`, `
 | Wiring | Merge class check | Review check |
 | --- | --- | --- |
 | Required workflow (a ruleset requires the workflow from this repository, `ref` `main`) | `merge-class` | `family-review` |
-| Caller (a repository's `ci.yml` calls the workflow as a job) | `merge-class / merge-class` | `family-review / family-review` |
+| Caller (a repository's `gates.yml` calls the workflow as a job) | `merge-class / merge-class` | `family-review / family-review` |
 
-In caller mode a repository's `ci.yml`, which runs on `pull_request`, adds these two jobs;
-the `if` keeps them off `push` runs, which carry no pull request. A caller's
-`on: pull_request` without `types` runs on `opened`, `synchronize` and `reopened` only, so
-it adds `types: [opened, synchronize, reopened, edited]` to have the review see a changed
-description:
+In caller mode a repository carries its own caller file, `.github/workflows/gates.yml`,
+beside `ci.yml`. It runs on `pull_request` with
+`types: [opened, synchronize, reopened, edited]`: a caller's `on: pull_request` without
+`types` runs on the first three only, and `edited` matters to both gates, to the review
+because the description is judged and to `merge-class` because a change of the base
+branch arrives as `edited`. It passes the review exactly one secret, never
+`secrets: inherit`:
 
 ```yaml
+name: gates
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
   merge-class:
-    if: github.event_name == 'pull_request'
     uses: xippios/.github/.github/workflows/merge-class.yml@main
     permissions:
       contents: read
 
   family-review:
-    if: github.event_name == 'pull_request'
     uses: xippios/.github/.github/workflows/family-review.yml@main
-    secrets: inherit
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     permissions:
       contents: read
       pull-requests: write
       checks: read
 ```
 
-Caller mode is **not a boundary**: the check contexts come from the caller's own `ci.yml`
-on the pull request's head, and a ruleset cannot tell those jobs from any other Actions
-job of the same name, so a pull request that edits `ci.yml` can replace the call with a
-job that merely passes. Only the required-workflow wiring reads the gate from this
-repository whatever the pull request changes; the choice if the editor does not offer it
-is Johannes's at gate 2.
+Caller mode is **not a boundary**: the check contexts come from the caller's own
+`gates.yml` on the pull request's head, and a ruleset cannot tell those jobs from any
+other Actions job of the same name, so a pull request that edits `gates.yml` can replace
+the call with a job that merely passes. Only the required-workflow wiring reads the gate
+from this repository whatever the pull request changes; the choice if the editor does not
+offer it is Johannes's at gate 2.
 
 ## Rulesets
 
@@ -197,7 +210,7 @@ is Johannes's at gate 2.
 - **`sdk-merge-class`** (org branch ruleset, same targets): requires the merge-class check
   and nothing else. Bypass actor Johannes, mode "pull requests only": the bypass button
   is how a `human` pull request merges, and it bypasses nothing but the class. In caller
-  mode it is created once every repository's `ci.yml` carries the `merge-class` job.
+  mode it is created once every repository carries `gates.yml`.
 - **Tag ruleset** on `refs/tags/v*` of the `sdk-*` repositories: creation, update and
   deletion restricted; bypass actors GitHub Actions, so the release workflow can tag (or,
   where the editor does not offer it, the App whose installation token that workflow

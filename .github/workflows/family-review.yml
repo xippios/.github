@@ -13,8 +13,9 @@
 # verdict.
 #
 # Two wirings (decided 2026-10-26): required by a ruleset as a workflow (`on: pull_request`,
-# check `family-review`), or called as a job from a repository's ci.yml with
-# `secrets: inherit` (`on: workflow_call`, check `family-review / family-review`).
+# check `family-review`), or called as a job from a repository's caller workflow, gates.yml,
+# which passes ANTHROPIC_API_KEY alone (`on: workflow_call`, check
+# `family-review / family-review`).
 #
 # The gate, in order: a Dependabot pull request (author and actor both `dependabot[bot]`)
 # ends green, reviewed by `ci` only, since Dependabot runs get no Actions secrets. With the
