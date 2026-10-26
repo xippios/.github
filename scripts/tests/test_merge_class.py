@@ -247,7 +247,7 @@ def test_scaffold_pr_is_human(tmp_path: Path) -> None:
     )
     result = classify(pr)
     assert result.merge_class == mc.HUMAN
-    assert human_rules(result) == {1}
+    assert human_rules(result) == {1, 4}  # no tasks.py on the base: the bootstrap too
 
 
 def test_ordinary_source_pr_is_auto(tmp_path: Path, template: Path) -> None:
@@ -894,7 +894,11 @@ def test_without_a_render_the_adapters_are_template_owned_by_name(
 def test_src_is_protected_in_core_only(tmp_path: Path, repo: str, expected: str) -> None:
     pr = make_pr(
         tmp_path,
-        {"src/xippios/core/result.py": "v1\n", "pyproject.toml": PYPROJECT.format(version="1")},
+        {
+            "src/xippios/core/result.py": "v1\n",
+            "src/xippios/core/tasks.py": '__all__ = ["get"]\n',  # no bootstrap in a source
+            "pyproject.toml": PYPROJECT.format(version="1"),
+        },
         {"src/xippios/core/result.py": "v2\n"},
     )
     assert classify(pr, repo=repo).merge_class == expected
@@ -1195,8 +1199,52 @@ def test_first_surface(
         del base["src/xippios/usda/psd/tasks.py"]
     pr = make_pr(tmp_path, base, {"src/xippios/usda/psd/tasks.py": after})
     result = classify(pr)
-    assert (4 in human_rules(result)) is first
-    assert result.merge_class == (mc.HUMAN if first else mc.AUTO)
+    texts = [f.text for f in result.findings if f.human]
+    assert any(text.startswith("first surface:") for text in texts) is first
+    # A base that exports nothing is still in its bootstrap: any change under src/ is human.
+    bootstrap = before is None or "get_data" not in before
+    assert result.merge_class == (mc.HUMAN if first or bootstrap else mc.AUTO)
+
+
+@pytest.mark.parametrize(
+    ("tasks", "repo", "human"),
+    [
+        ("__all__: list[str] = []\n", SOURCE, True),
+        (None, SOURCE, True),
+        ("__all__ = sorted(globals())\n", SOURCE, True),  # unreadable exports nothing known
+        ('__all__ = ["get_data"]\n', SOURCE, False),
+        ("__all__: list[str] = []\n", "xippios/sdk-core", False),
+    ],
+    ids=["empty", "absent", "unreadable", "exports", "not-a-source"],
+)
+def test_bootstrap_makes_every_src_change_human(
+    tmp_path: Path, template: Path, tasks: str | None, repo: str, human: bool
+) -> None:
+    """Rule 4's static reading has limits; while the base exports no task, src/ is human."""
+    base = source_base(template)
+    base["src/xippios/usda/psd/tasks.py"] = tasks
+    if tasks is None:
+        del base["src/xippios/usda/psd/tasks.py"]
+    changes: dict[str, str | None] = {
+        "src/xippios/usda/psd/models.py": "models\n",
+        "tests/test_models.py": "ok\n",
+    }
+    pr = make_pr(tmp_path, base, changes)
+    result = classify(pr, repo=repo)
+    texts = [f.text for f in result.findings if f.human and f.rule == 4]
+    expected = "bootstrap: no tasks.py on the base exports a task, and src/ changes: "
+    assert texts == ([expected + "src/xippios/usda/psd/models.py"] if human else [])
+
+
+def test_bootstrap_spares_a_src_file_identical_to_the_render(
+    tmp_path: Path, template: Path
+) -> None:
+    base = source_base(template)
+    base["src/xippios/usda/psd/tasks.py"] = "__all__: list[str] = []\n"
+    pr = make_pr(tmp_path, base, {"src/xippios/usda/psd/mcp.py": "mcp v2\n"})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == ["src/xippios/usda/psd/mcp.py"]
+    assert result.merge_class == mc.AUTO
 
 
 def test_unreadable_all_is_human(tmp_path: Path, template: Path) -> None:
@@ -1308,7 +1356,12 @@ def test_every_reason_is_reported(tmp_path: Path, template: Path) -> None:
     changes[".github/workflows/extra.yml"] = "x\n"
     pr = make_pr(tmp_path, base, changes)
     result = classify(pr)
-    assert [f.rule for f in result.findings if f.human] == [3, 4, 5]
+    assert [f.rule for f in result.findings if f.human] == [
+        3,
+        4,
+        4,
+        5,
+    ]  # 4: first surface, bootstrap
 
 
 # --- command line ------------------------------------------------------------------------

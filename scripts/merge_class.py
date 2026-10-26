@@ -25,7 +25,8 @@ collected; the first ``human`` decides the class, the later ones only add to the
    and any changed line of it that carries Jinja; in ``xippios/.github`` every pull
    request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
-   names at least one task.
+   names at least one task. Bootstrap: in a source whose base exports no task, any
+   changed file under ``src/``.
 5. Release: the ``[project]`` version of ``pyproject.toml`` changed, and what remains is
    not a subset of the release files.
 6. Otherwise ``auto``.
@@ -254,6 +255,12 @@ def tree_entry(workdir: Path, rev: str, path: str) -> tuple[str, str, str] | Non
             mode, kind, obj = meta.split()
             return mode, kind, obj
     return None
+
+
+def list_files(workdir: Path, rev: str, path: str) -> list[str]:
+    """Every file path under the directory ``path`` at ``rev``."""
+    out = _git(workdir, "ls-tree", "-r", "-z", "--name-only", "--full-tree", rev, "--", path)
+    return [p for p in out.stdout.decode("utf-8", errors="surrogateescape").split("\0") if p]
 
 
 def read_blob(workdir: Path, rev: str, path: str) -> bytes | None:
@@ -1222,6 +1229,20 @@ def classify(
             add(Finding(4, f"cannot read __all__ of {path} statically"))
         elif not before_names and after_names:
             add(Finding(4, f"first surface: {path} exports {', '.join(after_names)}"))
+    # The static reading has limits (an adapter, a module the tasks import, a name bound at
+    # run time): while the base exports no task, any change under src/ is human.
+    if is_source(name):
+        base_tasks = [p for p in list_files(workdir, fork, "src") if TASKS_MODULE.fullmatch(p)]
+        exported = any(exported_names(read_blob(workdir, fork, p)) for p in base_tasks)
+        bootstrap = [p for p in remaining if p.startswith("src/")]
+        if not exported and bootstrap:
+            add(
+                Finding(
+                    4,
+                    "bootstrap: no tasks.py on the base exports a task, and src/ changes: "
+                    + ", ".join(bootstrap),
+                )
+            )
 
     # 5. Release
     if "pyproject.toml" in changed:

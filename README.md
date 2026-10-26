@@ -117,7 +117,11 @@ reason is reported.
    call, a def, a loop, a read that could alias it), a star import, a module
    `__getattr__`, an `"__all__"` string (`globals()["__all__"]`,
    `setattr(sys.modules[...], "__all__", ...)`), `globals`, `vars`, `locals`, `setattr`,
-   `exec`, `eval`, `__import__`, `sys.modules` or `__dict__`.
+   `exec`, `eval`, `__import__`, `sys.modules` or `__dict__`. That static reading has
+   limits (an adapter, a module the tasks import, a name bound at run time), so in a
+   source whose base exports no task from any `tasks.py` (empty, absent or unreadable
+   `__all__`), every changed file under `src/` that remains after rule 2 is `human` too:
+   the bootstrap closes them until the first surface has merged.
 5. **Release**: when the `[project]` version of `pyproject.toml` changes, what remains
    must be a subset of `pyproject.toml`, `uv.lock`, `CHANGELOG.md`, `README.md`,
    `CLAUDE.md`, `docs/handover.md` and `scripts/check-siblings.sh`; else `human`.
