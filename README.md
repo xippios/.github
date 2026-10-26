@@ -75,9 +75,13 @@ reason is reported.
    **Answers**: a change to `.copier-answers.yml` other than `_commit` moving forward
    along the template's `main` (the base's `_commit` an ancestor of the head's),
    `core_version` or `core_git_ref` is a session change: `human`, with the keys as the
-   reason. `_commit` moving to an older or an unrelated commit is `human`, and so is any
-   `_commit` change the template could not be checked for (`--no-render`, a failed
-   clone, a `_commit` the render refused).
+   reason. An answer the base lacks (a question a template release added) is free when
+   its value equals the question's literal default (one plain or quoted scalar without
+   `{{` or `{%`) in the template's `copier.yml` at the head's `_commit`; with another
+   value, a Jinja default or a question unknown there it is `human` ("answers added with
+   non-default values"). `_commit` moving to an older or an unrelated commit is `human`,
+   and so is any `_commit` change or added answer the template could not be checked for
+   (`--no-render`, a failed clone, a `_commit` the render refused).
 3. **Protected paths** in what remains: `human`.
    - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the

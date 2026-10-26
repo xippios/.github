@@ -13,7 +13,8 @@ collected; the first ``human`` decides the class, the later ones only add to the
    the SHA ``_commit`` resolves to on the template's main. A render that fails trusts
    nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
-   ``human``.
+   ``human``; an answer the base lacks (a question a template release added) is free
+   when it equals the question's literal default at the head's ``_commit``.
 3. Protected paths in what remains; in a source, also a template-owned file under
    ``src/`` that differs from the render (an adapter changed by hand); in sdk-template,
    the template origin of every path protected in a source, any path under ``template/``
@@ -48,7 +49,7 @@ import subprocess
 import sys
 import tempfile
 import tomllib
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -419,16 +420,129 @@ def answers_commit(source: bytes | None) -> str | None:
     return answer_scalar(answer_entries(_text(source)), "_commit") if source is not None else None
 
 
-def answer_changes(before: bytes | None, after: bytes | None, forward: bool | None) -> list[str]:
+_QUOTED = re.compile(r"""(?:'((?:[^']|'')*)'|"([^"\\]*)")\s*(?:#.*)?""")
+# Jinja that copier renders in a default: a value carrying it is no literal.
+_JINJA = ("{{", "{%", "{#")
+# A plain scalar YAML may load as something other than a string: null, a boolean (YAML 1.1
+# words included), a number or a date.
+_TYPED = re.compile(r"~|null|true|false|yes|no|on|off|y|n|[-+]?\.?\d.*|[-+]?\.(?:inf|nan)", re.I)
+
+
+@dataclass(frozen=True)
+class Scalar:
+    """A one-line YAML scalar: its text, and whether it was quoted."""
+
+    text: str
+    quoted: bool
+
+    def same(self, other: Scalar) -> bool:
+        """Whether both load as the same value (``1`` is no ``'1'``, ``abc`` is ``"abc"``).
+
+        Equal text, and equal quoting unless the plain one can only be a string.
+        """
+        if self.text != other.text:
+            return False
+        return self.quoted == other.quoted or not _TYPED.fullmatch(self.text)
+
+
+def literal_scalar(value: str) -> Scalar | None:
+    """The scalar a one-line YAML value spells when it is a literal, else None.
+
+    A literal is a plain scalar or a quoted one without escapes, a trailing comment
+    allowed, and no Jinja: not empty (null), not a block scalar, a flow collection, an
+    anchor, an alias or a tag.
+    """
+    text = value.strip()
+    if not text or text[0] in "|>[{&*!#":
+        return None
+    if text[0] in "'\"":
+        match = _QUOTED.fullmatch(text)
+        if match is None:
+            return None
+        double = match.group(1) is None
+        scalar = Scalar(match.group(2) if double else match.group(1).replace("''", "'"), True)
+    else:
+        scalar = Scalar(re.sub(r"\s+#.*$", "", text), False)
+    return None if any(mark in scalar.text for mark in _JINJA) else scalar
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _mapping_default(body: Sequence[str]) -> Scalar | None:
+    """The literal ``default`` of a question written as a block mapping, else None."""
+    content = [line for line in body if line.strip() and not line.lstrip().startswith("#")]
+    if not content or _indent(content[0]) == 0:
+        return None
+    level = _indent(content[0])
+    found: list[Scalar | None] = []
+    for i, line in enumerate(content):
+        match = re.fullmatch(r"default\s*:(.*)", line.strip())
+        if _indent(line) != level or match is None:
+            continue
+        continued = i + 1 < len(content) and _indent(content[i + 1]) > level
+        found.append(None if continued else literal_scalar(match.group(1)))
+    return found[0] if len(found) == 1 else None
+
+
+def question_defaults(copier_yml: str) -> dict[str, Scalar | None]:
+    """Each question of a copier.yml with its literal default; None when it has none.
+
+    A question is a top-level key not starting with ``_``. Its default is the value of
+    ``default`` in its mapping, or, in the short form ``name: value``, the value itself;
+    it counts only as a literal (``literal_scalar``). A question defined twice has none.
+    """
+    defaults: dict[str, Scalar | None] = {}
+    for key, lines in answer_entries(copier_yml):
+        if key is None or key.startswith("_"):
+            continue
+        rest = lines[0].split(":", 1)[1].strip()
+        if rest and not rest.startswith("#"):
+            value = literal_scalar(rest)
+        else:
+            value = _mapping_default(lines[1:])
+        defaults[key] = None if key in defaults else value
+    return defaults
+
+
+def _is_default(lines: Sequence[str], default: Scalar | None) -> bool:
+    """Whether an answer's lines are one literal equal to its question's literal default."""
+    if default is None or len(lines) != 1:
+        return False
+    value = lines[0].split(":", 1)[1]
+    # YAML reads `key:value` as one plain scalar, not as a key and its value.
+    answer = literal_scalar(value) if value[:1].isspace() else None
+    return answer is not None and answer.same(default)
+
+
+def answer_changes(
+    before: bytes | None,
+    after: bytes | None,
+    forward: bool | None,
+    defaults: Mapping[str, Scalar | None] | None = None,
+) -> list[str]:
     """Rule 2's human reasons for a change to the answers file.
 
     ``forward`` says whether the head's ``_commit`` descends from the base's on the
     template's main: None when the template could not be checked (``--no-render``, a
     failed clone, a ``_commit`` the render refused), which leaves any change human.
+    ``defaults`` are the template's questions at the head's ``_commit`` with their
+    literal defaults (``question_defaults``), None when the template could not be read:
+    an answer the base lacks is free when it equals its question's literal default, and
+    human with another value, a default that is not literal, or a question unknown there.
     """
     old, new = answer_table(before), answer_table(after)
     keys = sorted(k for k in (old.keys() | new.keys()) - FREE_ANSWERS if old.get(k) != new.get(k))
-    reasons = [f"answers changed: {', '.join(keys)}"] if keys else []
+    changed = [k for k in keys if k in old]
+    added = [k for k in keys if k not in old]
+    if defaults is not None:
+        added = [k for k in added if not _is_default(new[k], defaults.get(k))]
+    reasons = [f"answers changed: {', '.join(changed)}"] if changed else []
+    if added and defaults is not None:
+        reasons.append(f"answers added with non-default values: {', '.join(added)}")
+    elif added:
+        reasons.append(f"answers added, not checked against the template: {', '.join(added)}")
     if old.get("_commit") != new.get("_commit"):
         old_commit, new_commit = answers_commit(before), answers_commit(after)
         if (old_commit is None or old_commit != new_commit) and forward is not True:
@@ -748,12 +862,12 @@ def _on_main(clone: Path, commit: str) -> str:
     return sha
 
 
-def _skip_list(clone: Path, sha: str) -> list[str]:
-    """The ``_skip_if_exists`` patterns of the template's copier.yml at ``sha``."""
+def _copier_yml(clone: Path, sha: str) -> str:
+    """The template's copier.yml at ``sha``."""
     for name in ("copier.yml", "copier.yaml"):
         content = read_blob(clone, sha, name)
         if content is not None:
-            return skip_patterns(content.decode())
+            return content.decode()
     raise RenderError(f"the template has no copier.yml at {sha}")
 
 
@@ -775,6 +889,9 @@ class Trust:
     # The changed paths the template owns (rendered, skip-listed by no pattern); None
     # when there was no render to tell.
     owned: list[str] | None = None
+    # The template's questions at the head's _commit with their literal defaults; None
+    # when its copier.yml could not be read there.
+    defaults: dict[str, Scalar | None] | None = None
 
 
 def _moves_forward(clone: Path, old: str, new_sha: str) -> bool:
@@ -822,12 +939,15 @@ def trust_rendered(
     with tempfile.TemporaryDirectory(prefix="merge-class-") as tmp:
         scratch = Path(tmp)
         forward: bool | None = None
+        defaults: dict[str, Scalar | None] | None = None
         try:
             clone = _clone_template(template_url, scratch)
             sha = _on_main(clone, commit)
             if base_commit is not None and base_commit != commit:
                 forward = _moves_forward(clone, base_commit, sha)
-            raw_patterns = _skip_list(clone, sha)
+            copier_yml = _copier_yml(clone, sha)
+            defaults = question_defaults(copier_yml)
+            raw_patterns = skip_patterns(copier_yml)
             package_dir = import_path.replace(".", "/")
             rendered_patterns = [
                 re.sub(r"\{\{\s*package_dir\s*\}\}", package_dir, p) for p in raw_patterns
@@ -844,7 +964,7 @@ def trust_rendered(
             renderer(template_url, sha, data_file, dest)
         except RenderError as exc:
             note = f"render failed, nothing is trusted: {exc}"
-            return Trust([], commit, note, commit_forward=forward)
+            return Trust([], commit, note, commit_forward=forward, defaults=defaults)
         trusted: list[str] = []
         owned: list[str] = []
         root = dest.resolve()
@@ -867,7 +987,7 @@ def trust_rendered(
             ours = _git(workdir, "cat-file", "blob", entry[2]).stdout
             if entry[0] == mode and rendered.read_bytes() == ours:
                 trusted.append(path)
-    return Trust(trusted, commit, None, sha, forward, owned)
+    return Trust(trusted, commit, None, sha, forward, owned, defaults)
 
 
 # --- classification ----------------------------------------------------------------------
@@ -926,7 +1046,8 @@ def classify(
         add(Finding(2, trust.note, human=False))
     # Over the changed set, not what remains: the render writes the answers back as they are.
     if ANSWERS_FILE in changed:
-        for reason in answer_changes(before_answers, after_answers, trust.commit_forward):
+        forward, defaults = trust.commit_forward, trust.defaults
+        for reason in answer_changes(before_answers, after_answers, forward, defaults):
             add(Finding(2, reason))
     remaining = [p for p in changed if p not in set(trust.trusted)]
     result.remaining = remaining

@@ -32,6 +32,29 @@ _skip_if_exists:
 _message_after_copy: done
 """
 
+# Template v0.2.0 asks more, as the real one did: rate_limit_burst and rate_limit_provenance
+# with literal defaults, and here api_title with a Jinja default.
+QUESTIONS_V2 = """\
+rate_limit_burst:
+  type: int
+  help: >-
+    Requests the limiter lets through at once
+  default: 1
+
+rate_limit_provenance:
+  type: str
+  choices:
+    documented by upstream: documented
+    self-imposed, upstream documents no limit: self-imposed
+  default: documented
+
+api_title:
+  type: str
+  default: "{{ source_slug }} API"
+
+"""
+COPIER_YML_V2 = COPIER_YML.replace("_subdirectory:", QUESTIONS_V2 + "_subdirectory:")
+
 PYPROJECT = """\
 [project]
 name = "xippios-usda-psd"
@@ -88,7 +111,7 @@ def template(tmp_path: Path) -> Path:
     git(repo, "init", "-q", "-b", "main")
     commit(repo, {"copier.yml": COPIER_YML}, "v0.1.0")
     git(repo, "tag", "v0.1.0")
-    commit(repo, {"CHANGELOG.md": "0.2.0\n"}, "v0.2.0")
+    commit(repo, {"copier.yml": COPIER_YML_V2, "CHANGELOG.md": "0.2.0\n"}, "v0.2.0")
     git(repo, "tag", "v0.2.0")
     git(repo, "checkout", "-q", "-b", "rogue")
     commit(repo, {"copier.yml": "_skip_if_exists: []\n"}, "never merged")
@@ -98,7 +121,11 @@ def template(tmp_path: Path) -> Path:
 
 
 def answers(
-    src_path: Path | str, ref: str = "v0.2.0", core: str = "0.2.0", slug: str = "usda-psd"
+    src_path: Path | str,
+    ref: str = "v0.2.0",
+    core: str = "0.2.0",
+    slug: str = "usda-psd",
+    extra: str = "",
 ) -> str:
     return (
         "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n"
@@ -108,6 +135,7 @@ def answers(
         f"core_version: {core}\n"
         "import_path: usda.psd\n"
         f"source_slug: {slug}\n"
+        f"{extra}"
     )
 
 
@@ -548,6 +576,136 @@ def test_commit_change_without_the_template_is_human(tmp_path: Path, template: P
     assert [f.text for f in result.findings if f.human and f.rule == 2] == [
         "_commit changes from v0.1.0 to v0.2.0, not checked against the template"
     ]
+
+
+NON_DEFAULT = "answers added with non-default values: "
+
+
+@pytest.mark.parametrize(
+    ("added", "reasons"),
+    [
+        ("rate_limit_burst: 1\n", []),
+        ("rate_limit_provenance: 'documented'\n", []),
+        ("rate_limit_burst: 2\n", [NON_DEFAULT + "rate_limit_burst"]),
+        ("rate_limit_burst: '1'\n", [NON_DEFAULT + "rate_limit_burst"]),
+        ("rate_limit_burst:1\n", [NON_DEFAULT + "rate_limit_burst"]),
+        ("api_title: usda-psd API\n", [NON_DEFAULT + "api_title"]),
+        ("api_title: '{{ source_slug }} API'\n", [NON_DEFAULT + "api_title"]),
+        ("not_asked: x\n", [NON_DEFAULT + "not_asked"]),
+        (
+            "rate_limit_burst: 1\nrate_limit_provenance: self-imposed\n",
+            [NON_DEFAULT + "rate_limit_provenance"],
+        ),
+    ],
+    ids=[
+        "default",
+        "default-quoted",
+        "other-value",
+        "string-for-int",
+        "no-space",
+        "jinja-default",
+        "jinja-default-text",
+        "unknown-question",
+        "psd-7",
+    ],
+)
+def test_answer_a_template_release_adds_is_free_only_at_its_literal_default(
+    tmp_path: Path, template: Path, added: str, reasons: list[str]
+) -> None:
+    """psd #7: v0.2.0 added rate_limit_burst (1, the default) and rate_limit_provenance."""
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, extra=added)
+    files = rendered(template)
+    files[".copier-answers.yml"] = answers(template, extra=added)
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert [f.text for f in result.findings if f.human] == reasons
+    assert result.merge_class == (mc.HUMAN if reasons else mc.AUTO)
+
+
+def test_an_added_answer_is_judged_by_the_template_at_the_heads_commit(
+    tmp_path: Path, template: Path
+) -> None:
+    """v0.1.0 does not ask rate_limit_burst: added on a head at v0.1.0, it is no default."""
+    head_answers = answers(template, "v0.1.0", extra="rate_limit_burst: 1\n")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert [f.text for f in result.findings if f.human] == [NON_DEFAULT + "rate_limit_burst"]
+
+
+def test_an_added_answer_without_the_template_is_human(tmp_path: Path, template: Path) -> None:
+    head_answers = answers(template, "v0.1.0", extra="rate_limit_burst: 1\n")
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr)
+    assert [f.text for f in result.findings if f.human] == [
+        "answers added, not checked against the template: rate_limit_burst"
+    ]
+
+
+def test_question_defaults() -> None:
+    text = """\
+# a comment
+plain:
+  type: int
+  default: 1
+quoted:
+  type: str
+  default: "documented"  # a comment
+short: ''
+jinja:
+  default: "{{ other }}"
+block:
+  default: >-
+    folded
+nested:
+  choices:
+    default: not-this-one
+  help: >-
+    default: nor this
+missing:
+  type: str
+twice:
+  default: a
+twice:
+  default: a
+flow: {type: str, default: x}
+escaped:
+  default: "a\\tb"
+_settings: ignored
+"""
+    assert mc.question_defaults(text) == {
+        "plain": mc.Scalar("1", quoted=False),
+        "quoted": mc.Scalar("documented", quoted=True),
+        "short": mc.Scalar("", quoted=True),
+        "jinja": None,
+        "block": None,
+        "nested": None,
+        "missing": None,
+        "twice": None,
+        "flow": None,
+        "escaped": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("answer", "default", "same"),
+    [
+        ("1", "1", True),
+        ("documented", '"documented"', True),
+        ("''", '""', True),
+        ("'it''s'", '"it\'s"', True),
+        ("'1'", "1", False),
+        ("true", '"true"', False),
+        ("documented", "self-imposed", False),
+    ],
+)
+def test_literals_compare_as_yaml_loads_them(answer: str, default: str, same: bool) -> None:
+    left, right = mc.literal_scalar(answer), mc.literal_scalar(default)
+    assert left is not None
+    assert right is not None
+    assert left.same(right) is same
 
 
 # --- rule 3 ------------------------------------------------------------------------------
