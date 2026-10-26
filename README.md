@@ -95,11 +95,13 @@ reason is reported.
    value, a Jinja default or a question unknown there it is `human` ("answers added with
    non-default values"). `_commit` moving to an older or an unrelated commit is `human`,
    and so is any `_commit` change or added answer the template could not be checked for
-   (`--no-render`, a failed clone, a `_commit` the render refused). A `core_git_ref`
-   changed to a non-empty value must name a `v*` tag of `xippios/sdk-core`, its `main`,
-   or a commit on its `main` (read from a clone without trees and blobs; a branch other
-   than `main` can move and is no pin), else `human` ("core pinned off main"); under
-   `--no-render` or a failed clone such a change is `human` too.
+   (`--no-render`, a failed clone, a `_commit` the render refused). A non-empty
+   `core_git_ref` on the head must name a `v*` tag of `xippios/sdk-core`, its `main`, or
+   a commit on its `main` (read from a clone without trees and blobs; a branch other than
+   `main` can move and is no pin), else `human` ("core pinned off main"), whether or not
+   the pull request changes it, so every pull request is `human` while core is pinned off
+   `main`; when sdk-core cannot be cloned it is `human` too, and under `--no-render` a
+   change to a non-empty value is.
 3. **Protected paths** in what remains: `human`.
    - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the

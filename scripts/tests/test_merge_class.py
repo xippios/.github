@@ -717,13 +717,35 @@ def test_core_pin_without_the_check_is_human(tmp_path: Path, template: Path) -> 
     ]
     failed = classify(pr, render=FakeRender(files), template=template)  # no sdk-core there
     [text] = [f.text for f in failed.findings if f.human]
-    assert text.startswith("core_git_ref changes to main, not checked against sdk-core: cannot")
+    assert text.startswith("core_git_ref main not checked against sdk-core: cannot clone")
 
 
-def test_an_unchanged_or_removed_core_pin_is_not_checked(tmp_path: Path, template: Path) -> None:
+@pytest.mark.parametrize(
+    ("pin", "render", "human"),
+    [
+        ("feature", True, True),  # off main: every pull request is human until it is lifted
+        ("main", True, False),
+        ("feature", False, False),  # --no-render judges only a change of the pin
+    ],
+)
+def test_a_pin_the_pull_request_does_not_change_is_checked_too(
+    tmp_path: Path, template: Path, core: Core, pin: str, render: bool, human: bool
+) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.1.0", extra=f"core_git_ref: {pin}\n")
+    pr = make_pr(tmp_path, base, {"tests/test_new.py": "x\n"})
+    renderer = FakeRender(rendered(template)) if render else None
+    result = classify(pr, render=renderer, template=template, core=core.path)
+    reason = (
+        f"core pinned off main: core_git_ref {pin} is no commit on sdk-core's main and no v* tag"
+    )
+    assert [f.text for f in result.findings if f.human] == ([reason] if human else [])
+
+
+def test_a_removed_or_emptied_core_pin_is_free(tmp_path: Path, template: Path) -> None:
     base = source_base(template)
     base[".copier-answers.yml"] = answers(template, "v0.1.0", extra="core_git_ref: feature\n")
-    for root, extra in (("same", "core_git_ref: feature\n"), ("removed", "")):
+    for root, extra in (("removed", ""), ("emptied", "core_git_ref: ''\n")):
         (tmp_path / root).mkdir()
         head_answers = answers(template, "v0.1.0", core="0.2.1", extra=extra)
         pr = make_pr(tmp_path / root, base, {".copier-answers.yml": head_answers})

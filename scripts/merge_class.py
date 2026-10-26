@@ -14,9 +14,8 @@ collected; the first ``human`` decides the class, the later ones only add to the
    nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
    ``human``; an answer the base lacks (a question a template release added) is free
-   when it equals the question's literal default at the head's ``_commit``. A
-   ``core_git_ref`` changed to a non-empty value must name a commit on sdk-core's main or
-   a ``v*`` tag.
+   when it equals the question's literal default at the head's ``_commit``. A non-empty
+   ``core_git_ref`` on the head must name a commit on sdk-core's main or a ``v*`` tag.
 3. Protected paths in what remains; everywhere, also the build and install tables of
    ``pyproject.toml``; in a source, also a template-owned file under ``src/`` that
    differs from the render (an adapter changed by hand); in sdk-template, the template
@@ -1001,14 +1000,16 @@ def core_ref_on_main(core_url: str, ref: str) -> bool:
 def core_pin_reason(
     before: bytes | None, after: bytes | None, render: bool, core_url: str
 ) -> str | None:
-    """Rule 2's human reason against a ``core_git_ref`` the pull request sets, or None.
+    """Rule 2's human reason against the head's ``core_git_ref``, or None.
 
-    A ``core_git_ref`` changed to a non-empty value must be a ``v*`` tag of sdk-core, its
-    main, or a commit on its main (``core_ref_on_main``); one that cannot be checked
-    (``--no-render``, a failed clone) is human too. Emptied or removed, it is free.
+    A non-empty ``core_git_ref`` on the head must be a ``v*`` tag of sdk-core, its main,
+    or a commit on its main (``core_ref_on_main``), whether or not the pull request changes
+    it: while core is pinned off main, every pull request is human. One that cannot be
+    checked (a failed clone) is human too; under ``--no-render`` a change to a non-empty
+    value is. Empty or absent, there is no pin.
     """
     old, new = answer_table(before), answer_table(after)
-    if CORE_PIN not in new or old.get(CORE_PIN) == new.get(CORE_PIN):
+    if CORE_PIN not in new:
         return None
     ref = answer_scalar(answer_entries(_text(after or b"")), CORE_PIN)
     if ref == "":
@@ -1016,11 +1017,12 @@ def core_pin_reason(
     if ref is None:
         return f"core pinned off main: {CORE_PIN} is no plain scalar"
     if not render:
-        return f"{CORE_PIN} changes to {ref}, not checked against sdk-core"
+        changed = old.get(CORE_PIN) != new.get(CORE_PIN)
+        return f"{CORE_PIN} changes to {ref}, not checked against sdk-core" if changed else None
     try:
         on_main = core_ref_on_main(core_url, ref)
     except RenderError as exc:
-        return f"{CORE_PIN} changes to {ref}, not checked against sdk-core: {exc}"
+        return f"{CORE_PIN} {ref} not checked against sdk-core: {exc}"
     if on_main:
         return None
     return f"core pinned off main: {CORE_PIN} {ref} is no commit on sdk-core's main and no v* tag"
@@ -1171,9 +1173,10 @@ def classify(
         forward, defaults = trust.commit_forward, trust.defaults
         for reason in answer_changes(before_answers, after_answers, forward, defaults):
             add(Finding(2, reason))
-        pin = core_pin_reason(before_answers, after_answers, render, core_url)
-        if pin is not None:
-            add(Finding(2, pin))
+    # On every pull request: a pin off main keeps each one human until it is lifted.
+    pin = core_pin_reason(before_answers, after_answers, render, core_url)
+    if pin is not None:
+        add(Finding(2, pin))
     remaining = [p for p in changed if p not in set(trust.trusted)]
     result.remaining = remaining
 
