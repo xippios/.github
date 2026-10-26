@@ -91,7 +91,7 @@ reason is reported.
    `core_version` or `core_git_ref` is a session change: `human`, with the keys as the
    reason. An answer the base lacks (a question a template release added) is free when
    its value equals the question's literal default (one plain or quoted scalar without
-   `{{` or `{%`) in the template's `copier.yml` at the head's `_commit`; with another
+   `{{`, `{%` or `{#`) in the template's `copier.yml` at the head's `_commit`; with another
    value, a Jinja default or a question unknown there it is `human` ("answers added with
    non-default values"). `_commit` moving to an older or an unrelated commit is `human`,
    and so is any `_commit` change or added answer the template could not be checked for
@@ -106,8 +106,8 @@ reason is reported.
      template renders them, so rule 2 trusts them when identical to the render),
      `.mcp.json`, `CLAUDE.local.md`, `.pre-commit-config.yaml`, `.secrets.baseline`,
      `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
-     `docs/definition-of-done.md`; and a change of `pyproject.toml` in where the package
-     is built and installed from or what it installs, `[build-system]`, `[tool.uv]`
+     `docs/definition-of-done.md`; and a change in `pyproject.toml` to where the package
+     is built and installed from or to what it installs: `[build-system]`, `[tool.uv]`
      (index, sources, override-dependencies, ...), `[project.scripts]`,
      `[project.gui-scripts]` or `[project.entry-points.*]` ("build or install routes
      changed"). The dependency lists stay free. `.github/**` protects the workflow
