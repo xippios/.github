@@ -1,0 +1,64 @@
+# The merge-class check of the xippios SDK family: classifies a pull request as `auto`
+# (the check passes) or `human` (it fails, with the reasons in the job summary); a human
+# PR is merged by Johannes with the bypass of the `sdk-merge-class` ruleset. The rules are
+# in README.md and scripts/merge_class.py.
+#
+# Two wirings (decided 2026-10-26): required by a ruleset as a workflow (`on: pull_request`,
+# check `merge-class`), or called as a job from a repository's ci.yml (`on: workflow_call`,
+# check `merge-class / merge-class`). The caller runs on `pull_request` too, so
+# `github.event.pull_request` is there either way. The classifier is always read from main
+# of xippios/.github, never from the pull request, so it changes only through a PR here.
+name: merge-class
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_call:
+    outputs:
+      class:
+        description: "The merge class: auto or human"
+        value: ${{ jobs.merge-class.outputs.class }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  merge-class:
+    name: merge-class
+    runs-on: ubuntu-latest
+    outputs:
+      class: ${{ steps.classify.outputs.class }}
+    steps:
+      - name: Check out the pull request head with full history
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      # Into a directory the first checkout's content cannot shadow: actions/checkout
+      # empties a target that is not already a clone of the repository it checks out.
+      - name: Check out the classifier from main of xippios/.github
+        uses: actions/checkout@v7
+        with:
+          repository: xippios/.github
+          ref: main
+          path: .org-github
+          persist-credentials: false
+      # For `uvx copier`, which renders the template for rule 2. Pointed at the classifier's
+      # checkout, so no uv version or cache key comes from the pull request.
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          working-directory: .org-github
+          enable-cache: false
+      # The classifier reads the pull request as git objects and executes nothing from it;
+      # copier and uv run in a temporary directory, without the checkout's uv config.
+      - name: Classify
+        id: classify
+        env:
+          REPO: ${{ github.repository }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 -I .org-github/scripts/merge_class.py
+          --repo "$REPO" --base "$BASE_SHA" --head "$HEAD_SHA" --workdir .
