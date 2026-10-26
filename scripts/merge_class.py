@@ -7,8 +7,9 @@ collected; the first ``human`` decides the class, the later ones only add to the
 1. Scaffold, in a source repository only (``sdk-*`` other than sdk-core and sdk-template):
    the base has no ``src/`` directory.
 2. Render trust: a changed file the template owns (rendered, and matched by no
-   ``_skip_if_exists`` pattern) that is byte-identical to the template rendered at the
-   head's ``_commit`` with the head's answers leaves the changed set. The render runs at
+   ``_skip_if_exists`` pattern) whose content and executable bit are identical to the
+   template rendered at the head's ``_commit`` with the head's answers leaves the changed
+   set. The render runs at
    the SHA ``_commit`` resolves to on the template's main. A render that fails trusts
    nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
@@ -25,8 +26,8 @@ collected; the first ``human`` decides the class, the later ones only add to the
 6. Otherwise ``auto``.
 
 "Base" for rule 1 is the base commit itself; every comparison of content (the changed set,
-rules 3 to 5) is against the merge base of base and head, which is the base itself once a
-pull request is up to date with its branch.
+rules 2 to 5) is against the merge base of base and head, which is the base itself once a
+pull request is up to date with its branch. The branch name is no input.
 
 Standard library only, so a workflow runs it with the runner's ``python3``; the render
 calls ``uvx copier``. Nothing from the pull request is executed: its files are read as git
