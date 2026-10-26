@@ -14,8 +14,11 @@ collected; the first ``human`` decides the class, the later ones only add to the
    nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
    ``human``; an answer the base lacks (a question a template release added) is free
-   when it equals the question's literal default at the head's ``_commit``. A non-empty
-   ``core_git_ref`` on the head must name a commit on sdk-core's main or a ``v*`` tag.
+   when it equals the question's literal default at the head's ``_commit``. The answers
+   file is read only inside a subset of YAML (``answers_problems``), and when it changed
+   or anything is trusted it must be byte-identical to the one copier writes back in the
+   render. A non-empty ``core_git_ref`` on the head must name a commit on sdk-core's main
+   or a ``v*`` tag.
 3. Protected paths in what remains; everywhere, also the build and install tables of
    ``pyproject.toml``; in a source, also a template-owned file under ``src/`` that
    differs from the render (an adapter changed by hand); in sdk-template, the template
@@ -77,6 +80,16 @@ ANSWERS_FILE = ".copier-answers.yml"
 # The answers a pull request changes without a human: _commit moving forward along the
 # template's main (checked against the template), and the core pins.
 FREE_ANSWERS = frozenset({"_commit", "core_version", "core_git_ref"})
+# Read by the classifier as one-line scalars: no continuation line may follow them.
+SINGLE_LINE_ANSWERS = ("_commit", "core_version", "core_git_ref")
+NOT_CANONICAL = (
+    "answers file is not in copier's canonical form: it differs from the "
+    f"{ANSWERS_FILE} the render writes back; nothing is trusted"
+)
+NOT_CHECKED_CANONICAL = (
+    f"answers file changed and is not checked against copier's canonical form: no render "
+    f"wrote {ANSWERS_FILE} back"
+)
 
 PROTECTED = (
     ".github/**",
@@ -400,6 +413,62 @@ def answer_entries(text: str) -> list[tuple[str | None, list[str]]]:
         else:
             entries[-1][1].append(line)
     return entries
+
+
+# A top-level line inside the reader's subset: an unquoted plain key, a colon, then a
+# blank or the end of the line (YAML reads `key:value` as one scalar, not as a key).
+_PLAIN_KEY_LINE = re.compile(r"([A-Za-z_][A-Za-z0-9_-]*):(?:[ \t].*)?")
+
+
+def answers_problems(source: bytes | None) -> list[str]:
+    """Why an answers file lies outside the subset of YAML this reader reads; [] inside.
+
+    The subset: UTF-8; every line at column 0 blank, a ``#`` comment or a ``key: value``
+    line with an unquoted plain key; no top-level key twice; no continuation line under
+    ``_commit``, ``core_version`` or ``core_git_ref``. Outside it YAML may load a key or a
+    value this reader does not see (a quoted key, the later of two duplicates, a scalar
+    that goes on), so the file is ``human`` and nothing is trusted.
+    """
+    if source is None:
+        return []
+    try:
+        text = source.decode()
+    except UnicodeDecodeError:
+        return [f"{ANSWERS_FILE} is not UTF-8"]
+    seen: set[str] = set()
+    repeated: list[str] = []
+    odd: list[str] = []
+    continued: list[str] = []
+    key: str | None = None
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip() or line.startswith("#"):
+            continue
+        if line[0] in " \t":
+            if key in SINGLE_LINE_ANSWERS and key not in continued:
+                continued.append(key)
+            continue
+        match = _PLAIN_KEY_LINE.fullmatch(line)
+        if match is None:
+            odd.append(str(number))
+            key = None
+            continue
+        key = match.group(1)
+        if key in seen and key not in repeated:
+            repeated.append(key)
+        seen.add(key)
+    problems: list[str] = []
+    if repeated:
+        keys = "key" if len(repeated) == 1 else "keys"
+        problems.append(f"{ANSWERS_FILE} repeats the top-level {keys} {', '.join(repeated)}")
+    if odd:
+        lines = "line" if len(odd) == 1 else "lines"
+        problems.append(
+            f"{ANSWERS_FILE} {lines} {', '.join(odd)}: neither blank, a comment nor a "
+            "key: value line with a plain key"
+        )
+    if continued:
+        problems.append(f"{ANSWERS_FILE} continues {', '.join(continued)} on another line")
+    return problems
 
 
 def answer_scalar(entries: Sequence[tuple[str | None, list[str]]], key: str) -> str | None:
@@ -938,6 +1007,8 @@ def _copier_yml(clone: Path, sha: str) -> str:
     raise RenderError(f"the template has no copier.yml at {sha}")
 
 
+OUTSIDE_SUBSET = f"{ANSWERS_FILE} lies outside the subset the classifier reads; nothing is trusted"
+
 # A tag, a SHA or `git describe` output; never an option.
 _GIT_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._+/-]*")
 
@@ -959,6 +1030,11 @@ class Trust:
     # The template's questions at the head's _commit with their literal defaults; None
     # when its copier.yml could not be read there.
     defaults: dict[str, Scalar | None] | None = None
+    # Whether the head's answers file is byte-identical to the one the render writes back;
+    # None when no render ran.
+    canonical: bool | None = None
+    # Rule 2's human reasons from the render (the answers file not in canonical form).
+    problems: list[str] = field(default_factory=list)
 
 
 def _moves_forward(clone: Path, old: str, new_sha: str) -> bool:
@@ -1011,8 +1087,11 @@ def core_pin_reason(
     or a commit on its main (``core_ref_on_main``), whether or not the pull request changes
     it: while core is pinned off main, every pull request is human. One that cannot be
     checked (a failed clone) is human too; under ``--no-render`` a change to a non-empty
-    value is. Empty or absent, there is no pin.
+    value is. Empty or absent, there is no pin. An answers file outside the reader's
+    subset (``answers_problems``) is human: YAML may read a pin this reader does not see.
     """
+    if answers_problems(after):
+        return f"{CORE_PIN} not read: {ANSWERS_FILE} lies outside the subset the classifier reads"
     old, new = answer_table(before), answer_table(after)
     if CORE_PIN not in new:
         return None
@@ -1044,15 +1123,17 @@ def trust_rendered(
     """Rule 2: the changed template-owned files identical to the render, mode included.
 
     ``base_commit`` is the base's ``_commit``; when the head's differs, the template clone
-    also tells whether it moved forward.
+    also tells whether it moved forward. An answers file outside the reader's subset
+    (``answers_problems``) trusts nothing; one that changed, or that anything is trusted
+    with, must be byte-identical to the one copier writes back in the render, else nothing
+    is trusted and the reason is ``NOT_CANONICAL``.
     """
     answers = read_blob(workdir, head, ANSWERS_FILE)
     if answers is None:
         return Trust([], None, f"no {ANSWERS_FILE} on the head; nothing is trusted")
-    try:
-        entries = answer_entries(answers.decode())
-    except UnicodeDecodeError:
-        return Trust([], None, f"{ANSWERS_FILE} is not UTF-8; nothing is trusted")
+    if answers_problems(answers):
+        return Trust([], None, OUTSIDE_SUBSET)
+    entries = answer_entries(answers.decode())
     commit = answer_scalar(entries, "_commit")
     src_path = answer_scalar(entries, "_src_path")
     import_path = answer_scalar(entries, "import_path")
@@ -1115,7 +1196,15 @@ def trust_rendered(
             ours = _git(workdir, "cat-file", "blob", entry[2]).stdout
             if entry[0] == mode and rendered.read_bytes() == ours:
                 trusted.append(path)
-    return Trust(trusted, commit, None, sha, forward, owned, defaults)
+        # The answers as copier writes them back, _commit and _src_path included: a form
+        # YAML reads otherwise than this reader (a quoted key, a duplicate) cannot match.
+        written = dest / ANSWERS_FILE
+        canonical = (
+            not written.is_symlink() and written.is_file() and written.read_bytes() == answers
+        )
+    if not canonical and (ANSWERS_FILE in changed or trusted):
+        return Trust([], commit, None, sha, forward, owned, defaults, False, [NOT_CANONICAL])
+    return Trust(trusted, commit, None, sha, forward, owned, defaults, canonical)
 
 
 # --- classification ----------------------------------------------------------------------
@@ -1163,7 +1252,14 @@ def classify(
             add(Finding(2, f"{path} is no plain relative path; never trusted"))
     before_answers = read_blob(workdir, fork, ANSWERS_FILE)
     after_answers = read_blob(workdir, head_sha, ANSWERS_FILE)
-    if render:
+    # The head's answers, whether or not the pull request changes them: outside the
+    # reader's subset nothing is trusted and nothing read from them counts.
+    subset = answers_problems(after_answers)
+    for problem in subset:
+        add(Finding(2, problem))
+    if subset:
+        trust = Trust([], None, OUTSIDE_SUBSET)
+    elif render:
         base_commit = answers_commit(before_answers)
         trust = trust_rendered(workdir, head_sha, changed, template_url, renderer, base_commit)
     else:
@@ -1173,11 +1269,15 @@ def classify(
     result.template_sha = trust.template_sha
     if trust.note:
         add(Finding(2, trust.note, human=False))
+    for problem in trust.problems:
+        add(Finding(2, problem))
     # Over the changed set, not what remains: the render writes the answers back as they are.
     if ANSWERS_FILE in changed:
         forward, defaults = trust.commit_forward, trust.defaults
         for reason in answer_changes(before_answers, after_answers, forward, defaults):
             add(Finding(2, reason))
+        if trust.canonical is None and not subset:
+            add(Finding(2, NOT_CHECKED_CANONICAL))
     # On every pull request: a pin off main keeps each one human until it is lifted.
     pin = core_pin_reason(before_answers, after_answers, render, core_url)
     if pin is not None:

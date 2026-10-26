@@ -120,6 +120,9 @@ def template(tmp_path: Path) -> Path:
     return repo
 
 
+HEADER = "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n"
+
+
 def answers(
     src_path: Path | str,
     ref: str = "v0.2.0",
@@ -127,8 +130,7 @@ def answers(
     slug: str = "usda-psd",
     extra: str = "",
 ) -> str:
-    return (
-        "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n"
+    return HEADER + (
         f"_commit: {ref}\n"
         f"_src_path: {src_path}\n"
         "api_key_env: ''\n"
@@ -162,9 +164,12 @@ def source_base(template: Path) -> dict[str, str | None]:
 
 
 def rendered(template: Path) -> dict[str, str]:
-    """What template v0.2.0 renders for this source (only the files the tests need)."""
+    """What template v0.2.0 renders for this source (only the files the tests need).
+
+    The answers file is written back from the data file (``written_back``) unless a test
+    names it.
+    """
     return {
-        ".copier-answers.yml": answers(template),
         ".github/workflows/ci.yml": "ci v2\n",
         ".github/workflows/live.yml": "live v2\n",
         ".pre-commit-config.yaml": "hooks v2\n",
@@ -180,8 +185,29 @@ def rendered(template: Path) -> dict[str, str]:
     }
 
 
+def written_back(template_url: str, vcs_ref: str, data: str) -> str:
+    """The answers file copier writes back after a render, as far as the tests need it.
+
+    ``_commit`` as ``git describe --tags --always`` names the rendered SHA, ``_src_path``
+    as given, then the data file's answers sorted by key, the later of two duplicates
+    winning, a quoted key unquoted (as YAML loads them).
+    """
+    commit = git(Path(template_url), "describe", "--tags", "--always", vcs_ref)
+    values: dict[str, str] = {}
+    for line in data.splitlines():
+        if line and line[0] not in "# ":
+            key, _, value = line.partition(":")
+            values[key.strip().strip("'\"")] = value.strip()
+    body = "".join(f"{key}: {value}\n" for key, value in sorted(values.items()))
+    return f"{HEADER}_commit: {commit}\n_src_path: {template_url}\n{body}"
+
+
 class FakeRender:
-    """Stands in for copier: writes fixed files, or fails like a render that cannot run."""
+    """Stands in for copier: writes fixed files, or fails like a render that cannot run.
+
+    Like copier it writes the answers file back (``written_back``), unless ``files``
+    names one.
+    """
 
     def __init__(
         self,
@@ -198,7 +224,10 @@ class FakeRender:
         self.calls.append((template_url, vcs_ref, data_file.read_text()))
         if self.error:
             raise mc.RenderError(self.error)
-        for path, content in self.files.items():
+        files = dict(self.files)
+        if mc.ANSWERS_FILE not in files:
+            files[mc.ANSWERS_FILE] = written_back(template_url, vcs_ref, data_file.read_text())
+        for path, content in files.items():
             target = dest / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(content)
@@ -335,6 +364,8 @@ def test_copier_runs_at_the_checked_sha_without_config_or_tasks(
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     record = tmp_path / "uvx-args"
+    written = tmp_path / "written-back.yml"
+    written.write_text(answers(template, "v0.1.0"))
     uvx = bin_dir / "uvx"
     uvx.write_text(
         "#!/bin/sh\n"
@@ -342,6 +373,7 @@ def test_copier_runs_at_the_checked_sha_without_config_or_tasks(
         "for dest; do :; done\n"  # the last argument: the destination
         'mkdir -p "$dest/tests"\n'
         'printf "conftest v2\\n" > "$dest/tests/conftest.py"\n'
+        f'cp "{written}" "$dest/.copier-answers.yml"\n'
     )
     uvx.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
@@ -552,13 +584,18 @@ def test_commit_moving_backward_is_human(tmp_path: Path, template: Path) -> None
 
 
 @pytest.mark.parametrize("render", [False, True], ids=["no-render", "render"])
-def test_core_version_bump_alone_is_auto(tmp_path: Path, template: Path, render: bool) -> None:
+def test_core_version_bump_alone_is_auto_with_the_render(
+    tmp_path: Path, template: Path, render: bool
+) -> None:
+    """Without a render nothing shows the changed answers file to be copier's own."""
     head_answers = answers(template, "v0.1.0", core="0.2.1")
     files = rendered(template)
     files[".copier-answers.yml"] = head_answers
     pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
     result = classify(pr, render=FakeRender(files) if render else None, template=template)
-    assert result.merge_class == mc.AUTO
+    assert [f.text for f in result.findings if f.human] == (
+        [] if render else [mc.NOT_CHECKED_CANONICAL]
+    )
     assert result.trusted == ([".copier-answers.yml"] if render else [])
 
 
@@ -577,7 +614,8 @@ def test_commit_change_without_the_template_is_human(tmp_path: Path, template: P
     pr = make_pr(tmp_path, source_base(template), adoption(template))
     result = classify(pr)
     assert [f.text for f in result.findings if f.human and f.rule == 2] == [
-        "_commit changes from v0.1.0 to v0.2.0, not checked against the template"
+        "_commit changes from v0.1.0 to v0.2.0, not checked against the template",
+        mc.NOT_CHECKED_CANONICAL,
     ]
 
 
@@ -591,7 +629,6 @@ NON_DEFAULT = "answers added with non-default values: "
         ("rate_limit_provenance: 'documented'\n", []),
         ("rate_limit_burst: 2\n", [NON_DEFAULT + "rate_limit_burst"]),
         ("rate_limit_burst: '1'\n", [NON_DEFAULT + "rate_limit_burst"]),
-        ("rate_limit_burst:1\n", [NON_DEFAULT + "rate_limit_burst"]),
         ("api_title: usda-psd API\n", [NON_DEFAULT + "api_title"]),
         ("api_title: '{{ source_slug }} API'\n", [NON_DEFAULT + "api_title"]),
         ("not_asked: x\n", [NON_DEFAULT + "not_asked"]),
@@ -605,7 +642,6 @@ NON_DEFAULT = "answers added with non-default values: "
         "default-quoted",
         "other-value",
         "string-for-int",
-        "no-space",
         "jinja-default",
         "jinja-default-text",
         "unknown-question",
@@ -643,8 +679,144 @@ def test_an_added_answer_without_the_template_is_human(tmp_path: Path, template:
     pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
     result = classify(pr)
     assert [f.text for f in result.findings if f.human] == [
-        "answers added, not checked against the template: rate_limit_burst"
+        "answers added, not checked against the template: rate_limit_burst",
+        mc.NOT_CHECKED_CANONICAL,
     ]
+
+
+# --- rule 2: the answers file's form ------------------------------------------------------
+
+PIN_NOT_READ = (
+    "core_git_ref not read: .copier-answers.yml lies outside the subset the classifier reads"
+)
+
+
+def test_quoted_key_demo_is_human_and_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    """The review's demo: a quoted key after core_version overrides api_key_env for YAML.
+
+    The render takes the later value, so every file it renders with the new key matched
+    the render and was trusted, and the line-based reader never saw the key change.
+    """
+    head_answers = answers(template, "v0.1.0").replace(
+        "core_version: 0.2.0\n", 'core_version: 0.2.0\n"api_key_env": DEMO_API_KEY\n'
+    )
+    live = "live v2 with DEMO_API_KEY\n"
+    render = FakeRender({**rendered(template), ".github/workflows/live.yml": live})
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {".copier-answers.yml": head_answers, ".github/workflows/live.yml": live},
+    )
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert result.trusted == []
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human and f.rule == 2] == [
+        (
+            ".copier-answers.yml line 6: neither blank, a comment nor a key: value line "
+            "with a plain key"
+        ),
+        PIN_NOT_READ,
+    ]
+
+
+def test_duplicate_key_demo_is_human_and_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    """The review's demo: a second core_git_ref, which YAML reads and the reader did not.
+
+    The reader took the first (empty: no pin), the render the second, so the pinned
+    pyproject.toml matched the render and was trusted.
+    """
+    head_answers = answers(template, "v0.1.0", extra="core_git_ref: feature\n").replace(
+        "core_version: 0.2.0\n", "core_git_ref: ''\ncore_version: 0.2.0\n"
+    )
+    pinned = PYPROJECT.format(version="0.2.0") + '[tool.uv.sources]\nxippios-core = "feature"\n'
+    render = FakeRender({**rendered(template), "pyproject.toml": pinned})
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {".copier-answers.yml": head_answers, "pyproject.toml": pinned},
+    )
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert result.trusted == []
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human and f.rule == 2] == [
+        ".copier-answers.yml repeats the top-level key core_git_ref",
+        PIN_NOT_READ,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "problems"),
+    [
+        (answers("https://github.com/xippios/sdk-template.git"), []),
+        ("# only a comment\n\n_commit: v0.2.0\n", []),
+        ("source_name: USDA FAS\n  PSD Online\n", []),  # a scalar may wrap, but not a pin
+        ('"api_key_env": X\n', ["line 1: neither blank"]),
+        ("'core_git_ref': x\n", ["line 1: neither blank"]),
+        ("rate_limit_burst:1\n", ["line 1: neither blank"]),
+        ("a: 1\n- item\n", ["line 2: neither blank"]),
+        ("? core_git_ref\n: x\n", ["lines 1, 2: neither blank"]),
+        ("---\na: 1\n", ["line 1: neither blank"]),
+        ("a: 1\nb: 2\na: 3\nb: 4\n", ["repeats the top-level keys a, b"]),
+        ("core_git_ref:\n  feature\n", ["continues core_git_ref on another line"]),
+        ("core_version: 0.2.0\n# x\n\n  .1\n", ["continues core_version on another line"]),
+        ("_commit: v0.2.0\n  # a comment counts too\n", ["continues _commit on another line"]),
+    ],
+    ids=[
+        "canonical",
+        "comments-and-blanks",
+        "wrapped-scalar",
+        "double-quoted-key",
+        "single-quoted-key",
+        "no-space",
+        "list-at-column-0",
+        "complex-key",
+        "document-marker",
+        "duplicate-keys",
+        "pin-continued",
+        "core-version-continued",
+        "commit-continued",
+    ],
+)
+def test_answers_problems(text: str, problems: list[str]) -> None:
+    found = mc.answers_problems(text.encode())
+    assert len(found) == len(problems)
+    for reason, expected in zip(found, problems, strict=True):
+        assert reason.startswith(f".copier-answers.yml {expected}")
+
+
+def test_answers_that_are_not_utf8_are_outside_the_subset() -> None:
+    assert mc.answers_problems(b"_commit: v\xff\n") == [".copier-answers.yml is not UTF-8"]
+
+
+def test_changed_answers_not_in_copiers_form_trust_nothing(tmp_path: Path, template: Path) -> None:
+    """A hand-written comment: YAML reads the same answers, but copier writes none."""
+    head_answers = answers(template, "v0.1.0", core="0.2.1") + "# edited by hand\n"
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {".copier-answers.yml": head_answers, "tests/conftest.py": "conftest v2\n"},
+    )
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == []
+    assert [f.text for f in result.findings if f.human] == [mc.NOT_CANONICAL]
+
+
+@pytest.mark.parametrize(
+    ("change", "human"),
+    [("tests/conftest.py", True), ("tests/test_new.py", False)],
+    ids=["something-trusted", "nothing-trusted"],
+)
+def test_unchanged_answers_must_be_copiers_own_when_anything_is_trusted(
+    tmp_path: Path, template: Path, change: str, human: bool
+) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.1.0") + "# edited by hand\n"
+    pr = make_pr(tmp_path, base, {change: "conftest v2\n"})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == []
+    assert [f.text for f in result.findings if f.human] == ([mc.NOT_CANONICAL] if human else [])
 
 
 @dataclass
@@ -713,7 +885,8 @@ def test_core_pin_without_the_check_is_human(tmp_path: Path, template: Path) -> 
     pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
     no_render = classify(pr)
     assert [f.text for f in no_render.findings if f.human] == [
-        "core_git_ref changes to main, not checked against sdk-core"
+        mc.NOT_CHECKED_CANONICAL,
+        "core_git_ref changes to main, not checked against sdk-core",
     ]
     failed = classify(pr, render=FakeRender(files), template=template)  # no sdk-core there
     [text] = [f.text for f in failed.findings if f.human]
@@ -749,7 +922,8 @@ def test_a_removed_or_emptied_core_pin_is_free(tmp_path: Path, template: Path) -
         (tmp_path / root).mkdir()
         head_answers = answers(template, "v0.1.0", core="0.2.1", extra=extra)
         pr = make_pr(tmp_path / root, base, {".copier-answers.yml": head_answers})
-        assert classify(pr).merge_class == mc.AUTO
+        render = FakeRender({**rendered(template), ".copier-answers.yml": head_answers})
+        assert classify(pr, render=render, template=template).merge_class == mc.AUTO
 
 
 def test_question_defaults() -> None:
