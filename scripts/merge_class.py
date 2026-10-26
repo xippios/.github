@@ -798,7 +798,7 @@ def trust_rendered(
     renderer: Renderer,
     base_commit: str | None = None,
 ) -> Trust:
-    """Rule 2: the changed template-owned files that are byte-identical to the render.
+    """Rule 2: the changed template-owned files identical to the render, mode included.
 
     ``base_commit`` is the base's ``_commit``; when the head's differs, the template clone
     also tells whether it moved forward.
@@ -902,10 +902,6 @@ def classify(
     result = Classification(repo, base_sha, head_sha, fork, changed)
     name = _repo_name(repo)
     add = result.findings.append
-    # git never writes such a path; a tree crafted to carry one is never trusted.
-    for path in changed:
-        if not plain_path(path):
-            add(Finding(2, f"{path} is no plain relative path; never trusted"))
 
     # 1. Scaffold, sources only: sdk-template and .github have no src/ at all
     if is_source(name):
@@ -913,7 +909,11 @@ def classify(
         if entry is None or entry[1] != "tree":
             add(Finding(1, "scaffold: the base has no src/ directory"))
 
-    # 2. Render trust, and the answers file
+    # 2. Render trust, and the answers file. git never writes a path that is not plain; a
+    # tree crafted to carry one is never trusted.
+    for path in changed:
+        if not plain_path(path):
+            add(Finding(2, f"{path} is no plain relative path; never trusted"))
     before_answers = read_blob(workdir, fork, ANSWERS_FILE)
     after_answers = read_blob(workdir, head_sha, ANSWERS_FILE)
     if render:
