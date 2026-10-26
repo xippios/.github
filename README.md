@@ -213,8 +213,10 @@ beside `ci.yml`. It runs on `pull_request` with
 `types: [opened, synchronize, reopened, edited]`: a caller's `on: pull_request` without
 `types` runs on the first three only, and `edited` matters to both gates, to the review
 because the description is judged and to `merge-class` because a change of the base
-branch arrives as `edited`. It passes the review exactly one secret, never
-`secrets: inherit`:
+branch arrives as `edited`. The caller can ship before the ruleset decision: both jobs
+carry `if: vars.GATES_CALLER == '1'` and run only once Johannes sets that repository
+variable, which he does per repository if the editor does not offer the required-workflow
+rule. It passes the review exactly one secret, never `secrets: inherit`:
 
 ```yaml
 name: gates
@@ -228,11 +230,13 @@ permissions:
 
 jobs:
   merge-class:
+    if: vars.GATES_CALLER == '1'
     uses: xippios/.github/.github/workflows/merge-class.yml@main
     permissions:
       contents: read
 
   family-review:
+    if: vars.GATES_CALLER == '1'
     uses: xippios/.github/.github/workflows/family-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
