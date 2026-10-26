@@ -116,8 +116,7 @@ reason is reported.
    request is `human` while core is pinned off `main`; when sdk-core cannot be cloned it
    is `human` too, and under `--no-render` a change to a non-empty value is. The check
    sees the refs of the moment: a branch created in sdk-core later with a pinned tag's
-   name would take the pin over at the next `uv lock`, which sdk-core's branch rules have
-   to prevent.
+   name would take the pin over at the next `uv lock` ("Known limits" below).
 3. **Protected paths** in what remains: `human`.
    - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
@@ -182,6 +181,16 @@ base and head, which is the base itself once the pull request is up to date with
 branch (the required checks are strict). The branch name is no input. The classifier
 reads the pull request as git objects and executes nothing from it; file names and
 answers are escaped in the summary and the report.
+
+## Known limits
+
+- `template/pyproject.toml.jinja` is judged by a text scan, since a Jinja template is not
+  TOML. Its structural replacement, rendering the template at base and head and comparing
+  the protected tables with a TOML parser, is a follow-up.
+- A classification holds for the refs as they stand when it runs: the core pin check reads
+  sdk-core's branches and tags of that moment. A branch or tag created later can take a
+  checked pin over, so sdk-core needs a branch ruleset that forbids `v*` and hex-like
+  branch names and a tag ruleset that restricts the creation of `v*` tags to Johannes.
 
 ## Wiring and check contexts
 
