@@ -901,10 +901,36 @@ def test_skip_patterns_reads_block_and_flow_lists() -> None:
         (b"__all__ = [name for name in dir()]\n", None),
         (b'if True:\n    __all__ = ["a"]\n', None),
         (b"def broken(:\n", None),
+        (b'__all__: list[str] = []\n"""Docs that mention __all__ in passing."""\n', []),
     ],
 )
 def test_exported_names(source: bytes | None, expected: list[str] | None) -> None:
     assert mc.exported_names(source) == expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from ._impl import __all__\n",
+        "from ._impl import names as __all__\n",
+        "import _impl as __all__\n",
+        "from ._impl import *\n",
+        'def __getattr__(name):\n    return ["get_data"]\n',
+        "__getattr__ = lambda name: []\n",
+        'globals()["__all__"] = ["get_data"]\n',
+        'import sys\nsetattr(sys.modules[__name__], "__all__", ["get_data"])\n',
+        'NAME = "__all__"\n',
+        'vars()["__al" + "l__"] = ["get_data"]\n',
+        "import sys\nsys.modules[__name__].__dict__.update(x=1)\n",
+        '__all__: list[str] = []\nalias = __all__\nalias.append("get_data")\n',
+        'def __all__():\n    return ["get_data"]\n',
+        'for __all__ in [["get_data"]]:\n    pass\n',
+        "__all__ = []\ndel __all__\n",
+        '__all__ = []\n(__all__ := ["get_data"])\n',
+    ],
+)
+def test_all_that_cannot_be_read_statically_is_unreadable(source: str) -> None:
+    assert mc.exported_names(source.encode()) is None
 
 
 def test_normalize_url() -> None:

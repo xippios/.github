@@ -483,26 +483,49 @@ def _is_all(node: ast.AST) -> bool:
     return isinstance(node, ast.Name) and node.id == "__all__"
 
 
-def _modifies_all(node: ast.AST) -> bool:
-    """Whether ``node`` assigns, deletes or calls a method of ``__all__`` anywhere inside."""
-    for inner in ast.walk(node):
-        if (
-            isinstance(inner, ast.Name)
-            and inner.id == "__all__"
-            and isinstance(inner.ctx, ast.Store | ast.Del)
+def _binds(node: ast.AST, name: str) -> bool:
+    """Whether ``node`` binds or deletes ``name`` (an assignment, a def, an import, ...)."""
+    match node:
+        case ast.Name(id=found, ctx=ast.Store() | ast.Del()):
+            return found == name
+        case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+            return node.name == name
+        case ast.alias():
+            return (node.asname or node.name.split(".")[0]) == name
+        case ast.ExceptHandler() | ast.MatchAs() | ast.MatchStar():
+            return node.name == name
+        case ast.MatchMapping():
+            return node.rest == name
+        case ast.Global() | ast.Nonlocal():
+            return name in node.names
+    return False
+
+
+# Builtins that reach a module's namespace by name, so __all__ through a computed string.
+_DYNAMIC_BUILTINS = frozenset(
+    {"globals", "vars", "locals", "setattr", "delattr", "exec", "eval", "__import__"}
+)
+
+
+def _dynamic(tree: ast.Module) -> bool:
+    """Whether a module may set ``__all__`` in a way no static reading follows.
+
+    A ``"__all__"`` string (``globals()["__all__"]``, ``setattr(module, "__all__", ...)``),
+    a builtin that reaches the namespace by name, ``sys.modules`` or a ``__dict__``, a
+    star import, or a module ``__getattr__``, which answers for an absent ``__all__``.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and node.value == "__all__":
+            return True
+        if isinstance(node, ast.Name) and node.id in _DYNAMIC_BUILTINS:
+            return True
+        if isinstance(node, ast.Attribute) and (
+            node.attr == "__dict__" or (node.attr == "modules" and isinstance(node.value, ast.Name))
         ):
             return True
-        if (
-            isinstance(inner, ast.Subscript | ast.Attribute)
-            and _is_all(inner.value)
-            and isinstance(inner.ctx, ast.Store | ast.Del)
-        ):
+        if isinstance(node, ast.ImportFrom) and any(a.name == "*" for a in node.names):
             return True
-        if (
-            isinstance(inner, ast.Call)
-            and isinstance(inner.func, ast.Attribute)
-            and _is_all(inner.func.value)
-        ):
+        if _binds(node, "__getattr__"):
             return True
     return False
 
@@ -511,37 +534,44 @@ def exported_names(source: bytes | None) -> list[str] | None:
     """The names in a module's literal ``__all__``.
 
     ``[]`` when the module or its ``__all__`` is absent; None when ``__all__`` cannot be
-    read statically: assigned something other than a literal list or tuple of strings,
-    or changed by a call or inside another statement.
+    read statically: anything but top-level assignments of a literal list or tuple of
+    strings (and ``+=`` of one), any other mention of ``__all__`` (a call of one of its
+    methods, a binding by import, def or loop, a read that could alias it), or a module
+    that reaches its namespace dynamically (see ``_dynamic``).
     """
     if source is None:
         return []
     try:
         tree = ast.parse(source)
-    except (SyntaxError, ValueError):
+    except (SyntaxError, ValueError, RecursionError):
+        return None
+    if _dynamic(tree):
         return None
     names: list[str] = []
+    literal_targets: set[int] = set()
     for node in tree.body:
-        if isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            if not any(_is_all(t) for t in targets):
-                if _modifies_all(node):
-                    return None
-                continue
-            if not all(isinstance(t, ast.Name) for t in targets):
+        if not isinstance(node, ast.Assign | ast.AnnAssign | ast.AugAssign):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(_is_all(t) for t in targets):
+            continue
+        if not all(isinstance(t, ast.Name) for t in targets):
+            return None
+        literal_targets.update(id(t) for t in targets)
+        if node.value is None:  # a bare annotation
+            continue
+        literal = _names(node.value)
+        if literal is None:
+            return None
+        if isinstance(node, ast.AugAssign):
+            if not isinstance(node.op, ast.Add):
                 return None
-            if node.value is None:  # a bare annotation
-                continue
-            literal = _names(node.value)
-            if literal is None:
-                return None
-            if isinstance(node, ast.AugAssign):
-                if not isinstance(node.op, ast.Add):
-                    return None
-                names = [*names, *literal]
-            else:
-                names = literal
-        elif _modifies_all(node):
+            names = [*names, *literal]
+        else:
+            names = literal
+    for node in ast.walk(tree):
+        mentions = _binds(node, "__all__") or _is_all(node)
+        if mentions and id(node) not in literal_targets:
             return None
     return names
 
