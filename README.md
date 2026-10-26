@@ -107,16 +107,18 @@ reason is reported.
      `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
      template renders them, so rule 2 trusts them when identical to the render),
      `.mcp.json`, `CLAUDE.local.md`, `.pre-commit-config.yaml`, `.secrets.baseline`,
+     `hatch.toml` (hatchling merges a root `hatch.toml` over `[tool.hatch]`),
      `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
      `docs/definition-of-done.md`; and a change in `pyproject.toml` to where the package
      is built and installed from or to what it installs: `[build-system]`, `[tool.uv]`
-     (index, sources, override-dependencies, ...), `[tool.hatch.build]` (the packaged
-     paths, `[tool.hatch.build.targets.*]`, `[tool.hatch.build.hooks.*]`),
-     `[project.scripts]`, `[project.gui-scripts]` or `[project.entry-points.*]` ("build or
-     install routes changed"). The dependency lists stay free. `.github/**` protects the
-     workflow definitions, not the code a workflow runs with a secret: the tests and
-     scripts that `live.yml` runs with a key can merge `auto`, and the family review reads
-     them.
+     (index, sources, override-dependencies, ...), the whole `[tool.hatch]` (the packaged
+     paths, targets and build hooks under `[tool.hatch.build]`, the metadata hooks under
+     `[tool.hatch.metadata]`, the version source `[tool.hatch.version]`: code that runs at
+     build time), `[project.scripts]`, `[project.gui-scripts]` or
+     `[project.entry-points.*]` ("build or install routes changed"). The dependency lists
+     stay free. `.github/**` protects the workflow definitions, not the code a workflow
+     runs with a secret: the tests and scripts that `live.yml` runs with a key can merge
+     `auto`, and the family review reads them.
    - In a source, also a template-owned file under `src/` that differs from the render
      (an adapter changed by hand, which could expose tasks around rule 4); without a
      render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
@@ -124,8 +126,9 @@ reason is reported.
    - In `sdk-core`, also `src/**`.
    - In `sdk-template`, also `copier.yml`, `copier.yaml`, `scripts/**`, the template
      origin of every path protected in a source (the `template/` prefix, with or without
-     a `.jinja` suffix), any path under `template/` with Jinja (`{{` or `{%`) in its name,
-     and `template/pyproject.toml.jinja` when its dependency block changes
+     a `.jinja` suffix: `template/hatch.toml` and `template/hatch.toml.jinja` among them),
+     any path under `template/` with Jinja (`{{` or `{%`) in its name, and
+     `template/pyproject.toml.jinja` when its dependency block changes
      (`[project] dependencies`, `[project.optional-dependencies]`, `[dependency-groups]`,
      and the build and install tables above) or any changed line of it carries `{{`,
      `{%` or `{#`.

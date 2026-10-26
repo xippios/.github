@@ -837,6 +837,7 @@ def test_literals_compare_as_yaml_loads_them(answer: str, default: str, same: bo
         ".claude/commands/add-endpoint.md",
         ".mcp.json",
         "CLAUDE.local.md",
+        "hatch.toml",
     ],
 )
 def test_protected_path_is_human(tmp_path: Path, template: Path, path: str) -> None:
@@ -1015,6 +1016,16 @@ JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja
             [BLOCK],
         ),
         (
+            "[tool.ruff]\n",
+            '[tool.hatch.metadata.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]\n',
+            [BLOCK],
+        ),
+        (
+            "[tool.ruff]\n",
+            '[tool.hatch.version]\nsource = "code"\npath = "x.py"\n\n[tool.ruff]\n',
+            [BLOCK],
+        ),
+        (
             "[dependency-groups]\n",
             '[project.entry-points.pytest11]\nplugin = "x.y"\n\n[dependency-groups]\n',
             [BLOCK],
@@ -1036,6 +1047,8 @@ JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja
         "uv-index-url",
         "scripts",
         "hatch-build-hooks",
+        "hatch-metadata-hooks",
+        "hatch-version",
         "entry-points",
         "jinja-description",
         "jinja-line-added",
@@ -1142,34 +1155,83 @@ def test_build_routes_are_protected_in_every_repository(tmp_path: Path, repo: st
     ]
 
 
+def with_table(table: str) -> str:
+    """SOURCE_PYPROJECT with ``table`` added before ``[tool.ruff]``."""
+    return SOURCE_PYPROJECT.replace("[tool.ruff]", f"{table}\n\n[tool.ruff]", 1)
+
+
+HATCH_VERSION = '[tool.hatch.version]\npath = "src/xippios/usda/psd/_version.py"'
+
+
 @pytest.mark.parametrize(
-    ("repo", "old", "new"),
+    ("repo", "before", "after"),
     [
-        (SOURCE, 'packages = ["src/xippios"]', 'packages = ["src/xippios", "src/evil"]'),
+        (
+            SOURCE,
+            SOURCE_PYPROJECT,
+            SOURCE_PYPROJECT.replace('["src/xippios"]', '["src/xippios", "src/evil"]', 1),
+        ),
         (
             "xippios/sdk-core",
-            "[tool.ruff]",
-            '[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]',
+            SOURCE_PYPROJECT,
+            with_table('[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"'),
         ),
         (
             "xippios/sdk-template",
-            "[tool.ruff]",
-            '[tool.hatch.build]\nexclude = ["/x"]\n\n[tool.ruff]',
+            SOURCE_PYPROJECT,
+            with_table('[tool.hatch.build]\nexclude = ["/x"]'),
+        ),
+        (
+            SOURCE,
+            SOURCE_PYPROJECT,
+            with_table('[tool.hatch.metadata.hooks.custom]\npath = "hatch_build.py"'),
+        ),
+        (
+            SOURCE,
+            with_table(HATCH_VERSION),
+            with_table(HATCH_VERSION.replace("path =", 'source = "code"\npath =')),
+        ),
+        (
+            "xippios/sdk-core",
+            SOURCE_PYPROJECT,
+            with_table("[tool.hatch.metadata]\nallow-direct-references = true"),
         ),
     ],
-    ids=["source-wheel-target", "core-build-hook", "template-build-table"],
+    ids=[
+        "source-wheel-target",
+        "core-build-hook",
+        "template-build-table",
+        "source-metadata-hook",
+        "source-version-source",
+        "core-metadata",
+    ],
 )
-def test_tool_hatch_build_is_a_build_route_in_every_repository(
-    tmp_path: Path, template: Path, repo: str, old: str, new: str
+def test_tool_hatch_is_a_build_route_in_every_repository(
+    tmp_path: Path, template: Path, repo: str, before: str, after: str
 ) -> None:
-    """``[tool.hatch.build]`` and its sub-tables: the packaged paths, targets, build hooks."""
-    assert old in SOURCE_PYPROJECT
+    """The whole ``[tool.hatch]``: build targets and hooks, metadata hooks, version source."""
+    assert before != after
     base = source_base(template) if repo == SOURCE else {"README.md": "x\n"}
-    base["pyproject.toml"] = SOURCE_PYPROJECT
-    pr = make_pr(tmp_path, base, {"pyproject.toml": SOURCE_PYPROJECT.replace(old, new, 1)})
+    base["pyproject.toml"] = before
+    pr = make_pr(tmp_path, base, {"pyproject.toml": after})
     result = classify(pr, repo=repo)
     assert [f.text for f in result.findings if f.human] == [
-        "build or install routes changed in pyproject.toml: tool.hatch.build"
+        "build or install routes changed in pyproject.toml: tool.hatch"
+    ]
+
+
+@pytest.mark.parametrize("repo", [SOURCE, "xippios/sdk-core", "xippios/sdk-template"])
+def test_a_root_hatch_toml_is_protected_in_every_repository(
+    tmp_path: Path, template: Path, repo: str
+) -> None:
+    """hatchling merges a root ``hatch.toml`` over ``[tool.hatch]``: a new one is human."""
+    base = source_base(template) if repo == SOURCE else {"README.md": "x\n"}
+    base["pyproject.toml"] = SOURCE_PYPROJECT
+    hatch_toml = '[version]\nsource = "code"\npath = "x.py"\n'
+    pr = make_pr(tmp_path, base, {"hatch.toml": hatch_toml})
+    result = classify(pr, repo=repo)
+    assert [f.text for f in result.findings if f.human] == [
+        "protected path hatch.toml (matches hatch.toml)"
     ]
 
 
@@ -1203,6 +1265,8 @@ def test_an_unreadable_pyproject_is_human(tmp_path: Path, template: Path) -> Non
         ("template/docs/adr/0001-layers.md", True),
         ("template/docs/review-checklist.md.jinja", True),
         ("template/docs/definition-of-done.md", True),
+        ("template/hatch.toml", True),
+        ("template/hatch.toml.jinja", True),
         ("template/src/xippios/{{ package_dir }}/mcp.py.jinja", True),  # Jinja in the name
         ("template/{{ _copier_conf.answers_file }}.jinja", True),
         ("template/{% if x %}.github{% endif %}/ci.yml", True),

@@ -89,6 +89,8 @@ PROTECTED = (
     "CLAUDE.local.md",
     ".pre-commit-config.yaml",
     ".secrets.baseline",
+    # hatchling merges a root hatch.toml over [tool.hatch], a build route (BUILD_NAMES).
+    "hatch.toml",
     "docs/conventions.md",
     "docs/adr/**",
     "docs/review-checklist.md",
@@ -724,11 +726,12 @@ DEPENDENCY_NAMES = (
 )
 # Where a package is built from and installed from, and the commands it installs: these
 # tables and keys, and everything below them (tool.uv: index, sources, overrides, ...;
-# tool.hatch.build: the packaged paths, its targets and its build hooks).
+# tool.hatch: the packaged paths, targets and build hooks, the metadata hooks and the
+# version source, which run code at build time; a root hatch.toml is a protected path).
 BUILD_NAMES = (
     "build-system",
     "tool.uv",
-    "tool.hatch.build",
+    "tool.hatch",
     "project.scripts",
     "project.gui-scripts",
     "project.entry-points",
@@ -754,9 +757,9 @@ def dependency_block(
 
     Read as text, since a Jinja template is not TOML: ``[project] dependencies``,
     ``[project.optional-dependencies]``, ``[dependency-groups]``, ``[build-system]``,
-    ``[tool.uv]``, ``[tool.hatch.build]``, ``[project.scripts]``, ``[project.gui-scripts]``
-    and ``[project.entry-points.*]``, whether written as tables, as dotted keys or as
-    multi-line values, Jinja lines included; each line with its table.
+    ``[tool.uv]``, ``[tool.hatch]``, ``[project.scripts]``, ``[project.gui-scripts]`` and
+    ``[project.entry-points.*]``, whether written as tables, as dotted keys or as multi-line
+    values, Jinja lines included; each line with its table.
     """
     if text is None:
         return None
