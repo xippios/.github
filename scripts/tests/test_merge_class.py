@@ -845,6 +845,10 @@ dev = [
   "pytest>=8",
 ]
 
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
 [tool.ruff]
 line-length = 100
 
@@ -864,24 +868,44 @@ def template_repo_files() -> dict[str, str | None]:
     }
 
 
+BLOCK = "the dependency block of template/pyproject.toml.jinja changed"
+JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja"
+
+
 @pytest.mark.parametrize(
-    ("old", "new", "protected"),
+    ("old", "new", "hits"),
     [
         (
             '  "xippios-core~={{ core_version }}",\n',
             '  "xippios-core~={{ core_version }}",\n  "httpx>=0.28",\n',
-            True,
+            [BLOCK],
         ),
         (
             'http = ["xippios-core[http]~={{ core_version }}"]\n',
             'http = ["xippios-core[http]~={{ core_version }}", "uvicorn"]\n',
-            True,
+            [BLOCK, JINJA_LINE],
         ),
-        ('  "pytest>=8",\n', '  "pytest>=8",\n  "evil-plugin",\n', True),
-        ('rev = "{{ core_git_ref }}"', 'rev = "{{ core_git_ref }}", subdirectory = "x"', True),
-        ("[tool.uv.sources]\n", "[tool.uv.sources]\nother = { path = '../other' }\n", True),
-        ('description = "Typed client', 'description = "A typed client', False),
-        ("line-length = 100", "line-length = 120", False),
+        ('  "pytest>=8",\n', '  "pytest>=8",\n  "evil-plugin",\n', [BLOCK]),
+        (
+            'rev = "{{ core_git_ref }}"',
+            'rev = "{{ core_git_ref }}", subdirectory = "x"',
+            [BLOCK, JINJA_LINE],
+        ),
+        ("[tool.uv.sources]\n", "[tool.uv.sources]\nother = { path = '../other' }\n", [BLOCK]),
+        ('requires = ["hatchling>=1.27"]', 'requires = ["hatchling>=1.27", "evil"]', [BLOCK]),
+        ("[tool.ruff]\n", '[[tool.uv.index]]\nurl = "https://x.invalid"\n\n[tool.ruff]\n', [BLOCK]),
+        ("[tool.ruff]\n", '[tool.uv]\noverride-dependencies = ["a"]\n\n[tool.ruff]\n', [BLOCK]),
+        ("[tool.ruff]\n", '[tool.uv]\nindex-url = "https://x.invalid"\n\n[tool.ruff]\n', [BLOCK]),
+        ("[project.scripts]\n", '[project.scripts]\nevil = "os:system"\n', [BLOCK]),
+        (
+            "[dependency-groups]\n",
+            '[project.entry-points.pytest11]\nplugin = "x.y"\n\n[dependency-groups]\n',
+            [BLOCK],
+        ),
+        ('description = "Typed client', 'description = "A typed client', [JINJA_LINE]),
+        ("line-length = 100\n", 'line-length = 100\nsrc = ["{{ source_slug }}"]\n', [JINJA_LINE]),
+        ("{% endif %}\n\n[dependency-groups]", "\n[dependency-groups]", [BLOCK, JINJA_LINE]),
+        ("line-length = 100", "line-length = 120", []),
     ],
     ids=[
         "dependencies",
@@ -889,22 +913,120 @@ def template_repo_files() -> dict[str, str | None]:
         "dependency-groups",
         "uv-sources",
         "uv-sources-added",
-        "description",
+        "build-system",
+        "uv-index",
+        "uv-override-dependencies",
+        "uv-index-url",
+        "scripts",
+        "entry-points",
+        "jinja-description",
+        "jinja-line-added",
+        "jinja-line-removed",
         "tool-ruff",
     ],
 )
-def test_template_dependency_block_is_protected(
-    tmp_path: Path, old: str, new: str, protected: bool
+def test_template_dependency_block_and_jinja_lines_are_protected(
+    tmp_path: Path, old: str, new: str, hits: list[str]
 ) -> None:
+    assert old in TEMPLATE_PYPROJECT
     pr = make_pr(
         tmp_path,
         template_repo_files(),
-        {"template/pyproject.toml.jinja": TEMPLATE_PYPROJECT.replace(old, new)},
+        {"template/pyproject.toml.jinja": TEMPLATE_PYPROJECT.replace(old, new, 1)},
     )
     result = classify(pr, repo="xippios/sdk-template")
-    hits = [f.text for f in result.findings if f.rule == 3]
-    assert hits == (
-        ["the dependency block of template/pyproject.toml.jinja changed"] if protected else []
+    assert [f.text for f in result.findings if f.rule == 3] == hits
+
+
+SOURCE_PYPROJECT = (
+    PYPROJECT.format(version="0.2.0")
+    + """
+[project.scripts]
+xippios-usda-psd-mcp = "xippios.usda.psd.mcp:run"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+"""
+)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "tables"),
+    [
+        (
+            'requires = ["hatchling>=1.27"]',
+            'requires = ["hatchling>=1.27", "evil"]',
+            "build-system",
+        ),
+        ("[tool.ruff]", '[[tool.uv.index]]\nurl = "https://x.invalid"\n\n[tool.ruff]', "tool.uv"),
+        ("[tool.ruff]", '[tool.uv]\nindex-url = "https://x.invalid"\n\n[tool.ruff]', "tool.uv"),
+        ("[tool.ruff]", '[tool.uv.sources]\nx = { path = "../x" }\n\n[tool.ruff]', "tool.uv"),
+        ("[tool.ruff]", '[tool.uv]\noverride-dependencies = ["a"]\n\n[tool.ruff]', "tool.uv"),
+        ('mcp:run"', 'mcp:run"\nevil = "os:system"', "project.scripts"),
+        (
+            "[build-system]",
+            '[project.gui-scripts]\ng = "x:y"\n\n[build-system]',
+            "project.gui-scripts",
+        ),
+        (
+            "[build-system]",
+            '[project.entry-points.pytest11]\np = "x.y"\n\n[build-system]',
+            "project.entry-points",
+        ),
+        ('"xippios-core~=0.2.0"', '"xippios-core~=0.2.0", "httpx>=0.28"', None),
+        ('dev = ["pytest>=8"]', 'dev = ["pytest>=8", "respx"]', None),
+        ("line-length = 100", "line-length = 120", None),
+    ],
+    ids=[
+        "build-system",
+        "uv-index",
+        "uv-index-url",
+        "uv-sources",
+        "uv-override-dependencies",
+        "scripts",
+        "gui-scripts",
+        "entry-points",
+        "dependencies",
+        "dependency-groups",
+        "tool-ruff",
+    ],
+)
+def test_build_and_install_routes_of_a_pyproject_are_protected(
+    tmp_path: Path, template: Path, old: str, new: str, tables: str | None
+) -> None:
+    assert old in SOURCE_PYPROJECT
+    base = source_base(template)
+    base["pyproject.toml"] = SOURCE_PYPROJECT
+    pr = make_pr(tmp_path, base, {"pyproject.toml": SOURCE_PYPROJECT.replace(old, new, 1)})
+    result = classify(pr)
+    expected = [f"build or install routes changed in pyproject.toml: {tables}"] if tables else []
+    assert [f.text for f in result.findings if f.human] == expected
+
+
+@pytest.mark.parametrize("repo", ["xippios/sdk-core", "xippios/sdk-template"])
+def test_build_routes_are_protected_in_every_repository(tmp_path: Path, repo: str) -> None:
+    base = {"pyproject.toml": SOURCE_PYPROJECT, "README.md": "x\n"}
+    head = SOURCE_PYPROJECT.replace('build-backend = "hatchling.build"', 'build-backend = "evil"')
+    pr = make_pr(tmp_path, base, {"pyproject.toml": head})
+    result = classify(pr, repo=repo)
+    assert [f.text for f in result.findings if f.human] == [
+        "build or install routes changed in pyproject.toml: build-system"
+    ]
+
+
+def test_an_unreadable_pyproject_is_human(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"pyproject.toml": "[project\n"})
+    result = classify(pr)
+    assert any(
+        f.rule == 3 and f.text.startswith("cannot read the build and install tables")
+        for f in result.findings
     )
 
 

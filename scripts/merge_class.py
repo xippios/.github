@@ -15,11 +15,13 @@ collected; the first ``human`` decides the class, the later ones only add to the
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
    ``human``; an answer the base lacks (a question a template release added) is free
    when it equals the question's literal default at the head's ``_commit``.
-3. Protected paths in what remains; in a source, also a template-owned file under
-   ``src/`` that differs from the render (an adapter changed by hand); in sdk-template,
-   the template origin of every path protected in a source, any path under ``template/``
-   with Jinja in its name, and the dependency block of ``template/pyproject.toml.jinja``;
-   in ``xippios/.github`` every pull request.
+3. Protected paths in what remains; everywhere, also the build and install tables of
+   ``pyproject.toml``; in a source, also a template-owned file under ``src/`` that
+   differs from the render (an adapter changed by hand); in sdk-template, the template
+   origin of every path protected in a source, any path under ``template/`` with Jinja in
+   its name, the dependency, build and install tables of ``template/pyproject.toml.jinja``
+   and any changed line of it that carries Jinja; in ``xippios/.github`` every pull
+   request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
    names at least one task.
 5. Release: the ``[project]`` version of ``pyproject.toml`` changed, and what remains is
@@ -41,6 +43,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import os
 import re
 import shutil
@@ -700,12 +703,20 @@ def exported_names(source: bytes | None) -> list[str] | None:
 _TABLE = re.compile(r"^\[\s*([^\[\]]+?)\s*\]\s*(?:#.*)?$")
 _ARRAY_TABLE = re.compile(r"^\[\[\s*([^\[\]]+?)\s*\]\]\s*(?:#.*)?$")
 _KEY = re.compile(r"^([A-Za-z0-9_.\"' -]+?)\s*=(.*)$")
-# The dependency block of a pyproject: these tables and keys, and everything below them.
+# The dependency lists of a pyproject: these tables and keys, and everything below them.
 DEPENDENCY_NAMES = (
     "project.dependencies",
     "project.optional-dependencies",
     "dependency-groups",
-    "tool.uv.sources",
+)
+# Where a package is built from and installed from, and the commands it installs: these
+# tables and keys, and everything below them (tool.uv: index, sources, overrides, ...).
+BUILD_NAMES = (
+    "build-system",
+    "tool.uv",
+    "project.scripts",
+    "project.gui-scripts",
+    "project.entry-points",
 )
 
 
@@ -713,20 +724,24 @@ def _toml_name(text: str) -> str:
     return ".".join(part.strip().strip("\"'") for part in text.split("."))
 
 
-def _in_dependency_block(name: str) -> bool:
-    return any(name == top or name.startswith(top + ".") for top in DEPENDENCY_NAMES)
+def _in_block(name: str, names: Iterable[str]) -> bool:
+    return any(name == top or name.startswith(top + ".") for top in names)
 
 
 def _nesting(text: str) -> int:
     return text.count("[") + text.count("{") - text.count("]") - text.count("}")
 
 
-def dependency_block(text: str | None) -> list[str] | None:
-    """The dependency block of a pyproject template, as stripped lines with their table.
+def dependency_block(
+    text: str | None, names: Iterable[str] = DEPENDENCY_NAMES + BUILD_NAMES
+) -> list[str] | None:
+    """The dependency, build and install tables of a pyproject template, as stripped lines.
 
     Read as text, since a Jinja template is not TOML: ``[project] dependencies``,
-    ``[project.optional-dependencies]``, ``[dependency-groups]`` and ``[tool.uv.sources]``,
-    whether written as tables, as dotted keys or as multi-line values, Jinja lines included.
+    ``[project.optional-dependencies]``, ``[dependency-groups]``, ``[build-system]``,
+    ``[tool.uv]``, ``[project.scripts]``, ``[project.gui-scripts]`` and
+    ``[project.entry-points.*]``, whether written as tables, as dotted keys or as multi-line
+    values, Jinja lines included; each line with its table.
     """
     if text is None:
         return None
@@ -745,7 +760,7 @@ def dependency_block(text: str | None) -> list[str] | None:
         if header:
             table = _toml_name(header.group(1))
             continue
-        if _in_dependency_block(table):
+        if _in_block(table, names):
             if line:
                 block.append(f"{table}: {line}")
             depth = max(_nesting(line), 0)
@@ -754,11 +769,41 @@ def dependency_block(text: str | None) -> list[str] | None:
         key = _KEY.match(line)
         if key:
             name = _toml_name(f"{table}.{key.group(1)}" if table else key.group(1))
-            keep = _in_dependency_block(name)
+            keep = _in_block(name, names)
             if keep:
                 block.append(f"{table}: {line}")
             depth = max(_nesting(key.group(2)), 0)
     return block
+
+
+def jinja_lines_changed(before: str | None, after: str | None) -> bool:
+    """Whether a line that carries Jinja was added, removed, changed or moved."""
+    old = before.splitlines() if before is not None else []
+    new = after.splitlines() if after is not None else []
+    matcher = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        lines = [*old[i1:i2], *new[j1:j2]]
+        if tag != "equal" and any(mark in line for line in lines for mark in _JINJA):
+            return True
+    return False
+
+
+def build_routes(source: bytes | None) -> dict[str, object]:
+    """The build and install tables of a pyproject.toml (``BUILD_NAMES``) that it has.
+
+    Raises ValueError (TOMLDecodeError, UnicodeDecodeError) when it cannot be read.
+    """
+    if source is None:
+        return {}
+    data: object = tomllib.loads(source.decode())
+    routes: dict[str, object] = {}
+    for name in BUILD_NAMES:
+        node = data
+        for part in name.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        if node is not None:
+            routes[name] = node
+    return routes
 
 
 def project_version(source: bytes | None) -> str | None:
@@ -1074,10 +1119,25 @@ def classify(
     if name == "sdk-template" and TEMPLATE_PYPROJECT in remaining:
         before = read_blob(workdir, fork, TEMPLATE_PYPROJECT)
         after = read_blob(workdir, head_sha, TEMPLATE_PYPROJECT)
-        old = dependency_block(before.decode() if before is not None else None)
-        new = dependency_block(after.decode() if after is not None else None)
-        if old != new:
+        old_text = before.decode() if before is not None else None
+        new_text = after.decode() if after is not None else None
+        if dependency_block(old_text) != dependency_block(new_text):
             add(Finding(3, f"the dependency block of {TEMPLATE_PYPROJECT} changed"))
+        if jinja_lines_changed(old_text, new_text):
+            add(Finding(3, f"a line that carries Jinja changed in {TEMPLATE_PYPROJECT}"))
+    # In every repository: where the package is built and installed from, and what it
+    # installs. The dependency lists stay free.
+    if "pyproject.toml" in remaining:
+        try:
+            old_routes = build_routes(read_blob(workdir, fork, "pyproject.toml"))
+            new_routes = build_routes(read_blob(workdir, head_sha, "pyproject.toml"))
+        except ValueError as exc:  # TOMLDecodeError and UnicodeDecodeError
+            add(Finding(3, f"cannot read the build and install tables of pyproject.toml: {exc}"))
+        else:
+            tables = [n for n in BUILD_NAMES if old_routes.get(n) != new_routes.get(n)]
+            if tables:
+                routes = ", ".join(tables)
+                add(Finding(3, f"build or install routes changed in pyproject.toml: {routes}"))
 
     # 4. First surface
     for path in remaining:

@@ -88,7 +88,11 @@ reason is reported.
      template renders them, so rule 2 trusts them when identical to the render),
      `.mcp.json`, `CLAUDE.local.md`, `.pre-commit-config.yaml`, `.secrets.baseline`,
      `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
-     `docs/definition-of-done.md`.
+     `docs/definition-of-done.md`; and a change of `pyproject.toml` in where the package
+     is built and installed from or what it installs, `[build-system]`, `[tool.uv]`
+     (index, sources, override-dependencies, ...), `[project.scripts]`,
+     `[project.gui-scripts]` or `[project.entry-points.*]` ("build or install routes
+     changed"). The dependency lists stay free.
    - In a source, also a template-owned file under `src/` that differs from the render
      (an adapter changed by hand, which could expose tasks around rule 4); without a
      render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
@@ -97,9 +101,10 @@ reason is reported.
    - In `sdk-template`, also `copier.yml`, `copier.yaml`, `scripts/**`, the template
      origin of every path protected in a source (the `template/` prefix, with or without
      a `.jinja` suffix), any path under `template/` with Jinja (`{{` or `{%`) in its name,
-     and `template/pyproject.toml.jinja` when its dependency block changes:
-     `[project] dependencies`, `[project.optional-dependencies]`, `[dependency-groups]`
-     or `[tool.uv.sources]`.
+     and `template/pyproject.toml.jinja` when its dependency block changes
+     (`[project] dependencies`, `[project.optional-dependencies]`, `[dependency-groups]`,
+     and the build and install tables above) or any changed line of it carries `{{`,
+     `{%` or `{#`.
    - In this repository, every pull request.
 4. **First surface**: a `src/xippios/**/tasks.py` whose `__all__` was empty or absent
    names at least one task: `human`. An `__all__` that cannot be read statically is
