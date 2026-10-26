@@ -7,8 +7,9 @@ collected; the first ``human`` decides the class, the later ones only add to the
 1. Scaffold: the base has no ``src/`` directory.
 2. Render trust: a changed file the template owns (rendered, and matched by no
    ``_skip_if_exists`` pattern) that is byte-identical to the template rendered at the
-   head's ``_commit`` with the head's answers leaves the changed set. A render that fails
-   trusts nothing.
+   head's ``_commit`` with the head's answers leaves the changed set. The render runs at
+   the SHA ``_commit`` resolves to on the template's main. A render that fails trusts
+   nothing.
 3. Protected paths in what remains; in ``xippios/.github`` every pull request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
    names at least one task.
@@ -129,6 +130,7 @@ class Classification:
     remaining: list[str] = field(default_factory=list)
     findings: list[Finding] = field(default_factory=list)
     template_ref: str | None = None
+    template_sha: str | None = None
 
     @property
     def merge_class(self) -> str:
@@ -572,8 +574,8 @@ def copier_render(template_url: str, vcs_ref: str, data_file: Path, dest: Path) 
         raise RenderError(f"copier exited {proc.returncode}: {tail}")
 
 
-def _template_settings(template_url: str, commit: str, scratch: Path) -> tuple[str, list[str]]:
-    """Clone the template; check ``commit`` is on its main; its ``_skip_if_exists``."""
+def _clone_template(template_url: str, scratch: Path) -> Path:
+    """A bare-bones clone of the template (no checkout), with its tags and its main."""
     clone = scratch / "template"
     try:
         proc = subprocess.run(
@@ -589,6 +591,11 @@ def _template_settings(template_url: str, commit: str, scratch: Path) -> tuple[s
     if proc.returncode != 0:
         detail = proc.stderr.decode(errors="replace").strip()
         raise RenderError(f"cannot clone {template_url}: {detail}")
+    return clone
+
+
+def _on_main(clone: Path, commit: str) -> str:
+    """The SHA ``commit`` names in the template, which must be on the template's main."""
     try:
         sha = resolve(clone, commit)
     except ClassifyError as exc:
@@ -596,11 +603,16 @@ def _template_settings(template_url: str, commit: str, scratch: Path) -> tuple[s
     branch = f"refs/remotes/origin/{TEMPLATE_BRANCH}"
     if _git(clone, "merge-base", "--is-ancestor", sha, branch, check=False).returncode != 0:
         raise RenderError(f"_commit {commit!r} is not on the template's {TEMPLATE_BRANCH}")
+    return sha
+
+
+def _skip_list(clone: Path, sha: str) -> list[str]:
+    """The ``_skip_if_exists`` patterns of the template's copier.yml at ``sha``."""
     for name in ("copier.yml", "copier.yaml"):
         content = read_blob(clone, sha, name)
         if content is not None:
-            return sha, skip_patterns(content.decode())
-    raise RenderError(f"the template has no copier.yml at {commit!r}")
+            return skip_patterns(content.decode())
+    raise RenderError(f"the template has no copier.yml at {sha}")
 
 
 # A tag, a SHA or `git describe` output; never an option.
@@ -614,6 +626,7 @@ class Trust:
     trusted: list[str]
     template_ref: str | None
     note: str | None
+    template_sha: str | None = None
 
 
 def trust_rendered(
@@ -642,7 +655,9 @@ def trust_rendered(
     with tempfile.TemporaryDirectory(prefix="merge-class-") as tmp:
         scratch = Path(tmp)
         try:
-            _, raw_patterns = _template_settings(template_url, commit, scratch)
+            clone = _clone_template(template_url, scratch)
+            sha = _on_main(clone, commit)
+            raw_patterns = _skip_list(clone, sha)
             package_dir = import_path.replace(".", "/")
             rendered_patterns = [
                 re.sub(r"\{\{\s*package_dir\s*\}\}", package_dir, p) for p in raw_patterns
@@ -654,7 +669,9 @@ def trust_rendered(
             data_file = scratch / "answers.yml"
             data_file.write_text(answers_data(entries))
             dest = scratch / "render"
-            renderer(template_url, commit, data_file, dest)
+            # The SHA checked above, never the ref name: a tag or branch could move between
+            # the check and copier's own clone.
+            renderer(template_url, sha, data_file, dest)
         except RenderError as exc:
             return Trust([], commit, f"render failed, nothing is trusted: {exc}")
         trusted: list[str] = []
@@ -667,7 +684,7 @@ def trust_rendered(
                 continue
             if rendered.read_bytes() == ours:
                 trusted.append(path)
-    return Trust(trusted, commit, None)
+    return Trust(trusted, commit, None, sha)
 
 
 # --- classification ----------------------------------------------------------------------
@@ -708,6 +725,7 @@ def classify(
         trust = Trust([], None, "render skipped (--no-render); nothing is trusted")
     result.trusted = trust.trusted
     result.template_ref = trust.template_ref
+    result.template_sha = trust.template_sha
     if trust.note:
         add(Finding(2, trust.note, human=False))
     remaining = [p for p in changed if p not in set(trust.trusted)]
@@ -793,6 +811,8 @@ def summary_markdown(result: Classification) -> str:
     if not any(f.human for f in result.findings):
         lines.append("- rule 6: no rule says human, so `auto`")
     ref = f" at `{result.template_ref}`" if result.template_ref else ""
+    if result.template_sha:
+        ref += f" (`{result.template_sha[:12]}`)"
     lines += ["", f"### Trusted: byte-identical to the template{ref} ({len(result.trusted)})", ""]
     lines += [f"- `{p}`" for p in result.trusted] or ["- none"]
     lines += ["", f"### Remaining changed files ({len(result.remaining)})", ""]
@@ -807,6 +827,8 @@ def report_text(result: Classification) -> str:
         effect = "human" if finding.human else "note"
         lines.append(f"rule {finding.rule} ({effect}): {finding.text}")
     ref = f" at {result.template_ref}" if result.template_ref else ""
+    if result.template_sha:
+        ref += f" ({result.template_sha[:12]})"
     lines.append(f"trusted{ref} ({len(result.trusted)}): {', '.join(result.trusted) or '-'}")
     lines.append(f"remaining ({len(result.remaining)}): {', '.join(result.remaining) or '-'}")
     return "\n".join(lines)

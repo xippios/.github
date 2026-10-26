@@ -4,6 +4,7 @@ One test per rule and per acceptance line of the merge-gate design the classifie
 prove on its own (the rulesets and identities it cannot).
 """
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -230,6 +231,7 @@ def test_template_owned_file_identical_to_the_render_is_trusted(
     assert result.trusted == ["tests/conftest.py"]
     assert result.remaining == ["src/xippios/usda/psd/mcp.py"]
     assert result.template_ref == "v0.1.0"  # the head's _commit
+    assert result.template_sha == git(template, "rev-parse", "v0.1.0^{commit}")
 
 
 def test_skip_listed_file_is_never_trusted(tmp_path: Path, template: Path) -> None:
@@ -270,11 +272,42 @@ def test_render_gets_the_answers_without_commit_and_src_path(
     pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
     classify(pr, render=render, template=template)
     [(url, ref, data)] = render.calls
-    assert (url, ref) == (str(template), "v0.1.0")
+    # The SHA the head's _commit (v0.1.0) resolves to on the template's main, not the tag.
+    assert (url, ref) == (str(template), git(template, "rev-parse", "v0.1.0^{commit}"))
     assert "_commit" not in data
     assert "_src_path" not in data
     assert "import_path: usda.psd\n" in data
     assert "api_key_env: ''\n" in data
+
+
+def test_copier_runs_at_the_checked_sha_without_config_or_tasks(
+    tmp_path: Path, template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real renderer, with a fake `uvx` on PATH that records its arguments."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    record = tmp_path / "uvx-args"
+    uvx = bin_dir / "uvx"
+    uvx.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$@" > "{record}"\n'
+        "for dest; do :; done\n"  # the last argument: the destination
+        'mkdir -p "$dest/tests"\n'
+        'printf "conftest v2\\n" > "$dest/tests/conftest.py"\n'
+    )
+    uvx.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
+    result = mc.classify(
+        repo=SOURCE, base=pr.base, head=pr.head, workdir=pr.workdir, template_url=str(template)
+    )
+    args = record.read_text().splitlines()
+    sha = git(template, "rev-parse", "v0.1.0^{commit}")
+    assert args[:5] == ["--no-config", "--quiet", "--from", mc.COPIER_SPEC, "copier"]
+    assert {"copy", "--defaults", "--trust", "--skip-tasks", "--data-file"} <= set(args)
+    assert args[args.index("--vcs-ref") + 1] == sha
+    assert args[-2] == str(template)
+    assert result.trusted == ["tests/conftest.py"]
 
 
 def test_render_failure_trusts_nothing(tmp_path: Path, template: Path) -> None:
