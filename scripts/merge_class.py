@@ -4,7 +4,8 @@
 The rules, in order (README.md, "Merge classes"). Every rule is evaluated and every reason
 collected; the first ``human`` decides the class, the later ones only add to the summary.
 
-1. Scaffold: the base has no ``src/`` directory.
+1. Scaffold, in a source repository only (``sdk-*`` other than sdk-core and sdk-template):
+   the base has no ``src/`` directory.
 2. Render trust: a changed file the template owns (rendered, and matched by no
    ``_skip_if_exists`` pattern) that is byte-identical to the template rendered at the
    head's ``_commit`` with the head's answers leaves the changed set. The render runs at
@@ -80,6 +81,8 @@ PROTECTED_BY_REPO: dict[str, tuple[str, ...]] = {
 TEMPLATE_PYPROJECT = "template/pyproject.toml.jinja"
 # Every pull request of the organisation's .github repository is human.
 ORG_REPOSITORY = ".github"
+# The repositories named sdk-* that are not sources; rule 1 skips them.
+FAMILY_REPOSITORIES = frozenset({"sdk-core", "sdk-template"})
 
 RELEASE_FILES = frozenset(
     {
@@ -694,6 +697,11 @@ def _repo_name(repo: str) -> str:
     return repo.rstrip("/").rsplit("/", 1)[-1]
 
 
+def is_source(name: str) -> bool:
+    """Whether a repository is a source: named ``sdk-*``, and not sdk-core or sdk-template."""
+    return name.startswith("sdk-") and name not in FAMILY_REPOSITORIES
+
+
 def classify(
     *,
     repo: str,
@@ -713,10 +721,11 @@ def classify(
     name = _repo_name(repo)
     add = result.findings.append
 
-    # 1. Scaffold
-    entry = tree_entry(workdir, base_sha, "src")
-    if entry is None or entry[1] != "tree":
-        add(Finding(1, "scaffold: the base has no src/ directory"))
+    # 1. Scaffold, sources only: sdk-template and .github have no src/ at all
+    if is_source(name):
+        entry = tree_entry(workdir, base_sha, "src")
+        if entry is None or entry[1] != "tree":
+            add(Finding(1, "scaffold: the base has no src/ directory"))
 
     # 2. Render trust
     if render:

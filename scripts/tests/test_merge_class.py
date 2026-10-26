@@ -450,11 +450,7 @@ def test_src_is_protected_in_core_only(tmp_path: Path, repo: str, expected: str)
 
 
 def test_every_pr_of_the_org_github_repository_is_human(tmp_path: Path) -> None:
-    pr = make_pr(
-        tmp_path,
-        {"README.md": "stub\n", "src/keep": ""},
-        {"README.md": "longer\n"},
-    )
+    pr = make_pr(tmp_path, {"README.md": "stub\n"}, {"README.md": "longer\n"})
     result = classify(pr, repo="xippios/.github")
     assert result.merge_class == mc.HUMAN
     assert human_rules(result) == {3}
@@ -537,16 +533,30 @@ def test_template_dependency_block_is_protected(
     ],
 )
 def test_template_protected_paths(tmp_path: Path, path: str, protected: bool) -> None:
+    """sdk-template skips rule 1, so its rule-3 list alone decides: the list is reachable."""
     pr = make_pr(tmp_path, template_repo_files(), {path: "changed\n"})
     result = classify(pr, repo="xippios/sdk-template")
-    assert any(f.rule == 3 for f in result.findings) is protected
+    assert human_rules(result) == ({3} if protected else set())
+    assert result.merge_class == (mc.HUMAN if protected else mc.AUTO)
 
 
-def test_template_has_no_root_src_so_rule_1_fires(tmp_path: Path) -> None:
-    """sdk-template's own tree has no src/: rule 1, as specified, makes its every PR human."""
+@pytest.mark.parametrize(
+    ("repo", "rules"),
+    [
+        (SOURCE, {1}),
+        ("xippios/sdk-template", set()),
+        ("xippios/sdk-core", set()),
+        ("xippios/.github", {3}),  # every PR there is human, by rule 3 alone
+        ("xippios/other", set()),
+    ],
+)
+def test_rule_1_applies_to_source_repositories_only(
+    tmp_path: Path, repo: str, rules: set[int]
+) -> None:
+    """A base without src/ is a scaffold only in a source; sdk-template and .github have none."""
     pr = make_pr(tmp_path, template_repo_files(), {"template/README.md.jinja": "longer\n"})
-    result = classify(pr, repo="xippios/sdk-template")
-    assert human_rules(result) == {1}
+    result = classify(pr, repo=repo)
+    assert human_rules(result) == rules
 
 
 # --- rule 4 ------------------------------------------------------------------------------
