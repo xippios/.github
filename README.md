@@ -272,10 +272,14 @@ offer it is Johannes's at gate 2.
 
 - **`sdk-main-protection`** (org branch ruleset on `main` of the `sdk-*` repositories,
   and of this repository once it joins the list): pull request required, `ci` required
-  and strict, `family-review` required once the org secret `ANTHROPIC_API_KEY` exists
+  and strict, `family-review` required once the org secret `ANTHROPIC_API_KEY` exists (by the
+  required-workflow rule, or the slash-joined context `family-review / family-review` in caller
+  mode, never the bare name)
   (and with it the org variable `FAMILY_REVIEW_REQUIRED=1`), no approvals required, no
   bypass actor.
-- **`sdk-merge-class`** (org branch ruleset, same targets): requires the merge-class check
+- **`sdk-merge-class`** (org branch ruleset, same targets): requires the merge-class check (the
+  required-workflow rule, or the slash-joined context `merge-class / merge-class` in caller mode
+  once `GATES_CALLER` is set in every target, never the bare name)
   and nothing else. Bypass actor Johannes, mode "pull requests only": the bypass button
   is how a `human` pull request merges, and it bypasses nothing but the class. In caller
   mode it is created once every repository carries `gates.yml`.
