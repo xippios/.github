@@ -182,6 +182,7 @@ def rendered(template: Path) -> dict[str, str]:
         "src/xippios/usda/psd/tasks.py": "__all__: list[str] = []\n",
         "src/xippios/usda/psd/reference/README.md": "reference stub\n",
         "tests/conftest.py": "conftest v2\n",
+        "tests/test_layout.py": "layout v2\n",
         ".claude/commands/add-endpoint.md": "add an endpoint v2\n",
     }
 
@@ -797,7 +798,7 @@ def test_changed_answers_not_in_copiers_form_trust_nothing(tmp_path: Path, templ
     pr = make_pr(
         tmp_path,
         source_base(template),
-        {".copier-answers.yml": head_answers, "tests/conftest.py": "conftest v2\n"},
+        {".copier-answers.yml": head_answers, "tests/test_layout.py": "layout v2\n"},
     )
     result = classify(pr, render=FakeRender(rendered(template)), template=template)
     assert result.trusted == []
@@ -806,7 +807,7 @@ def test_changed_answers_not_in_copiers_form_trust_nothing(tmp_path: Path, templ
 
 @pytest.mark.parametrize(
     ("change", "human"),
-    [("tests/conftest.py", True), ("tests/test_new.py", False)],
+    [("tests/test_layout.py", True), ("tests/test_new.py", False)],
     ids=["something-trusted", "nothing-trusted"],
 )
 def test_unchanged_answers_must_be_copiers_own_when_anything_is_trusted(
@@ -814,7 +815,7 @@ def test_unchanged_answers_must_be_copiers_own_when_anything_is_trusted(
 ) -> None:
     base = source_base(template)
     base[".copier-answers.yml"] = answers(template, "v0.1.0") + "# edited by hand\n"
-    pr = make_pr(tmp_path, base, {change: "conftest v2\n"})
+    pr = make_pr(tmp_path, base, {change: "layout v2\n"})
     result = classify(pr, render=FakeRender(rendered(template)), template=template)
     assert result.trusted == []
     assert [f.text for f in result.findings if f.human] == ([mc.NOT_CANONICAL] if human else [])
@@ -1184,6 +1185,99 @@ def test_without_a_render_the_adapters_are_template_owned_by_name(
     pr = make_pr(tmp_path, source_base(template), {path: "edited\n"})
     result = classify(pr)
     assert human_rules(result) == ({3} if human else set())
+
+
+CONFTEST = """\
+import pytest
+
+pytest_plugins = ["xippios.core.testing.plugin"]
+"""
+FAMILY_TEST = "def test_family_conformance(family_check):\n    family_check()\n"
+FAMILY_TEST_FILES = {"tests/conftest.py": CONFTEST, "tests/test_family.py": FAMILY_TEST}
+
+
+def family_render(template: Path) -> dict[str, str]:
+    """The render of a template that carries the family check (v0.2.1 and later)."""
+    return {**rendered(template), **FAMILY_TEST_FILES}
+
+
+def test_template_owned_test_file_names() -> None:
+    """The family check and its plugin line; tests/test_tasks.py is the session's."""
+    assert frozenset(FAMILY_TEST_FILES) == mc.FAMILY_TEST_FILES
+
+
+@pytest.mark.parametrize("path", sorted(FAMILY_TEST_FILES))
+@pytest.mark.parametrize("render", ["render", "render-without-it", "no-render"])
+def test_deleting_a_template_owned_test_file_is_human(
+    tmp_path: Path, template: Path, path: str, render: str
+) -> None:
+    """Rule 2 trusts no deleted file: a deletion is human whatever the render says."""
+    files = family_render(template)
+    if render == "render-without-it":
+        del files[path]
+    pr = make_pr(tmp_path, {**source_base(template), **FAMILY_TEST_FILES}, {path: None})
+    fake = None if render == "no-render" else FakeRender(files)
+    result = classify(pr, render=fake, template=template)
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human] == [
+        f"{path} is a template-owned test file deleted by the pull request"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("render", "reason"),
+    [
+        (True, "changed by hand: not trusted as the render's"),
+        (False, "and no render could compare it"),
+    ],
+    ids=["render", "no-render"],
+)
+def test_conftest_without_the_plugin_line_is_human(
+    tmp_path: Path, template: Path, render: bool, reason: str
+) -> None:
+    """Without the plugin line the family check is off: an edit by hand is human."""
+    edited = CONFTEST.replace('pytest_plugins = ["xippios.core.testing.plugin"]\n', "")
+    pr = make_pr(
+        tmp_path, {**source_base(template), **FAMILY_TEST_FILES}, {"tests/conftest.py": edited}
+    )
+    fake = FakeRender(family_render(template)) if render else None
+    result = classify(pr, render=fake, template=template)
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human] == [
+        f"tests/conftest.py is a template-owned test file {reason}"
+    ]
+
+
+def test_adoption_whose_family_test_is_identical_to_the_render_is_auto(
+    tmp_path: Path, template: Path
+) -> None:
+    changes = {**adoption(template), "tests/test_family.py": FAMILY_TEST}
+    render = FakeRender({**rendered(template), "tests/test_family.py": FAMILY_TEST})
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=template)
+    assert "tests/test_family.py" in result.trusted
+    assert "tests/conftest.py" in result.trusted
+    assert result.remaining == ["CHANGELOG.md"]
+    assert result.merge_class == mc.AUTO
+
+
+@pytest.mark.parametrize("render", [True, False])
+def test_tests_tasks_stays_the_sessions(tmp_path: Path, template: Path, render: bool) -> None:
+    """tests/test_tasks.py is skip-listed: a session's file, never a template-owned one."""
+    files = {**family_render(template), "tests/test_tasks.py": "def test_stub(): pass\n"}
+    base = {**source_base(template), "tests/test_tasks.py": "def test_stub(): pass\n"}
+    pr = make_pr(tmp_path, base, {"tests/test_tasks.py": "def test_get_data(): pass\n"})
+    fake = FakeRender(files) if render else None
+    result = classify(pr, render=fake, template=template)
+    assert result.merge_class == mc.AUTO
+
+
+@pytest.mark.parametrize("repo", ["xippios/sdk-core", "xippios/sdk-template"])
+def test_family_test_files_are_template_owned_in_a_source_only(
+    tmp_path: Path, template: Path, repo: str
+) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": None})
+    assert classify(pr, repo=repo).merge_class == mc.AUTO
 
 
 @pytest.mark.parametrize(("repo", "expected"), [("xippios/sdk-core", mc.HUMAN), (SOURCE, mc.AUTO)])

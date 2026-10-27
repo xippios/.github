@@ -22,7 +22,9 @@ collected; the first ``human`` decides the class, the later ones only add to the
    sdk-core's main.
 3. Protected paths in what remains; everywhere, also the build and install tables of
    ``pyproject.toml``; in a source, also a template-owned file under ``src/`` that
-   differs from the render (an adapter changed by hand); in sdk-template, the template
+   differs from the render (an adapter changed by hand) and a template-owned test file
+   (``tests/test_family.py``, ``tests/conftest.py``) that differs from the render or is
+   deleted (the family check or its plugin line turned off); in sdk-template, the template
    origin of every path protected in a source, any path under ``template/`` with Jinja in
    its name, the dependency, build and install tables of ``template/pyproject.toml.jinja``
    (read past Jinja, comments and strings, keys as TOML spells them, a key or header with
@@ -145,6 +147,10 @@ TEMPLATE_PYPROJECT = "template/pyproject.toml.jinja"
 # Template-owned modules under src/ by name, for when no render tells which files the
 # template owns (--no-render, a failed render).
 ADAPTER_MODULES = re.compile(r"src/xippios/(?:.+/)?(?:mcp|http|_version|api/__init__)\.py")
+# The template-owned test files that carry the family conformance check and the plugin
+# line that serves it; template-owned by name, too, when no render tells. tests/test_tasks.py
+# is the session's (skip-listed).
+FAMILY_TEST_FILES = frozenset({"tests/test_family.py", "tests/conftest.py"})
 # Every pull request of the organisation's .github repository is human.
 ORG_REPOSITORY = ".github"
 # The repositories named sdk-* that are not sources; rule 1 skips them.
@@ -1480,6 +1486,16 @@ def classify(
                 add(Finding(3, f"{path} is template-owned and differs from the render"))
             elif trust.owned is None and ADAPTER_MODULES.fullmatch(path):
                 add(Finding(3, f"{path} is template-owned and no render could compare it"))
+        # The family check changed or deleted by hand would turn off silently. A deletion is
+        # never identical to the render: human whatever the render says.
+        if is_source(name) and path in FAMILY_TEST_FILES:
+            test_file = f"{path} is a template-owned test file"
+            if tree_entry(workdir, head_sha, path) is None:
+                add(Finding(3, f"{test_file} deleted by the pull request"))
+            elif trust.owned is None:
+                add(Finding(3, f"{test_file} and no render could compare it"))
+            elif path in trust.owned:
+                add(Finding(3, f"{test_file} changed by hand: not trusted as the render's"))
         # Jinja in a name can render to any path, a protected one included.
         jinja = "{{" in path or "{%" in path
         if name == "sdk-template" and path.startswith(TEMPLATE_DIR) and jinja:
