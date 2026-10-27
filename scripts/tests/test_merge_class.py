@@ -1122,7 +1122,7 @@ def test_protected_path_is_human(tmp_path: Path, template: Path, path: str) -> N
 
 
 @pytest.mark.parametrize(
-    "repo", [SOURCE, "xippios/sdk-core", "xippios/sdk-template", "xippios/.github", "xippios/x"]
+    "repo", [SOURCE, "xippios/sdk-core", "xippios/sdk-template", "xippios/sdk-gates", "xippios/x"]
 )
 def test_commands_are_protected_in_every_repository(
     tmp_path: Path, template: Path, repo: str
@@ -1294,11 +1294,41 @@ def test_src_is_protected_in_core_only(tmp_path: Path, repo: str, expected: str)
     assert classify(pr, repo=repo).merge_class == expected
 
 
-def test_every_pr_of_the_org_github_repository_is_human(tmp_path: Path) -> None:
+def test_every_pr_of_the_gates_repository_is_human(tmp_path: Path) -> None:
     pr = make_pr(tmp_path, {"README.md": "stub\n"}, {"README.md": "longer\n"})
-    result = classify(pr, repo="xippios/.github")
+    result = classify(pr, repo="xippios/sdk-gates")
     assert result.merge_class == mc.HUMAN
     assert human_rules(result) == {3}
+
+
+@pytest.mark.parametrize(
+    ("repo", "rules"),
+    [("xippios/sdk-gates", {3}), (SOURCE, {1, 3, 4})],
+)
+def test_the_gates_repository_is_no_source(tmp_path: Path, repo: str, rules: set[int]) -> None:
+    """Named sdk-* since its rename, the gates repository is still no source.
+
+    Source-like paths under src/ and a deleted family test file, on a base without src/:
+    in a source that is a scaffold (rule 1), an adapter and a family test file (rule 3) and
+    the bootstrap (rule 4); in sdk-gates only the repository rule, no source finding.
+    """
+    pr = make_pr(
+        tmp_path,
+        {"README.md": "stub\n", "tests/conftest.py": "conftest v1\n"},
+        {
+            "src/xippios/usda/psd/mcp.py": "mcp\n",
+            "src/xippios/usda/psd/_client.py": "client\n",
+            "tests/conftest.py": None,
+        },
+    )
+    result = classify(pr, repo=repo)
+    assert result.merge_class == mc.HUMAN
+    assert human_rules(result) == rules
+    if repo == "xippios/sdk-gates":
+        assert not mc.is_source("sdk-gates")
+        assert [f.text for f in result.findings if f.human] == [
+            "every pull request of xippios/sdk-gates is human"
+        ]
 
 
 TEMPLATE_PYPROJECT = """\
@@ -1925,14 +1955,14 @@ def test_template_protected_paths(tmp_path: Path, path: str, protected: bool) ->
         (SOURCE, {1}),
         ("xippios/sdk-template", set()),
         ("xippios/sdk-core", set()),
-        ("xippios/.github", {3}),  # every PR there is human, by rule 3 alone
+        ("xippios/sdk-gates", {3}),  # every PR there is human, by rule 3 alone
         ("xippios/other", set()),
     ],
 )
 def test_rule_1_applies_to_source_repositories_only(
     tmp_path: Path, repo: str, rules: set[int]
 ) -> None:
-    """A base without src/ is a scaffold only in a source; sdk-template and .github have none."""
+    """A base without src/ is a scaffold only in a source; sdk-template and sdk-gates have none."""
     pr = make_pr(tmp_path, template_repo_files(), {"template/README.md.jinja": "longer\n"})
     result = classify(pr, repo=repo)
     assert human_rules(result) == rules

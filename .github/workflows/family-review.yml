@@ -165,6 +165,12 @@ jobs:
             fi
           done
 
+      # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB isolates Claude Code's subprocesses with bubblewrap,
+      # which the ubuntu runner lacks; without it the action refuses to start.
+      - name: Install bubblewrap for Claude Code's subprocess isolation
+        if: steps.gate.outputs.run == 'true'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq bubblewrap
+
       - name: Review
         id: review
         if: steps.gate.outputs.run == 'true'

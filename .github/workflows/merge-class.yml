@@ -7,7 +7,7 @@
 # check `merge-class`), or called as a job from a repository's caller workflow, gates.yml
 # (`on: workflow_call`, check `merge-class / merge-class`). The caller runs on
 # `pull_request` too, so `github.event.pull_request` is there either way. The classifier is always read from main
-# of xippios/.github, never from the pull request, so it changes only through a PR here.
+# of xippios/sdk-gates, never from the pull request, so it changes only through a PR here.
 #
 # `edited` is among the types because a change of the base branch arrives as `edited`.
 # Actions are pinned to commit SHAs, the version in a comment.
@@ -41,19 +41,19 @@ jobs:
           persist-credentials: false
       # Into a directory the first checkout's content cannot shadow: actions/checkout
       # empties a target that is not already a clone of the repository it checks out.
-      - name: Check out the classifier from main of xippios/.github
+      - name: Check out the classifier from main of xippios/sdk-gates
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: xippios/.github
+          repository: xippios/sdk-gates
           ref: main
-          path: .org-github
+          path: .sdk-gates
           persist-credentials: false
       # For `uvx copier`, which renders the template for rule 2. Pointed at the classifier's
       # checkout, so no uv version or cache key comes from the pull request.
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.13.5"
-          working-directory: .org-github
+          working-directory: .sdk-gates
           enable-cache: false
       # The classifier reads the pull request as git objects and executes nothing from it;
       # copier and uv run in a temporary directory, without the checkout's uv config.
@@ -64,5 +64,5 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: >-
-          python3 -I .org-github/scripts/merge_class.py
+          python3 -I .sdk-gates/scripts/merge_class.py
           --repo "$REPO" --base "$BASE_SHA" --head "$HEAD_SHA" --workdir .
