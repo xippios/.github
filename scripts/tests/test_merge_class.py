@@ -1,0 +1,2279 @@
+"""Tests for merge_class.py, offline: real temporary git repositories, a fake renderer.
+
+One test per rule and per acceptance line of the merge-gate design the classifier can
+prove on its own (the rulesets and identities it cannot).
+"""
+
+import os
+import subprocess
+import time
+from dataclasses import dataclass
+from pathlib import Path
+
+import merge_class as mc
+import pytest
+
+SOURCE = "xippios/sdk-usda-psd"
+
+COPIER_YML = """\
+source_slug:
+  type: str
+
+_subdirectory: template
+# Files a session fills: never overwritten by copier update.
+_skip_if_exists:
+  - src/xippios/{{ package_dir }}/__init__.py
+  - src/xippios/{{ package_dir }}/_client.py
+  - src/xippios/{{ package_dir }}/tasks.py
+  - src/xippios/{{ package_dir }}/reference/**
+  - scripts/**
+  - tests/test_tasks.py
+  - README.md
+  - "CHANGELOG.md"
+_message_after_copy: done
+"""
+
+# Template v0.2.0 asks more, as the real one did: rate_limit_burst and rate_limit_provenance
+# with literal defaults, and here api_title with a Jinja default.
+QUESTIONS_V2 = """\
+rate_limit_burst:
+  type: int
+  help: >-
+    Requests the limiter lets through at once
+  default: 1
+
+rate_limit_provenance:
+  type: str
+  choices:
+    documented by upstream: documented
+    self-imposed, upstream documents no limit: self-imposed
+  default: documented
+
+api_title:
+  type: str
+  default: "{{ source_slug }} API"
+
+"""
+COPIER_YML_V2 = COPIER_YML.replace("_subdirectory:", QUESTIONS_V2 + "_subdirectory:")
+
+PYPROJECT = """\
+[project]
+name = "xippios-usda-psd"
+version = "{version}"
+dependencies = ["xippios-core~=0.2.0"]
+"""
+
+
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def commit(repo: Path, files: dict[str, str | None], message: str) -> str:
+    """Write (or, for None, delete) the files and commit; return the commit's SHA."""
+    for path, content in files.items():
+        target = repo / path
+        if content is None:
+            target.unlink()
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "--allow-empty", "-m", message)
+    return git(repo, "rev-parse", "HEAD")
+
+
+@dataclass
+class PR:
+    workdir: Path
+    base: str
+    head: str
+
+
+def make_pr(
+    root: Path, base_files: dict[str, str | None], head_changes: dict[str, str | None]
+) -> PR:
+    """A repository whose main is the base and whose branch `feature` is the head."""
+    repo = root / "pr"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    base = commit(repo, base_files, "base")
+    git(repo, "checkout", "-q", "-b", "feature")
+    head = commit(repo, head_changes, "head")
+    return PR(repo, base, head)
+
+
+@pytest.fixture
+def template(tmp_path: Path) -> Path:
+    """A template repository: v0.1.0 and v0.2.0 on main, `rogue-tag` on another branch."""
+    repo = tmp_path / "sdk-template"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    commit(repo, {"copier.yml": COPIER_YML}, "v0.1.0")
+    git(repo, "tag", "v0.1.0")
+    commit(repo, {"copier.yml": COPIER_YML_V2, "CHANGELOG.md": "0.2.0\n"}, "v0.2.0")
+    git(repo, "tag", "v0.2.0")
+    git(repo, "checkout", "-q", "-b", "rogue")
+    commit(repo, {"copier.yml": "_skip_if_exists: []\n"}, "never merged")
+    git(repo, "tag", "rogue-tag")
+    git(repo, "checkout", "-q", "main")
+    return repo
+
+
+HEADER = "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n"
+
+
+def answers(
+    src_path: Path | str,
+    ref: str = "v0.2.0",
+    core: str = "0.2.0",
+    slug: str = "usda-psd",
+    extra: str = "",
+) -> str:
+    return HEADER + (
+        f"_commit: {ref}\n"
+        f"_src_path: {src_path}\n"
+        "api_key_env: ''\n"
+        f"core_version: {core}\n"
+        "import_path: usda.psd\n"
+        f"source_slug: {slug}\n"
+        f"{extra}"
+    )
+
+
+def source_base(template: Path) -> dict[str, str | None]:
+    """A source on template v0.1.0."""
+    return {
+        ".copier-answers.yml": answers(template, "v0.1.0"),
+        ".github/workflows/ci.yml": "ci v1\n",
+        ".github/workflows/live.yml": "live v1\n",
+        ".pre-commit-config.yaml": "hooks v1\n",
+        "pyproject.toml": PYPROJECT.format(version="0.2.0"),
+        "README.md": "readme\n",
+        "CHANGELOG.md": "changelog\n",
+        "CLAUDE.md": "claude\n",
+        "uv.lock": "lock v1\n",
+        "src/xippios/usda/psd/__init__.py": "",
+        "src/xippios/usda/psd/_client.py": "client\n",
+        "src/xippios/usda/psd/mcp.py": "mcp v1\n",
+        "src/xippios/usda/psd/http.py": "http v1\n",
+        "src/xippios/usda/psd/tasks.py": '__all__ = ["get_data"]\n',
+        "src/xippios/usda/psd/reference/README.md": "reference\n",
+        "tests/conftest.py": "conftest v1\n",
+    }
+
+
+def rendered(template: Path) -> dict[str, str]:
+    """What template v0.2.0 renders for this source (only the files the tests need).
+
+    The answers file is written back from the data file (``written_back``) unless a test
+    names it.
+    """
+    return {
+        ".github/workflows/ci.yml": "ci v2\n",
+        ".github/workflows/live.yml": "live v2\n",
+        ".pre-commit-config.yaml": "hooks v2\n",
+        "pyproject.toml": PYPROJECT.format(version="0.1.0"),
+        "README.md": "readme stub\n",
+        "src/xippios/usda/psd/_client.py": "client stub\n",
+        "src/xippios/usda/psd/mcp.py": "mcp v2\n",
+        "src/xippios/usda/psd/http.py": "http v2\n",
+        "src/xippios/usda/psd/tasks.py": "__all__: list[str] = []\n",
+        "src/xippios/usda/psd/reference/README.md": "reference stub\n",
+        "tests/conftest.py": "conftest v2\n",
+        "tests/test_layout.py": "layout v2\n",
+        ".claude/commands/add-endpoint.md": "add an endpoint v2\n",
+    }
+
+
+def written_back(template_url: str, vcs_ref: str, data: str) -> str:
+    """The answers file copier writes back after a render, as far as the tests need it.
+
+    ``_commit`` as ``git describe --tags --always`` names the rendered SHA, ``_src_path``
+    as given, then the data file's answers sorted by key, the later of two duplicates
+    winning, a quoted key unquoted (as YAML loads them).
+    """
+    commit = git(Path(template_url), "describe", "--tags", "--always", vcs_ref)
+    values: dict[str, str] = {}
+    for line in data.splitlines():
+        if line and line[0] not in "# ":
+            key, _, value = line.partition(":")
+            values[key.strip().strip("'\"")] = value.strip()
+    body = "".join(f"{key}: {value}\n" for key, value in sorted(values.items()))
+    return f"{HEADER}_commit: {commit}\n_src_path: {template_url}\n{body}"
+
+
+class FakeRender:
+    """Stands in for copier: writes fixed files, or fails like a render that cannot run.
+
+    Like copier it writes the answers file back (``written_back``), unless ``files``
+    names one.
+    """
+
+    def __init__(
+        self,
+        files: dict[str, str],
+        error: str | None = None,
+        executable: frozenset[str] = frozenset(),
+    ) -> None:
+        self.files = files
+        self.error = error
+        self.executable = executable
+        self.calls: list[tuple[str, str, str]] = []
+
+    def __call__(self, template_url: str, vcs_ref: str, data_file: Path, dest: Path) -> None:
+        self.calls.append((template_url, vcs_ref, data_file.read_text()))
+        if self.error:
+            raise mc.RenderError(self.error)
+        files = dict(self.files)
+        if mc.ANSWERS_FILE not in files:
+            files[mc.ANSWERS_FILE] = written_back(template_url, vcs_ref, data_file.read_text())
+        for path, content in files.items():
+            target = dest / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content)
+            if path in self.executable:
+                target.chmod(0o755)
+
+
+def classify(
+    pr: PR,
+    *,
+    repo: str = SOURCE,
+    render: FakeRender | None = None,
+    template: Path | None = None,
+    core: Path | None = None,
+) -> mc.Classification:
+    if render is None:
+        return mc.classify(repo=repo, base=pr.base, head=pr.head, workdir=pr.workdir, render=False)
+    return mc.classify(
+        repo=repo,
+        base=pr.base,
+        head=pr.head,
+        workdir=pr.workdir,
+        template_url=str(template),
+        renderer=render,
+        # Offline: a test that changes core_git_ref passes its fake sdk-core.
+        core_url=str(core or pr.workdir.parent / "no-sdk-core"),
+    )
+
+
+def human_rules(result: mc.Classification) -> set[int]:
+    return {f.rule for f in result.findings if f.human}
+
+
+def notes(result: mc.Classification) -> list[str]:
+    return [f.text for f in result.findings if not f.human]
+
+
+# --- rule 1 ------------------------------------------------------------------------------
+
+
+def test_scaffold_pr_is_human(tmp_path: Path) -> None:
+    pr = make_pr(
+        tmp_path,
+        {"README.md": "stub\n"},
+        {"src/xippios/usda/psd/__init__.py": "", "pyproject.toml": "[project]\n"},
+    )
+    result = classify(pr)
+    assert result.merge_class == mc.HUMAN
+    assert human_rules(result) == {1, 4}  # no tasks.py on the base: the bootstrap too
+
+
+def test_ordinary_source_pr_is_auto(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {"src/xippios/usda/psd/_client.py": "client, fixed\n", "tests/test_client.py": "ok\n"},
+    )
+    result = classify(pr)
+    assert result.merge_class == mc.AUTO
+    assert human_rules(result) == set()
+
+
+# --- rule 2 ------------------------------------------------------------------------------
+
+
+def test_template_owned_file_identical_to_the_render_is_trusted(
+    tmp_path: Path, template: Path
+) -> None:
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {"tests/conftest.py": "conftest v2\n", "src/xippios/usda/psd/mcp.py": "mcp, edited\n"},
+    )
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == ["tests/conftest.py"]
+    assert result.remaining == ["src/xippios/usda/psd/mcp.py"]
+    assert [f.text for f in result.findings if f.human] == [
+        "src/xippios/usda/psd/mcp.py is template-owned and differs from the render"
+    ]
+    assert result.template_ref == "v0.1.0"  # the head's _commit
+    assert result.template_sha == git(template, "rev-parse", "v0.1.0^{commit}")
+
+
+def test_skip_listed_file_is_never_trusted(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {
+            "README.md": "readme stub\n",
+            "src/xippios/usda/psd/_client.py": "client stub\n",
+            "src/xippios/usda/psd/tasks.py": "__all__: list[str] = []\n",
+            "src/xippios/usda/psd/reference/README.md": "reference stub\n",
+        },
+    )
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == []
+    assert len(result.remaining) == 4
+
+
+def test_file_the_template_does_not_render_is_never_trusted(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"scripts/check-siblings.sh": "#!/bin/sh\n"})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == []
+
+
+def test_deleted_template_file_is_not_trusted(tmp_path: Path, template: Path) -> None:
+    files = rendered(template)
+    del files[".github/workflows/live.yml"]
+    pr = make_pr(tmp_path, source_base(template), {".github/workflows/live.yml": None})
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert result.trusted == []
+    assert result.merge_class == mc.HUMAN
+
+
+def test_render_gets_the_answers_without_commit_and_src_path(
+    tmp_path: Path, template: Path
+) -> None:
+    render = FakeRender(rendered(template))
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
+    classify(pr, render=render, template=template)
+    [(url, ref, data)] = render.calls
+    # The SHA the head's _commit (v0.1.0) resolves to on the template's main, not the tag.
+    assert (url, ref) == (str(template), git(template, "rev-parse", "v0.1.0^{commit}"))
+    assert "_commit" not in data
+    assert "_src_path" not in data
+    assert "import_path: usda.psd\n" in data
+    assert "api_key_env: ''\n" in data
+
+
+def test_copier_runs_at_the_checked_sha_without_config_or_tasks(
+    tmp_path: Path, template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real renderer, with a fake `uvx` on PATH that records its arguments."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    record = tmp_path / "uvx-args"
+    written = tmp_path / "written-back.yml"
+    written.write_text(answers(template, "v0.1.0"))
+    uvx = bin_dir / "uvx"
+    uvx.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n" "$@" > "{record}"\n'
+        "for dest; do :; done\n"  # the last argument: the destination
+        'mkdir -p "$dest/tests"\n'
+        'printf "conftest v2\\n" > "$dest/tests/conftest.py"\n'
+        f'cp "{written}" "$dest/.copier-answers.yml"\n'
+    )
+    uvx.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
+    result = mc.classify(
+        repo=SOURCE, base=pr.base, head=pr.head, workdir=pr.workdir, template_url=str(template)
+    )
+    args = record.read_text().splitlines()
+    sha = git(template, "rev-parse", "v0.1.0^{commit}")
+    assert args[:5] == ["--no-config", "--quiet", "--from", mc.COPIER_SPEC, "copier"]
+    assert {"copy", "--defaults", "--trust", "--skip-tasks", "--data-file"} <= set(args)
+    assert args[args.index("--vcs-ref") + 1] == sha
+    assert args[-2] == str(template)
+    assert result.trusted == ["tests/conftest.py"]
+
+
+def test_render_failure_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), adoption(template))
+    result = classify(pr, render=FakeRender({}, error="network down"), template=template)
+    assert result.trusted == []
+    assert any("render failed" in n and "network down" in n for n in notes(result))
+    assert result.merge_class == mc.HUMAN
+
+
+def test_failed_template_clone_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    """The real clone fails (no repository at the URL): no render, no _commit check."""
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(tmp_path / "missing")
+    render = FakeRender(rendered(template))
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=tmp_path / "missing")
+    assert render.calls == []
+    assert result.trusted == []
+    assert any("render failed" in n and "cannot clone" in n for n in notes(result))
+    assert "_commit changes from v0.1.0 to v0.2.0, not checked against the template" in [
+        f.text for f in result.findings if f.human
+    ]
+
+
+def test_src_path_other_than_the_family_template_trusts_nothing(
+    tmp_path: Path, template: Path
+) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers("https://github.com/someone/lookalike.git")
+    render = FakeRender(rendered(template))
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert result.trusted == []
+    assert any("not the family template" in n for n in notes(result))
+
+
+def test_commit_not_on_the_template_main_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, "rogue-tag")
+    render = FakeRender(rendered(template))
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert result.trusted == []
+    assert any("not on the template's main" in n for n in notes(result))
+
+
+def test_commit_that_is_not_a_plain_ref_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, "--upload-pack=touch")
+    render = FakeRender(rendered(template))
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert any("not a plain git ref" in n for n in notes(result))
+
+
+def test_no_render_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
+    result = classify(pr)
+    assert result.trusted == []
+    assert any("--no-render" in n for n in notes(result))
+
+
+def test_missing_answers_file_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    base = source_base(template)
+    del base[".copier-answers.yml"]
+    pr = make_pr(tmp_path, base, {"tests/conftest.py": "conftest v2\n"})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == []
+    assert any("no .copier-answers.yml" in n for n in notes(result))
+
+
+@pytest.mark.parametrize("side", ["head", "render"])
+def test_a_mode_only_difference_is_not_trusted(tmp_path: Path, template: Path, side: str) -> None:
+    """Rule 2 compares the executable bit too: 100755 against 100644 is no match."""
+    path = "tests/conftest.py"
+    pr = make_pr(tmp_path, source_base(template), {path: "conftest v2\n"})
+    if side == "head":
+        (pr.workdir / path).chmod(0o755)
+        pr.head = commit(pr.workdir, {}, "chmod +x")
+    render = FakeRender(
+        rendered(template), executable=frozenset({path} if side == "render" else ())
+    )
+    result = classify(pr, render=render, template=template)
+    assert result.trusted == []
+    assert result.remaining == [path]
+
+
+def test_a_symlink_at_a_template_owned_path_is_never_trusted(
+    tmp_path: Path, template: Path
+) -> None:
+    path = "tests/conftest.py"
+    pr = make_pr(tmp_path, source_base(template), {"tests/real.py": "conftest v2\n"})
+    (pr.workdir / path).unlink()
+    (pr.workdir / path).symlink_to("real.py")
+    pr.head = commit(pr.workdir, {}, "symlink")
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert path in result.remaining
+    assert path not in result.trusted
+
+
+def test_a_path_that_is_not_plain_is_never_trusted_and_reported(
+    tmp_path: Path, template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git writes no such path; a crafted tree could. The render's ../escape is never read."""
+    real = mc.changed_files
+    odd = ["../escape", "/etc/passwd", "tests//conftest.py", "tests/./conftest.py"]
+    monkeypatch.setattr(mc, "changed_files", lambda *args: sorted([*real(*args), *odd]))
+    files = {**rendered(template), "../escape": "conftest v2\n"}
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": "conftest v2\n"})
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert result.trusted == ["tests/conftest.py"]
+    assert sorted(f.text for f in result.findings if f.human) == sorted(
+        f"{path} is no plain relative path; never trusted" for path in odd
+    )
+
+
+# --- rules 2 and 3: adoption ---------------------------------------------------------------
+
+
+def adoption(template: Path) -> dict[str, str | None]:
+    """An adoption PR from template v0.1.0 to v0.2.0 that keeps every rendered file."""
+    return {
+        ".copier-answers.yml": answers(template),
+        ".github/workflows/ci.yml": "ci v2\n",
+        ".github/workflows/live.yml": "live v2\n",
+        ".pre-commit-config.yaml": "hooks v2\n",
+        "tests/conftest.py": "conftest v2\n",
+        "CHANGELOG.md": "changelog, adopts v0.2.0\n",
+    }
+
+
+def test_adoption_pr_whose_workflows_match_the_render_is_auto(
+    tmp_path: Path, template: Path
+) -> None:
+    pr = make_pr(tmp_path, source_base(template), adoption(template))
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert ".github/workflows/live.yml" in result.trusted
+    assert ".pre-commit-config.yaml" in result.trusted
+    assert result.remaining == ["CHANGELOG.md"]
+    assert result.merge_class == mc.AUTO
+
+
+def test_adoption_pr_that_edits_a_rendered_workflow_is_human(
+    tmp_path: Path, template: Path
+) -> None:
+    changes = adoption(template)
+    changes[".github/workflows/live.yml"] = "live v2, edited\n"
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.merge_class == mc.HUMAN
+    assert human_rules(result) == {3}
+
+
+def test_source_specific_workflow_is_human(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".github/workflows/siblings.yml"] = "siblings\n"
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human] == [
+        "protected path .github/workflows/siblings.yml (matches .github/**)"
+    ]
+
+
+# --- rule 2: the answers file ------------------------------------------------------------
+
+
+def test_answer_change_other_than_the_free_keys_is_human(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, slug="usda-psd2")
+    files = rendered(template)
+    files[".copier-answers.yml"] = answers(template, slug="usda-psd2")
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert ".copier-answers.yml" in result.trusted  # the render writes the answers back
+    assert [f.text for f in result.findings if f.human] == ["answers changed: source_slug"]
+
+
+def test_commit_moving_backward_is_human(tmp_path: Path, template: Path) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.2.0")
+    files = rendered(template)
+    files[".copier-answers.yml"] = answers(template, "v0.1.0")
+    pr = make_pr(tmp_path, base, {".copier-answers.yml": answers(template, "v0.1.0")})
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert result.trusted == [".copier-answers.yml"]
+    assert [f.text for f in result.findings if f.human] == [
+        "_commit changes from v0.2.0 to v0.1.0, not forward along the template's main"
+    ]
+
+
+@pytest.mark.parametrize("render", [False, True], ids=["no-render", "render"])
+def test_core_version_bump_alone_is_auto_with_the_render(
+    tmp_path: Path, template: Path, render: bool
+) -> None:
+    """Without a render nothing shows the changed answers file to be copier's own."""
+    head_answers = answers(template, "v0.1.0", core="0.2.1")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files) if render else None, template=template)
+    assert [f.text for f in result.findings if f.human] == (
+        [] if render else [mc.NOT_CHECKED_CANONICAL]
+    )
+    assert result.trusted == ([".copier-answers.yml"] if render else [])
+
+
+def test_commit_moving_forward_with_a_core_bump_is_auto(tmp_path: Path, template: Path) -> None:
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, "v0.2.0", core="0.2.1")
+    files = rendered(template)
+    files[".copier-answers.yml"] = changes[".copier-answers.yml"] or ""
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert result.merge_class == mc.AUTO
+
+
+def test_commit_change_without_the_template_is_human(tmp_path: Path, template: Path) -> None:
+    """Under --no-render nothing can show that _commit moved forward."""
+    pr = make_pr(tmp_path, source_base(template), adoption(template))
+    result = classify(pr)
+    assert [f.text for f in result.findings if f.human and f.rule == 2] == [
+        "_commit changes from v0.1.0 to v0.2.0, not checked against the template",
+        mc.NOT_CHECKED_CANONICAL,
+    ]
+
+
+NON_DEFAULT = "answers added with non-default values: "
+
+
+@pytest.mark.parametrize(
+    ("added", "reasons"),
+    [
+        ("rate_limit_burst: 1\n", []),
+        ("rate_limit_provenance: 'documented'\n", []),
+        ("rate_limit_burst: 2\n", [NON_DEFAULT + "rate_limit_burst"]),
+        ("rate_limit_burst: '1'\n", [NON_DEFAULT + "rate_limit_burst"]),
+        ("api_title: usda-psd API\n", [NON_DEFAULT + "api_title"]),
+        ("api_title: '{{ source_slug }} API'\n", [NON_DEFAULT + "api_title"]),
+        ("not_asked: x\n", [NON_DEFAULT + "not_asked"]),
+        (
+            "rate_limit_burst: 1\nrate_limit_provenance: self-imposed\n",
+            [NON_DEFAULT + "rate_limit_provenance"],
+        ),
+    ],
+    ids=[
+        "default",
+        "default-quoted",
+        "other-value",
+        "string-for-int",
+        "jinja-default",
+        "jinja-default-text",
+        "unknown-question",
+        "psd-7",
+    ],
+)
+def test_answer_a_template_release_adds_is_free_only_at_its_literal_default(
+    tmp_path: Path, template: Path, added: str, reasons: list[str]
+) -> None:
+    """psd #7: v0.2.0 added rate_limit_burst (1, the default) and rate_limit_provenance."""
+    changes = adoption(template)
+    changes[".copier-answers.yml"] = answers(template, extra=added)
+    files = rendered(template)
+    files[".copier-answers.yml"] = answers(template, extra=added)
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert [f.text for f in result.findings if f.human] == reasons
+    assert result.merge_class == (mc.HUMAN if reasons else mc.AUTO)
+
+
+def test_an_added_answer_is_judged_by_the_template_at_the_heads_commit(
+    tmp_path: Path, template: Path
+) -> None:
+    """v0.1.0 does not ask rate_limit_burst: added on a head at v0.1.0, it is no default."""
+    head_answers = answers(template, "v0.1.0", extra="rate_limit_burst: 1\n")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files), template=template)
+    assert [f.text for f in result.findings if f.human] == [NON_DEFAULT + "rate_limit_burst"]
+
+
+def test_an_added_answer_without_the_template_is_human(tmp_path: Path, template: Path) -> None:
+    head_answers = answers(template, "v0.1.0", extra="rate_limit_burst: 1\n")
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr)
+    assert [f.text for f in result.findings if f.human] == [
+        "answers added, not checked against the template: rate_limit_burst",
+        mc.NOT_CHECKED_CANONICAL,
+    ]
+
+
+# --- rule 2: the answers file's form ------------------------------------------------------
+
+PIN_NOT_READ = (
+    "core_git_ref not read: .copier-answers.yml lies outside the subset the classifier reads"
+)
+
+
+def test_quoted_key_demo_is_human_and_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    """The review's demo: a quoted key after core_version overrides api_key_env for YAML.
+
+    The render takes the later value, so every file it renders with the new key matched
+    the render and was trusted, and the line-based reader never saw the key change.
+    """
+    head_answers = answers(template, "v0.1.0").replace(
+        "core_version: 0.2.0\n", 'core_version: 0.2.0\n"api_key_env": DEMO_API_KEY\n'
+    )
+    live = "live v2 with DEMO_API_KEY\n"
+    render = FakeRender({**rendered(template), ".github/workflows/live.yml": live})
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {".copier-answers.yml": head_answers, ".github/workflows/live.yml": live},
+    )
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert result.trusted == []
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human and f.rule == 2] == [
+        (
+            ".copier-answers.yml line 6: neither blank, a comment nor a key: value line "
+            "with a plain key"
+        ),
+        PIN_NOT_READ,
+    ]
+
+
+def test_duplicate_key_demo_is_human_and_trusts_nothing(tmp_path: Path, template: Path) -> None:
+    """The review's demo: a second core_git_ref, which YAML reads and the reader did not.
+
+    The reader took the first (empty: no pin), the render the second, so the pinned
+    pyproject.toml matched the render and was trusted.
+    """
+    head_answers = answers(template, "v0.1.0", extra="core_git_ref: feature\n").replace(
+        "core_version: 0.2.0\n", "core_git_ref: ''\ncore_version: 0.2.0\n"
+    )
+    pinned = PYPROJECT.format(version="0.2.0") + '[tool.uv.sources]\nxippios-core = "feature"\n'
+    render = FakeRender({**rendered(template), "pyproject.toml": pinned})
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {".copier-answers.yml": head_answers, "pyproject.toml": pinned},
+    )
+    result = classify(pr, render=render, template=template)
+    assert render.calls == []
+    assert result.trusted == []
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human and f.rule == 2] == [
+        ".copier-answers.yml repeats the top-level key core_git_ref",
+        PIN_NOT_READ,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("text", "problems"),
+    [
+        (answers("https://github.com/xippios/sdk-template.git"), []),
+        ("# only a comment\n\n_commit: v0.2.0\n", []),
+        ("source_name: USDA FAS\n  PSD Online\n", []),  # a scalar may wrap, but not a pin
+        ('"api_key_env": X\n', ["line 1: neither blank"]),
+        ("'core_git_ref': x\n", ["line 1: neither blank"]),
+        ("rate_limit_burst:1\n", ["line 1: neither blank"]),
+        ("a: 1\n- item\n", ["line 2: neither blank"]),
+        ("? core_git_ref\n: x\n", ["lines 1, 2: neither blank"]),
+        ("---\na: 1\n", ["line 1: neither blank"]),
+        ("a: 1\nb: 2\na: 3\nb: 4\n", ["repeats the top-level keys a, b"]),
+        ("core_git_ref:\n  feature\n", ["continues core_git_ref on another line"]),
+        ("core_version: 0.2.0\n# x\n\n  .1\n", ["continues core_version on another line"]),
+        ("_commit: v0.2.0\n  # a comment counts too\n", ["continues _commit on another line"]),
+    ],
+    ids=[
+        "canonical",
+        "comments-and-blanks",
+        "wrapped-scalar",
+        "double-quoted-key",
+        "single-quoted-key",
+        "no-space",
+        "list-at-column-0",
+        "complex-key",
+        "document-marker",
+        "duplicate-keys",
+        "pin-continued",
+        "core-version-continued",
+        "commit-continued",
+    ],
+)
+def test_answers_problems(text: str, problems: list[str]) -> None:
+    found = mc.answers_problems(text.encode())
+    assert len(found) == len(problems)
+    for reason, expected in zip(found, problems, strict=True):
+        assert reason.startswith(f".copier-answers.yml {expected}")
+
+
+def test_answers_that_are_not_utf8_are_outside_the_subset() -> None:
+    assert mc.answers_problems(b"_commit: v\xff\n") == [".copier-answers.yml is not UTF-8"]
+
+
+def test_changed_answers_not_in_copiers_form_trust_nothing(tmp_path: Path, template: Path) -> None:
+    """A hand-written comment: YAML reads the same answers, but copier writes none."""
+    head_answers = answers(template, "v0.1.0", core="0.2.1") + "# edited by hand\n"
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {".copier-answers.yml": head_answers, "tests/test_layout.py": "layout v2\n"},
+    )
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == []
+    assert [f.text for f in result.findings if f.human] == [mc.NOT_CANONICAL]
+
+
+@pytest.mark.parametrize(
+    ("change", "human"),
+    [("tests/test_layout.py", True), ("tests/test_new.py", False)],
+    ids=["something-trusted", "nothing-trusted"],
+)
+def test_unchanged_answers_must_be_copiers_own_when_anything_is_trusted(
+    tmp_path: Path, template: Path, change: str, human: bool
+) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.1.0") + "# edited by hand\n"
+    pr = make_pr(tmp_path, base, {change: "layout v2\n"})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == []
+    assert [f.text for f in result.findings if f.human] == ([mc.NOT_CANONICAL] if human else [])
+
+
+def off_main(ref: str) -> str:
+    """Rule 2's reason for a core pin that is neither main nor a full SHA on main."""
+    return (
+        f"core pinned off main or not a full SHA: core_git_ref {ref} is neither sdk-core's "
+        "main nor the full SHA of a commit on its main"
+    )
+
+
+@dataclass
+class Core:
+    path: Path
+    on_main: str
+    off_main: str
+
+
+@pytest.fixture
+def core(tmp_path: Path) -> Core:
+    """A fake sdk-core: two commits on main, v0.2.1 on the first, `feature` off main."""
+    repo = tmp_path / "sdk-core"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    first = commit(repo, {"README.md": "core\n"}, "first")
+    git(repo, "tag", "v0.2.1")
+    commit(repo, {"README.md": "core 2\n"}, "second")
+    git(repo, "checkout", "-q", "-b", "feature")
+    off = commit(repo, {"README.md": "off main\n"}, "off main")
+    git(repo, "tag", "rogue")
+    git(repo, "tag", "v9.9.9-rc")
+    git(repo, "checkout", "-q", "main")
+    return Core(repo, first, off)
+
+
+@pytest.mark.parametrize(
+    ("ref", "free"),
+    [
+        ("main", True),
+        ("on_main", True),  # the full SHA of a commit on main
+        ("''", True),
+        ("on_main_short", False),  # a short SHA: a branch created later could take it over
+        ("on_main_upper", False),  # not lowercase
+        ("v0.2.1", False),  # a v* tag on main: a branch of that name would take it over
+        ("v9.9.9-rc", False),
+        ("off_main", False),  # the full SHA of a commit off main
+        ("no_commit", False),  # a full SHA sdk-core does not have
+        ("refs/heads/main", False),
+        ("feature", False),
+        ("rogue", False),
+        ("missing", False),
+        ("--upload-pack=touch", False),
+    ],
+)
+def test_core_pin_must_be_main_or_a_full_sha_on_main(
+    tmp_path: Path, template: Path, core: Core, ref: str, free: bool
+) -> None:
+    value = {
+        "on_main": core.on_main,
+        "on_main_short": core.on_main[:12],
+        "on_main_upper": core.on_main.upper(),
+        "off_main": core.off_main,
+        "no_commit": "0" * 40,
+    }.get(ref, ref)
+    head_answers = answers(template, "v0.1.0", extra=f"core_git_ref: {value}\n")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files), template=template, core=core.path)
+    assert [f.text for f in result.findings if f.human] == ([] if free else [off_main(value)])
+
+
+@dataclass
+class UvRefs:
+    path: Path
+    main1: str
+    main2: str
+    side1: str
+
+
+@pytest.fixture
+def uv_refs(tmp_path: Path) -> UvRefs:
+    """sdk-core as the review's uvref1 demo built it: refs named like tags and like SHAs.
+
+    main holds main1 and main2, side1 is off main. The branch ``v0.2.0`` points at side1,
+    the tag ``v0.2.0`` at main1; a branch and a tag named like main1's 7-character SHA do
+    the same. uv takes a rev as a branch before a tag, so both pins installed side1 while
+    the classifier, reading the tag, accepted them. A branch is also named like main2's
+    full SHA, which uv does not read as a branch: it takes 40 hex characters as the commit
+    itself. A tag is named like main2's 8-character SHA.
+    """
+    repo = tmp_path / "uvref-core"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    main1 = commit(repo, {"README.md": "main1\n"}, "main1")
+    main2 = commit(repo, {"README.md": "main2\n"}, "main2")
+    git(repo, "checkout", "-q", "-b", "side", main1)
+    side1 = commit(repo, {"README.md": "side1\n"}, "side1")
+    git(repo, "checkout", "-q", "main")
+    for refname, target in (
+        ("refs/heads/v0.2.0", side1),
+        ("refs/tags/v0.2.0", main1),
+        (f"refs/heads/{main1[:7]}", side1),
+        (f"refs/tags/{main1[:7]}", main1),
+        (f"refs/heads/{main2}", side1),
+        (f"refs/tags/{main2[:8]}", side1),
+    ):
+        git(repo, "update-ref", refname, target)
+    return UvRefs(repo, main1, main2, side1)
+
+
+@pytest.mark.parametrize(
+    ("ref", "accepted"),
+    [
+        ("v0.2.0", False),  # a branch named like a tag: uv takes the branch, off main
+        ("refs/tags/v0.2.0", False),  # a full ref name: neither main nor a full SHA
+        ("main1_7", False),  # a tag named like a short SHA, and a branch of that name
+        ("main1", True),  # a full SHA on main, no ref of that name
+        ("main1_10", False),  # a short SHA on main, no ref of that name yet
+        ("main2", True),  # a full SHA on main and a branch of that name: uv takes the commit
+        ("main2_8", False),  # a tag named like a short SHA
+        ("side1", False),  # the full SHA of a commit off main
+        ("main", True),
+    ],
+)
+def test_core_pin_is_main_or_a_full_sha_whatever_the_refs(
+    uv_refs: UvRefs, ref: str, accepted: bool
+) -> None:
+    """main, or 40 hex characters read as the commit itself, as uv reads them."""
+    value = {
+        "main1": uv_refs.main1,
+        "main1_7": uv_refs.main1[:7],
+        "main1_10": uv_refs.main1[:10],
+        "main2": uv_refs.main2,
+        "main2_8": uv_refs.main2[:8],
+        "side1": uv_refs.side1,
+    }.get(ref, ref)
+    assert mc.core_ref_on_main(str(uv_refs.path), value) is accepted
+
+
+@pytest.mark.parametrize(
+    ("ref", "accepted"),
+    [("main", True), ("v0.2.0", False), ("abcdef1", False), ("refs/heads/main", False)],
+)
+def test_core_pin_other_than_a_full_sha_needs_no_sdk_core(
+    tmp_path: Path, ref: str, accepted: bool
+) -> None:
+    """main and the refused forms are judged by their form alone: nothing is cloned."""
+    assert mc.core_ref_on_main(str(tmp_path / "no-sdk-core"), ref) is accepted
+
+
+def test_a_branch_named_like_a_tag_is_human_on_the_pull_request(
+    tmp_path: Path, template: Path, uv_refs: UvRefs
+) -> None:
+    head_answers = answers(template, "v0.1.0", extra="core_git_ref: v0.2.0\n")
+    render = FakeRender({**rendered(template), ".copier-answers.yml": head_answers})
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    result = classify(pr, render=render, template=template, core=uv_refs.path)
+    assert [f.text for f in result.findings if f.human] == [off_main("v0.2.0")]
+
+
+def test_core_pin_without_the_check_is_human(tmp_path: Path, template: Path) -> None:
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    head_answers = answers(template, "v0.1.0", extra=f"core_git_ref: {sha}\n")
+    files = rendered(template)
+    files[".copier-answers.yml"] = head_answers
+    pr = make_pr(tmp_path, source_base(template), {".copier-answers.yml": head_answers})
+    no_render = classify(pr)
+    assert [f.text for f in no_render.findings if f.human] == [
+        mc.NOT_CHECKED_CANONICAL,
+        f"core_git_ref changes to {sha}, not checked against sdk-core",
+    ]
+    failed = classify(pr, render=FakeRender(files), template=template)  # no sdk-core there
+    [text] = [f.text for f in failed.findings if f.human]
+    assert text.startswith(f"core_git_ref {sha} not checked against sdk-core: cannot clone")
+
+
+@pytest.mark.parametrize(
+    ("pin", "render", "human"),
+    [
+        ("feature", True, True),  # off main: every pull request is human until it is lifted
+        ("main", True, False),
+        ("feature", False, False),  # --no-render judges only a change of the pin
+    ],
+)
+def test_a_pin_the_pull_request_does_not_change_is_checked_too(
+    tmp_path: Path, template: Path, core: Core, pin: str, render: bool, human: bool
+) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.1.0", extra=f"core_git_ref: {pin}\n")
+    pr = make_pr(tmp_path, base, {"tests/test_new.py": "x\n"})
+    renderer = FakeRender(rendered(template)) if render else None
+    result = classify(pr, render=renderer, template=template, core=core.path)
+    assert [f.text for f in result.findings if f.human] == ([off_main(pin)] if human else [])
+
+
+def test_a_removed_or_emptied_core_pin_is_free(tmp_path: Path, template: Path) -> None:
+    base = source_base(template)
+    base[".copier-answers.yml"] = answers(template, "v0.1.0", extra="core_git_ref: feature\n")
+    for root, extra in (("removed", ""), ("emptied", "core_git_ref: ''\n")):
+        (tmp_path / root).mkdir()
+        head_answers = answers(template, "v0.1.0", core="0.2.1", extra=extra)
+        pr = make_pr(tmp_path / root, base, {".copier-answers.yml": head_answers})
+        render = FakeRender({**rendered(template), ".copier-answers.yml": head_answers})
+        assert classify(pr, render=render, template=template).merge_class == mc.AUTO
+
+
+def test_question_defaults() -> None:
+    text = """\
+# a comment
+plain:
+  type: int
+  default: 1
+quoted:
+  type: str
+  default: "documented"  # a comment
+short: ''
+jinja:
+  default: "{{ other }}"
+block:
+  default: >-
+    folded
+nested:
+  choices:
+    default: not-this-one
+  help: >-
+    default: nor this
+missing:
+  type: str
+twice:
+  default: a
+twice:
+  default: a
+flow: {type: str, default: x}
+escaped:
+  default: "a\\tb"
+_settings: ignored
+"""
+    assert mc.question_defaults(text) == {
+        "plain": mc.Scalar("1", quoted=False),
+        "quoted": mc.Scalar("documented", quoted=True),
+        "short": mc.Scalar("", quoted=True),
+        "jinja": None,
+        "block": None,
+        "nested": None,
+        "missing": None,
+        "twice": None,
+        "flow": None,
+        "escaped": None,
+    }
+
+
+@pytest.mark.parametrize(
+    ("answer", "default", "same"),
+    [
+        ("1", "1", True),
+        ("documented", '"documented"', True),
+        ("''", '""', True),
+        ("'it''s'", '"it\'s"', True),
+        ("'1'", "1", False),
+        ("true", '"true"', False),
+        ("documented", "self-imposed", False),
+    ],
+)
+def test_literals_compare_as_yaml_loads_them(answer: str, default: str, same: bool) -> None:
+    left, right = mc.literal_scalar(answer), mc.literal_scalar(default)
+    assert left is not None
+    assert right is not None
+    assert left.same(right) is same
+
+
+# --- rule 3 ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        ".github/workflows/ci.yml",
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".claude/settings.json",
+        ".pre-commit-config.yaml",
+        ".secrets.baseline",
+        "docs/conventions.md",
+        "docs/adr/0024-something.md",
+        "docs/review-checklist.md",
+        "docs/definition-of-done.md",
+        ".claude/settings.local.json",
+        ".claude/agents/reviewer.md",
+        ".claude/hooks/guard.py",
+        ".claude/commands/add-endpoint.md",
+        ".mcp.json",
+        "CLAUDE.local.md",
+        "hatch.toml",
+        "uv.toml",
+    ],
+)
+def test_protected_path_is_human(tmp_path: Path, template: Path, path: str) -> None:
+    pr = make_pr(tmp_path, source_base(template), {path: "changed\n"})
+    result = classify(pr)
+    assert result.merge_class == mc.HUMAN
+    assert human_rules(result) == {3}
+
+
+@pytest.mark.parametrize(
+    "repo", [SOURCE, "xippios/sdk-core", "xippios/sdk-template", "xippios/.github", "xippios/x"]
+)
+def test_commands_are_protected_in_every_repository(
+    tmp_path: Path, template: Path, repo: str
+) -> None:
+    """sdk-core's and sdk-template's own commands too, not only the ones a source renders."""
+    path = ".claude/commands/release-prep.md"
+    pr = make_pr(tmp_path, source_base(template), {path: "changed\n"})
+    result = classify(pr, repo=repo)
+    assert human_rules(result) == {3}
+    assert f"protected path {path} (matches .claude/commands/**)" in [
+        f.text for f in result.findings if f.human
+    ]
+
+
+def test_rendered_command_is_trusted_when_identical_and_human_when_edited(
+    tmp_path: Path, template: Path
+) -> None:
+    path = ".claude/commands/add-endpoint.md"
+    for content, expected in (("add an endpoint v2\n", mc.AUTO), ("edited by hand\n", mc.HUMAN)):
+        root = tmp_path / expected
+        root.mkdir()
+        pr = make_pr(root, source_base(template), {path: content})
+        result = classify(pr, render=FakeRender(rendered(template)), template=template)
+        assert result.merge_class == expected
+        assert (path in result.trusted) is (expected == mc.AUTO)
+
+
+@pytest.mark.parametrize(
+    ("path", "content", "human"),
+    [
+        ("src/xippios/usda/psd/mcp.py", "mcp v2, edited\n", True),
+        ("src/xippios/usda/psd/http.py", None, True),  # deleted
+        ("src/xippios/usda/psd/_client.py", "client, fixed\n", False),  # skip-listed
+        ("src/xippios/usda/psd/models.py", "models\n", False),  # not rendered
+    ],
+)
+def test_template_owned_src_file_that_differs_from_the_render_is_human(
+    tmp_path: Path, template: Path, path: str, content: str | None, human: bool
+) -> None:
+    """Rule 3: an adapter changed by hand could expose tasks around rule 4."""
+    pr = make_pr(tmp_path, source_base(template), {path: content})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert human_rules(result) == ({3} if human else set())
+
+
+@pytest.mark.parametrize(
+    ("path", "human"),
+    [
+        ("src/xippios/usda/psd/mcp.py", True),
+        ("src/xippios/usda/psd/http.py", True),
+        ("src/xippios/usda/psd/_version.py", True),
+        ("src/xippios/usda/psd/api/__init__.py", True),
+        ("src/xippios/usda/psd/api/get_data.py", False),
+        ("src/xippios/usda/psd/_client.py", False),
+    ],
+)
+def test_without_a_render_the_adapters_are_template_owned_by_name(
+    tmp_path: Path, template: Path, path: str, human: bool
+) -> None:
+    pr = make_pr(tmp_path, source_base(template), {path: "edited\n"})
+    result = classify(pr)
+    assert human_rules(result) == ({3} if human else set())
+
+
+CONFTEST = """\
+import pytest
+
+pytest_plugins = ["xippios.core.testing.plugin"]
+"""
+FAMILY_TEST = "def test_family_conformance(family_check):\n    family_check()\n"
+FAMILY_TEST_FILES = {"tests/conftest.py": CONFTEST, "tests/test_family.py": FAMILY_TEST}
+
+
+def family_render(template: Path) -> dict[str, str]:
+    """The render of a template that carries the family check (v0.2.1 and later)."""
+    return {**rendered(template), **FAMILY_TEST_FILES}
+
+
+def test_template_owned_test_file_names() -> None:
+    """The family check and its plugin line; tests/test_tasks.py is the session's."""
+    assert frozenset(FAMILY_TEST_FILES) == mc.FAMILY_TEST_FILES
+
+
+@pytest.mark.parametrize("path", sorted(FAMILY_TEST_FILES))
+@pytest.mark.parametrize("render", ["render", "render-without-it", "no-render"])
+def test_deleting_a_template_owned_test_file_is_human(
+    tmp_path: Path, template: Path, path: str, render: str
+) -> None:
+    """Rule 2 trusts no deleted file: a deletion is human whatever the render says."""
+    files = family_render(template)
+    if render == "render-without-it":
+        del files[path]
+    pr = make_pr(tmp_path, {**source_base(template), **FAMILY_TEST_FILES}, {path: None})
+    fake = None if render == "no-render" else FakeRender(files)
+    result = classify(pr, render=fake, template=template)
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human] == [
+        f"{path} is a template-owned test file deleted by the pull request"
+    ]
+
+
+@pytest.mark.parametrize(
+    ("render", "reason"),
+    [
+        (True, "changed by hand: not trusted as the render's"),
+        (False, "and no render could compare it"),
+    ],
+    ids=["render", "no-render"],
+)
+def test_conftest_without_the_plugin_line_is_human(
+    tmp_path: Path, template: Path, render: bool, reason: str
+) -> None:
+    """Without the plugin line the family check is off: an edit by hand is human."""
+    edited = CONFTEST.replace('pytest_plugins = ["xippios.core.testing.plugin"]\n', "")
+    pr = make_pr(
+        tmp_path, {**source_base(template), **FAMILY_TEST_FILES}, {"tests/conftest.py": edited}
+    )
+    fake = FakeRender(family_render(template)) if render else None
+    result = classify(pr, render=fake, template=template)
+    assert result.merge_class == mc.HUMAN
+    assert [f.text for f in result.findings if f.human] == [
+        f"tests/conftest.py is a template-owned test file {reason}"
+    ]
+
+
+def test_adoption_whose_family_test_is_identical_to_the_render_is_auto(
+    tmp_path: Path, template: Path
+) -> None:
+    changes = {**adoption(template), "tests/test_family.py": FAMILY_TEST}
+    render = FakeRender({**rendered(template), "tests/test_family.py": FAMILY_TEST})
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr, render=render, template=template)
+    assert "tests/test_family.py" in result.trusted
+    assert "tests/conftest.py" in result.trusted
+    assert result.remaining == ["CHANGELOG.md"]
+    assert result.merge_class == mc.AUTO
+
+
+@pytest.mark.parametrize("render", [True, False])
+def test_tests_tasks_stays_the_sessions(tmp_path: Path, template: Path, render: bool) -> None:
+    """tests/test_tasks.py is skip-listed: a session's file, never a template-owned one."""
+    files = {**family_render(template), "tests/test_tasks.py": "def test_stub(): pass\n"}
+    base = {**source_base(template), "tests/test_tasks.py": "def test_stub(): pass\n"}
+    pr = make_pr(tmp_path, base, {"tests/test_tasks.py": "def test_get_data(): pass\n"})
+    fake = FakeRender(files) if render else None
+    result = classify(pr, render=fake, template=template)
+    assert result.merge_class == mc.AUTO
+
+
+@pytest.mark.parametrize("repo", ["xippios/sdk-core", "xippios/sdk-template"])
+def test_family_test_files_are_template_owned_in_a_source_only(
+    tmp_path: Path, template: Path, repo: str
+) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"tests/conftest.py": None})
+    assert classify(pr, repo=repo).merge_class == mc.AUTO
+
+
+@pytest.mark.parametrize(("repo", "expected"), [("xippios/sdk-core", mc.HUMAN), (SOURCE, mc.AUTO)])
+def test_src_is_protected_in_core_only(tmp_path: Path, repo: str, expected: str) -> None:
+    pr = make_pr(
+        tmp_path,
+        {
+            "src/xippios/core/result.py": "v1\n",
+            "src/xippios/core/tasks.py": '__all__ = ["get"]\n',  # no bootstrap in a source
+            "pyproject.toml": PYPROJECT.format(version="1"),
+        },
+        {"src/xippios/core/result.py": "v2\n"},
+    )
+    assert classify(pr, repo=repo).merge_class == expected
+
+
+def test_every_pr_of_the_org_github_repository_is_human(tmp_path: Path) -> None:
+    pr = make_pr(tmp_path, {"README.md": "stub\n"}, {"README.md": "longer\n"})
+    result = classify(pr, repo="xippios/.github")
+    assert result.merge_class == mc.HUMAN
+    assert human_rules(result) == {3}
+
+
+TEMPLATE_PYPROJECT = """\
+[project]
+name = "xippios-{{ source_slug }}"
+version = "0.1.0"
+description = "Typed client for {{ source_name }}"
+dependencies = [
+  "xippios-core~={{ core_version }}",
+]
+
+[project.optional-dependencies]
+mcp = ["xippios-core[mcp]~={{ core_version }}"]
+http = ["xippios-core[http]~={{ core_version }}"]
+
+[project.scripts]
+xippios-{{ source_slug }}-mcp = "xippios.{{ source_pkg }}.mcp:run"
+{% if needs_write_tools %}
+xippios-{{ source_slug }}-mcp-write = "xippios.{{ source_pkg }}.mcp_write:run"
+{% endif %}
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+
+[tool.uv.sources]
+{% if core_git_ref %}
+xippios-core = { git = "https://github.com/xippios/sdk-core", rev = "{{ core_git_ref }}" }
+{% endif %}
+"""
+
+
+def template_repo_files() -> dict[str, str | None]:
+    return {
+        "copier.yml": COPIER_YML,
+        "template/pyproject.toml.jinja": TEMPLATE_PYPROJECT,
+        "template/README.md.jinja": "readme\n",
+        "tests/test_template.py": "def test(): pass\n",
+    }
+
+
+BLOCK = "the dependency block of template/pyproject.toml.jinja changed"
+JINJA_LINE = "a line that carries Jinja changed in template/pyproject.toml.jinja"
+
+
+def net(*lines: str) -> str:
+    """The second net's reason for the changed lines that look like a protected table."""
+    return (
+        "a changed line of template/pyproject.toml.jinja looks like a dependency, build or "
+        f"install table: {'; '.join(lines)}"
+    )
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "hits"),
+    [
+        (
+            '  "xippios-core~={{ core_version }}",\n',
+            '  "xippios-core~={{ core_version }}",\n  "httpx>=0.28",\n',
+            [BLOCK],
+        ),
+        (
+            'http = ["xippios-core[http]~={{ core_version }}"]\n',
+            'http = ["xippios-core[http]~={{ core_version }}", "uvicorn"]\n',
+            [BLOCK, JINJA_LINE],
+        ),
+        ('  "pytest>=8",\n', '  "pytest>=8",\n  "evil-plugin",\n', [BLOCK]),
+        (
+            'rev = "{{ core_git_ref }}"',
+            'rev = "{{ core_git_ref }}", subdirectory = "x"',
+            [BLOCK, JINJA_LINE],
+        ),
+        ("[tool.uv.sources]\n", "[tool.uv.sources]\nother = { path = '../other' }\n", [BLOCK]),
+        ('requires = ["hatchling>=1.27"]', 'requires = ["hatchling>=1.27", "evil"]', [BLOCK]),
+        (
+            "[tool.ruff]\n",
+            '[[tool.uv.index]]\nurl = "https://x.invalid"\n\n[tool.ruff]\n',
+            [BLOCK, net("[[tool.uv.index]]")],
+        ),
+        (
+            "[tool.ruff]\n",
+            '[tool.uv]\noverride-dependencies = ["a"]\n\n[tool.ruff]\n',
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            "[tool.ruff]\n",
+            '[tool.uv]\nindex-url = "https://x.invalid"\n\n[tool.ruff]\n',
+            [BLOCK, net("[tool.uv]")],
+        ),
+        ("[project.scripts]\n", '[project.scripts]\nevil = "os:system"\n', [BLOCK]),
+        (
+            "[tool.ruff]\n",
+            '[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]\n',
+            [BLOCK, net("[tool.hatch.build.hooks.custom]")],
+        ),
+        (
+            "[tool.ruff]\n",
+            '[tool.hatch.metadata.hooks.custom]\npath = "hatch_build.py"\n\n[tool.ruff]\n',
+            [BLOCK, net("[tool.hatch.metadata.hooks.custom]")],
+        ),
+        (
+            "[tool.ruff]\n",
+            '[tool.hatch.version]\nsource = "code"\npath = "x.py"\n\n[tool.ruff]\n',
+            [BLOCK, net("[tool.hatch.version]")],
+        ),
+        (
+            "[dependency-groups]\n",
+            '[project.entry-points.pytest11]\nplugin = "x.y"\n\n[dependency-groups]\n',
+            [BLOCK, net("[project.entry-points.pytest11]")],
+        ),
+        ('description = "Typed client', 'description = "A typed client', [JINJA_LINE]),
+        ("line-length = 100\n", 'line-length = 100\nsrc = ["{{ source_slug }}"]\n', [JINJA_LINE]),
+        ("{% endif %}\n\n[dependency-groups]", "\n[dependency-groups]", [BLOCK, JINJA_LINE]),
+        ("line-length = 100", "line-length = 120", []),
+    ],
+    ids=[
+        "dependencies",
+        "optional-dependencies",
+        "dependency-groups",
+        "uv-sources",
+        "uv-sources-added",
+        "build-system",
+        "uv-index",
+        "uv-override-dependencies",
+        "uv-index-url",
+        "scripts",
+        "hatch-build-hooks",
+        "hatch-metadata-hooks",
+        "hatch-version",
+        "entry-points",
+        "jinja-description",
+        "jinja-line-added",
+        "jinja-line-removed",
+        "tool-ruff",
+    ],
+)
+def test_template_dependency_block_and_jinja_lines_are_protected(
+    tmp_path: Path, old: str, new: str, hits: list[str]
+) -> None:
+    assert old in TEMPLATE_PYPROJECT
+    pr = make_pr(
+        tmp_path,
+        template_repo_files(),
+        {"template/pyproject.toml.jinja": TEMPLATE_PYPROJECT.replace(old, new, 1)},
+    )
+    result = classify(pr, repo="xippios/sdk-template")
+    assert [f.text for f in result.findings if f.rule == 3] == hits
+
+
+# As in the real template, the protected tables come first and [tool.ruff] last: a scan
+# that loses its place in [tool.ruff] loses nothing of the base's block.
+DEMO_TEMPLATE = TEMPLATE_PYPROJECT.replace("[tool.ruff]\nline-length = 100\n\n", "") + (
+    '\n[tool.ruff]\nline-length = 100\ntarget-version = "py312"\n'
+)
+EVIL_INDEX = '\n[tool.uv]\nindex-url = "https://evil.example/simple"\n'
+OPEN_STRING = "template/pyproject.toml.jinja ends inside a multi-line string"
+# A line Jinja closes, which the scan reads as an open bracket: it loses its place there.
+ODD_JINJA = "src = [{{ '\"src\"]' }}\n"
+
+
+@pytest.mark.parametrize(
+    ("base", "head", "hits"),
+    [
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", "line-length = 100  # wrapped [docs\n")
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", 'line-length = 100\nx = "{[docs"\n')
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", "line-length = 100\nx = '[docs'\n")
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", 'line-length = 100\nx = "\\"[docs"\n')
+            + EVIL_INDEX,
+            [BLOCK, net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE.replace(
+                'description = "Typed client for {{ source_name }}"',
+                'description = """Typed client\n[tool.ruff]\n"""',
+            ),
+            DEMO_TEMPLATE.replace(
+                'description = "Typed client for {{ source_name }}"',
+                'description = """Typed client\n[tool.ruff]\n"""\nscripts = { evil = "os:system" }',
+            ),
+            [BLOCK, net('scripts = { evil = "os:system" }')],
+        ),
+        (DEMO_TEMPLATE, DEMO_TEMPLATE + 'notes = """\nnever closed\n', [OPEN_STRING]),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE + "{# never closed\n",
+            ["template/pyproject.toml.jinja ends inside a Jinja tag", JINJA_LINE],
+        ),
+        (
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA),
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA) + EVIL_INDEX,
+            [net("[tool.uv]")],
+        ),
+        (
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA),
+            DEMO_TEMPLATE.replace("line-length = 100\n", ODD_JINJA)
+            + '\n[tool]\nuv.index-url = "https://evil.example/simple"\n',
+            [net('uv.index-url = "https://evil.example/simple"')],
+        ),
+        (
+            DEMO_TEMPLATE,
+            DEMO_TEMPLATE.replace("line-length = 100\n", "line-length = 120  # [wider]\n"),
+            [],
+        ),
+    ],
+    ids=[
+        "tpldemo-comment-bracket",
+        "basic-string-bracket",
+        "literal-string-bracket",
+        "escaped-quote",
+        "multi-line-string-hides-a-header",
+        "unterminated-multi-line-string",
+        "unterminated-jinja",
+        "net-alone-header",
+        "net-alone-dotted-key",
+        "comment-only",
+    ],
+)
+def test_template_scan_reads_past_comments_and_strings(
+    tmp_path: Path, base: str, head: str, hits: list[str]
+) -> None:
+    """The review's tpldemo: ``[docs`` in a comment hid an appended ``[tool.uv]``."""
+    files = {**template_repo_files(), "template/pyproject.toml.jinja": base}
+    pr = make_pr(tmp_path, files, {"template/pyproject.toml.jinja": head})
+    result = classify(pr, repo="xippios/sdk-template")
+    assert [f.text for f in result.findings if f.rule == 3] == hits
+    assert result.merge_class == (mc.HUMAN if hits else mc.AUTO)
+
+
+EVIL = '"https://evil.example/simple"'
+IN_PROJECT = 'version = "0.1.0"\n'
+
+
+@pytest.mark.parametrize(
+    ("added", "line"),
+    [
+        (f'\n[tool."\\u0075v"]\nindex-url = {EVIL}\n', '[tool."\\u0075v"]'),
+        (f'\n[tool]\n"\\u0075v".index-url = {EVIL}\n', f'"\\u0075v".index-url = {EVIL}'),
+        (f"\n[tool]\nuv\t.index-url = {EVIL}\n", f"uv\t.index-url = {EVIL}"),
+        ('entry-points\t.pytest11.evil = "evil.plugin"\n', None),
+        ('"gui-\\u0073cripts".evil = "os:system"\n', None),
+        (
+            '\n[tool."h\\u0061tch".build.hooks.custom]\npath = "hatch_build.py"\n',
+            '[tool."h\\u0061tch".build.hooks.custom]',
+        ),
+        (f"\n[tool\t.\tuv]\nindex-url = {EVIL}\n", "[tool\t.\tuv]"),
+        (f"\n[ tool . uv ]\nindex-url = {EVIL}\n", "[ tool . uv ]"),
+        ('entry-points.pytest11."a/b" = "evil.plugin"\n', None),
+        ('\n[tool.uv.sources."a[b"]\ngit = "https://evil.example/x"\n', '[tool.uv.sources."a[b"]'),
+    ],
+    ids=[
+        "esc-header",
+        "esc-dotted-key",
+        "tab-dotted-key",
+        "tab-entry-point",
+        "esc-gui-scripts",
+        "esc-hatch-hook",
+        "tab-header",
+        "spaced-header",
+        "quoted-entry-point-name",
+        "bracket-in-a-quoted-header",
+    ],
+)
+def test_every_toml_spelling_of_a_protected_table_is_human(
+    tmp_path: Path, added: str, line: str | None
+) -> None:
+    """The review's variants: a key or header spelled with tabs, spaces or an escape.
+
+    A variant with no ``line`` is added under ``[project]``, where it is its own line.
+    """
+    if line is None:
+        head = TEMPLATE_PYPROJECT.replace(IN_PROJECT, IN_PROJECT + added, 1)
+        line = added.strip()
+    else:
+        head = TEMPLATE_PYPROJECT + added
+    assert head != TEMPLATE_PYPROJECT
+    pr = make_pr(tmp_path, template_repo_files(), {"template/pyproject.toml.jinja": head})
+    result = classify(pr, repo="xippios/sdk-template")
+    assert [f.text for f in result.findings if f.rule == 3] == [BLOCK, net(line)]
+    assert result.merge_class == mc.HUMAN
+
+
+@pytest.mark.parametrize(
+    ("line", "looks"),
+    [
+        ("[tool.uv]", True),
+        ("[[tool.uv.index]]", True),
+        ("  [tool.hatch.build]  # indented, with a comment", True),
+        ('[tool."uv".sources]', True),
+        ("[build-system]", True),
+        ("[project.optional-dependencies]", True),
+        ("[tool.ruff]", False),
+        ("[project]", False),
+        ("[project.urls]", False),
+        ('tool.uv.index-url = "x"', True),
+        ('uv.index-url = "x"', True),
+        ('uv = { index-url = "x" }', True),
+        ("tool = { uv = {} }", True),
+        ('scripts.evil = "os:system"', True),
+        ('build-system.requires = ["evil"]', True),
+        ('hatch.build.hooks.custom.path = "x.py"', True),
+        ('"entry-points".pytest11.p = "x.y"', True),
+        ("dependency-groups.dev = []", True),
+        ("[ tool . uv ]", True),
+        ("[tool\t.\tuv]", True),
+        ('[tool."\\u0075v"]', True),
+        ('[tool."h\\u0061tch".build.hooks.custom]', True),
+        ('[tool.uv.sources."a[b"]', True),
+        ('[project.entry-points."a]b"]', True),
+        ('uv\t.index-url = "x"', True),
+        ('"\\u0075v".index-url = "x"', True),
+        ('entry-points\t.pytest11.evil = "x"', True),
+        ('"gui-\\u0073cripts".evil = "os:system"', True),
+        ('entry-points.pytest11."a/b" = "x"', True),
+        ('scripts."x!" = "os:system"', True),
+        ('"\\u0061" = 1', True),  # an escape spells any name: refused outright
+        ("line-length = 100", False),
+        ('name = "xippios-x"', False),
+        ('"tests/**" = ["D", "ANN"]', False),
+        ('requires = ["hatchling>=1.27"]', False),
+        ('"build-system",', False),
+        ('description = "a\\tb"', False),  # a backslash in a value is no key
+        ('"[tool.uv]" = 1', False),
+    ],
+)
+def test_looks_protected(line: str, looks: bool) -> None:
+    assert mc.looks_protected(line) is looks
+
+
+@pytest.mark.parametrize(
+    ("line", "name"),
+    [
+        ("[ tool . uv ]", "tool.uv"),
+        ('[tool."a]b"]  # c', "tool.a]b"),
+        ("[[ tool.uv.index ]]", "tool.uv.index"),
+        ('uv\t.\t"index-url" = "x"', "uv.index-url"),
+        ("'a=b'.c = 1", "a=b.c"),
+    ],
+)
+def test_headers_and_keys_are_read_as_toml_spells_them(line: str, name: str) -> None:
+    match = mc._TABLE.match(line) or mc._ARRAY_TABLE.match(line) or mc._KEY.match(line)
+    assert match is not None
+    assert mc._toml_name(match.group(1)) == name
+
+
+def test_a_long_line_is_read_in_linear_time() -> None:
+    """One reading per line: a long run of spaces or strings cannot make a match backtrack."""
+    lines = ["[" + " " * 50_000 + "x", "a" + " " * 50_000 + "b", '"a" ' * 25_000 + "["]
+    start = time.perf_counter()
+    for line in lines:
+        assert not mc.looks_protected(line)
+        assert mc.dependency_block(line) == []
+    assert time.perf_counter() - start < 5
+
+
+def test_toml_lines_tell_strings_comments_and_jinja_apart() -> None:
+    text = (
+        'a = """x [\n'
+        "[tool.uv]\n"
+        'y""""  # closed, with one quote of its own [\n'
+        "b = '''{'''\n"
+        'c = "\\" ["\n'
+        "{# [ #}d = {{ '[' }}\n"
+    )
+    lines, still_open = mc.toml_lines(text)
+    assert still_open is None
+    assert [line.in_string for line in lines] == [False, True, True, False, False, False, False]
+    assert [line.bare.strip() for line in lines] == ["a =", "", "", "b =", "c =", "d =", ""]
+    assert lines[2].code.strip() == 'y""""'
+    assert mc.toml_lines('a = """\n')[1] == "a multi-line string"
+    assert mc.toml_lines("a = 1\n{% if x\n")[1] == "a Jinja tag"
+
+
+SOURCE_PYPROJECT = (
+    PYPROJECT.format(version="0.2.0")
+    + """
+[project.scripts]
+xippios-usda-psd-mcp = "xippios.usda.psd.mcp:run"
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/xippios"]
+
+[tool.ruff]
+line-length = 100
+"""
+)
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "tables"),
+    [
+        (
+            'requires = ["hatchling>=1.27"]',
+            'requires = ["hatchling>=1.27", "evil"]',
+            "build-system",
+        ),
+        ("[tool.ruff]", '[[tool.uv.index]]\nurl = "https://x.invalid"\n\n[tool.ruff]', "tool.uv"),
+        ("[tool.ruff]", '[tool.uv]\nindex-url = "https://x.invalid"\n\n[tool.ruff]', "tool.uv"),
+        ("[tool.ruff]", '[tool.uv.sources]\nx = { path = "../x" }\n\n[tool.ruff]', "tool.uv"),
+        ("[tool.ruff]", '[tool.uv]\noverride-dependencies = ["a"]\n\n[tool.ruff]', "tool.uv"),
+        ('mcp:run"', 'mcp:run"\nevil = "os:system"', "project.scripts"),
+        (
+            "[build-system]",
+            '[project.gui-scripts]\ng = "x:y"\n\n[build-system]',
+            "project.gui-scripts",
+        ),
+        (
+            "[build-system]",
+            '[project.entry-points.pytest11]\np = "x.y"\n\n[build-system]',
+            "project.entry-points",
+        ),
+        ('"xippios-core~=0.2.0"', '"xippios-core~=0.2.0", "httpx>=0.28"', None),
+        ('dev = ["pytest>=8"]', 'dev = ["pytest>=8", "respx"]', None),
+        ("line-length = 100", "line-length = 120", None),
+    ],
+    ids=[
+        "build-system",
+        "uv-index",
+        "uv-index-url",
+        "uv-sources",
+        "uv-override-dependencies",
+        "scripts",
+        "gui-scripts",
+        "entry-points",
+        "dependencies",
+        "dependency-groups",
+        "tool-ruff",
+    ],
+)
+def test_build_and_install_routes_of_a_pyproject_are_protected(
+    tmp_path: Path, template: Path, old: str, new: str, tables: str | None
+) -> None:
+    assert old in SOURCE_PYPROJECT
+    base = source_base(template)
+    base["pyproject.toml"] = SOURCE_PYPROJECT
+    pr = make_pr(tmp_path, base, {"pyproject.toml": SOURCE_PYPROJECT.replace(old, new, 1)})
+    result = classify(pr)
+    expected = [f"build or install routes changed in pyproject.toml: {tables}"] if tables else []
+    assert [f.text for f in result.findings if f.human] == expected
+
+
+@pytest.mark.parametrize("repo", ["xippios/sdk-core", "xippios/sdk-template"])
+def test_build_routes_are_protected_in_every_repository(tmp_path: Path, repo: str) -> None:
+    base = {"pyproject.toml": SOURCE_PYPROJECT, "README.md": "x\n"}
+    head = SOURCE_PYPROJECT.replace('build-backend = "hatchling.build"', 'build-backend = "evil"')
+    pr = make_pr(tmp_path, base, {"pyproject.toml": head})
+    result = classify(pr, repo=repo)
+    assert [f.text for f in result.findings if f.human] == [
+        "build or install routes changed in pyproject.toml: build-system"
+    ]
+
+
+def with_table(table: str) -> str:
+    """SOURCE_PYPROJECT with ``table`` added before ``[tool.ruff]``."""
+    return SOURCE_PYPROJECT.replace("[tool.ruff]", f"{table}\n\n[tool.ruff]", 1)
+
+
+HATCH_VERSION = '[tool.hatch.version]\npath = "src/xippios/usda/psd/_version.py"'
+
+
+@pytest.mark.parametrize(
+    ("repo", "before", "after"),
+    [
+        (
+            SOURCE,
+            SOURCE_PYPROJECT,
+            SOURCE_PYPROJECT.replace('["src/xippios"]', '["src/xippios", "src/evil"]', 1),
+        ),
+        (
+            "xippios/sdk-core",
+            SOURCE_PYPROJECT,
+            with_table('[tool.hatch.build.hooks.custom]\npath = "hatch_build.py"'),
+        ),
+        (
+            "xippios/sdk-template",
+            SOURCE_PYPROJECT,
+            with_table('[tool.hatch.build]\nexclude = ["/x"]'),
+        ),
+        (
+            SOURCE,
+            SOURCE_PYPROJECT,
+            with_table('[tool.hatch.metadata.hooks.custom]\npath = "hatch_build.py"'),
+        ),
+        (
+            SOURCE,
+            with_table(HATCH_VERSION),
+            with_table(HATCH_VERSION.replace("path =", 'source = "code"\npath =')),
+        ),
+        (
+            "xippios/sdk-core",
+            SOURCE_PYPROJECT,
+            with_table("[tool.hatch.metadata]\nallow-direct-references = true"),
+        ),
+    ],
+    ids=[
+        "source-wheel-target",
+        "core-build-hook",
+        "template-build-table",
+        "source-metadata-hook",
+        "source-version-source",
+        "core-metadata",
+    ],
+)
+def test_tool_hatch_is_a_build_route_in_every_repository(
+    tmp_path: Path, template: Path, repo: str, before: str, after: str
+) -> None:
+    """The whole ``[tool.hatch]``: build targets and hooks, metadata hooks, version source."""
+    assert before != after
+    base = source_base(template) if repo == SOURCE else {"README.md": "x\n"}
+    base["pyproject.toml"] = before
+    pr = make_pr(tmp_path, base, {"pyproject.toml": after})
+    result = classify(pr, repo=repo)
+    assert [f.text for f in result.findings if f.human] == [
+        "build or install routes changed in pyproject.toml: tool.hatch"
+    ]
+
+
+@pytest.mark.parametrize("repo", [SOURCE, "xippios/sdk-core", "xippios/sdk-template"])
+@pytest.mark.parametrize(
+    ("path", "content"),
+    [
+        ("hatch.toml", '[version]\nsource = "code"\npath = "x.py"\n'),
+        ("uv.toml", 'index-url = "https://evil.example/simple"\n'),
+    ],
+)
+def test_a_root_hatch_or_uv_toml_is_protected_in_every_repository(
+    tmp_path: Path, template: Path, repo: str, path: str, content: str
+) -> None:
+    """A root hatch.toml merges over [tool.hatch]; uv reads a root uv.toml before [tool.uv]."""
+    base = source_base(template) if repo == SOURCE else {"README.md": "x\n"}
+    base["pyproject.toml"] = SOURCE_PYPROJECT
+    pr = make_pr(tmp_path, base, {path: content})
+    render = FakeRender(rendered(template)) if repo == SOURCE else None
+    result = classify(pr, repo=repo, render=render, template=template)
+    assert [f.text for f in result.findings if f.human] == [
+        f"protected path {path} (matches {path})"
+    ]
+
+
+def test_an_unreadable_pyproject_is_human(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"pyproject.toml": "[project\n"})
+    result = classify(pr)
+    assert any(
+        f.rule == 3 and f.text.startswith("cannot read the build and install tables")
+        for f in result.findings
+    )
+
+
+@pytest.mark.parametrize(
+    ("path", "protected"),
+    [
+        ("copier.yml", True),
+        ("copier.yaml", True),
+        ("scripts/new-source.sh", True),
+        ("template/.github/workflows/ci.yml", True),
+        ("template/.github/workflows/live.yml.jinja", True),
+        ("template/.claude/settings.json", True),
+        ("template/.claude/settings.local.json", True),
+        ("template/.claude/agents/reviewer.md.jinja", True),
+        ("template/.claude/hooks/guard.py", True),
+        ("template/.claude/commands/add-endpoint.md.jinja", True),
+        ("template/.mcp.json.jinja", True),
+        ("template/CLAUDE.local.md", True),
+        ("template/.pre-commit-config.yaml", True),
+        ("template/.secrets.baseline", True),
+        ("template/docs/conventions.md", True),
+        ("template/docs/adr/0001-layers.md", True),
+        ("template/docs/review-checklist.md.jinja", True),
+        ("template/docs/definition-of-done.md", True),
+        ("template/hatch.toml", True),
+        ("template/hatch.toml.jinja", True),
+        ("template/uv.toml", True),
+        ("template/uv.toml.jinja", True),
+        ("template/src/xippios/{{ package_dir }}/mcp.py.jinja", True),  # Jinja in the name
+        ("template/{{ _copier_conf.answers_file }}.jinja", True),
+        ("template/{% if x %}.github{% endif %}/ci.yml", True),
+        ("template/README.md.jinja", False),
+        ("template/docs/upstream/FETCHED.md.jinja", False),
+        ("tests/test_template.py", False),
+    ],
+)
+def test_template_protected_paths(tmp_path: Path, path: str, protected: bool) -> None:
+    """sdk-template skips rule 1, so its rule-3 list alone decides: the list is reachable."""
+    pr = make_pr(tmp_path, template_repo_files(), {path: "changed\n"})
+    result = classify(pr, repo="xippios/sdk-template")
+    assert human_rules(result) == ({3} if protected else set())
+    assert result.merge_class == (mc.HUMAN if protected else mc.AUTO)
+
+
+@pytest.mark.parametrize(
+    ("repo", "rules"),
+    [
+        (SOURCE, {1}),
+        ("xippios/sdk-template", set()),
+        ("xippios/sdk-core", set()),
+        ("xippios/.github", {3}),  # every PR there is human, by rule 3 alone
+        ("xippios/other", set()),
+    ],
+)
+def test_rule_1_applies_to_source_repositories_only(
+    tmp_path: Path, repo: str, rules: set[int]
+) -> None:
+    """A base without src/ is a scaffold only in a source; sdk-template and .github have none."""
+    pr = make_pr(tmp_path, template_repo_files(), {"template/README.md.jinja": "longer\n"})
+    result = classify(pr, repo=repo)
+    assert human_rules(result) == rules
+
+
+# --- rule 4 ------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("before", "after", "first"),
+    [
+        ("__all__: list[str] = []\n", '__all__ = ["get_data"]\n', True),
+        (None, '__all__ = ["get_data"]\n', True),
+        ('"""No tasks yet."""\n', '__all__ = ("get_data",)\n', True),
+        ('__all__ = ["get_data"]\n', '__all__ = ["get_data", "list_regions"]\n', False),
+        ("__all__: list[str] = []\n", "__all__: list[str] = []\nX = 1\n", False),
+    ],
+    ids=["empty", "absent", "no-all", "already-public", "still-empty"],
+)
+def test_first_surface(
+    tmp_path: Path, template: Path, before: str | None, after: str, first: bool
+) -> None:
+    base = source_base(template)
+    base["src/xippios/usda/psd/tasks.py"] = before
+    if before is None:
+        del base["src/xippios/usda/psd/tasks.py"]
+    pr = make_pr(tmp_path, base, {"src/xippios/usda/psd/tasks.py": after})
+    result = classify(pr)
+    texts = [f.text for f in result.findings if f.human]
+    assert any(text.startswith("first surface:") for text in texts) is first
+    # A base that exports nothing is still in its bootstrap: any change under src/ is human.
+    bootstrap = before is None or "get_data" not in before
+    assert result.merge_class == (mc.HUMAN if first or bootstrap else mc.AUTO)
+
+
+@pytest.mark.parametrize(
+    ("tasks", "repo", "human"),
+    [
+        ("__all__: list[str] = []\n", SOURCE, True),
+        (None, SOURCE, True),
+        ("__all__ = sorted(globals())\n", SOURCE, True),  # unreadable exports nothing known
+        ('__all__ = ["get_data"]\n', SOURCE, False),
+        ("__all__: list[str] = []\n", "xippios/sdk-core", False),
+    ],
+    ids=["empty", "absent", "unreadable", "exports", "not-a-source"],
+)
+def test_bootstrap_makes_every_src_change_human(
+    tmp_path: Path, template: Path, tasks: str | None, repo: str, human: bool
+) -> None:
+    """Rule 4's static reading has limits; while the base exports no task, src/ is human."""
+    base = source_base(template)
+    base["src/xippios/usda/psd/tasks.py"] = tasks
+    if tasks is None:
+        del base["src/xippios/usda/psd/tasks.py"]
+    changes: dict[str, str | None] = {
+        "src/xippios/usda/psd/models.py": "models\n",
+        "tests/test_models.py": "ok\n",
+    }
+    pr = make_pr(tmp_path, base, changes)
+    result = classify(pr, repo=repo)
+    texts = [f.text for f in result.findings if f.human and f.rule == 4]
+    expected = "bootstrap: no tasks.py on the base exports a task, and src/ changes: "
+    assert texts == ([expected + "src/xippios/usda/psd/models.py"] if human else [])
+
+
+def test_bootstrap_spares_a_src_file_identical_to_the_render(
+    tmp_path: Path, template: Path
+) -> None:
+    base = source_base(template)
+    base["src/xippios/usda/psd/tasks.py"] = "__all__: list[str] = []\n"
+    pr = make_pr(tmp_path, base, {"src/xippios/usda/psd/mcp.py": "mcp v2\n"})
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == ["src/xippios/usda/psd/mcp.py"]
+    assert result.merge_class == mc.AUTO
+
+
+def test_unreadable_all_is_human(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {"src/xippios/usda/psd/tasks.py": "__all__ = sorted(globals())\n"},
+    )
+    result = classify(pr)
+    assert human_rules(result) == {4}
+
+
+# --- rule 5 ------------------------------------------------------------------------------
+
+
+def release(**extra: str) -> dict[str, str | None]:
+    files: dict[str, str | None] = {
+        "pyproject.toml": PYPROJECT.format(version="0.2.1"),
+        "uv.lock": "lock v2\n",
+        "CHANGELOG.md": "## 0.2.1\n",
+        "README.md": "readme 0.2.1\n",
+        "CLAUDE.md": "claude 0.2.1\n",
+        "docs/handover.md": "handover\n",
+    }
+    files.update(extra)
+    return files
+
+
+def test_release_pr_inside_the_subset_is_auto(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), release())
+    result = classify(pr)
+    assert result.merge_class == mc.AUTO
+
+
+def test_release_pr_with_check_siblings_is_auto(tmp_path: Path, template: Path) -> None:
+    """scripts/check-siblings.sh belongs to the release subset until the template owns it."""
+    changes = release(**{"scripts/check-siblings.sh": "#!/bin/sh\nexit 0\n"})
+    pr = make_pr(tmp_path, source_base(template), changes)
+    assert classify(pr).merge_class == mc.AUTO
+
+
+def test_release_pr_touching_tasks_is_human(tmp_path: Path, template: Path) -> None:
+    changes = release(**{"src/xippios/usda/psd/tasks.py": '__all__ = ["get_data", "more"]\n'})
+    pr = make_pr(tmp_path, source_base(template), changes)
+    result = classify(pr)
+    assert result.merge_class == mc.HUMAN
+    assert human_rules(result) == {5}
+    assert "src/xippios/usda/psd/tasks.py" in next(f.text for f in result.findings if f.rule == 5)
+
+
+def test_release_pr_with_a_trusted_template_file_is_auto(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), release(**{"tests/conftest.py": "conftest v2\n"}))
+    result = classify(pr, render=FakeRender(rendered(template)), template=template)
+    assert result.trusted == ["tests/conftest.py"]
+    assert result.merge_class == mc.AUTO
+
+
+def test_unchanged_version_is_no_release(tmp_path: Path, template: Path) -> None:
+    pyproject = PYPROJECT.format(version="0.2.0") + "\n[tool.ruff]\nline-length = 100\n"
+    pr = make_pr(
+        tmp_path,
+        source_base(template),
+        {"pyproject.toml": pyproject, "src/xippios/usda/psd/_client.py": "x\n"},
+    )
+    assert classify(pr).merge_class == mc.AUTO
+
+
+# --- inputs and reasons ------------------------------------------------------------------
+
+
+def test_the_branch_name_is_no_input(tmp_path: Path, template: Path) -> None:
+    """The class depends on the two commits alone: a release-shaped name changes nothing."""
+    pr = make_pr(tmp_path, source_base(template), {".github/workflows/extra.yml": "x\n"})
+    results = []
+    for branch in ("fix/extra", "chore/release-9.9.9", "chore/template-update-v9"):
+        git(pr.workdir, "branch", "-f", branch, pr.head)
+        results.append(classify(PR(pr.workdir, "main", branch)))
+    assert {
+        (r.head, r.merge_class, tuple(f.text for f in r.findings if f.human)) for r in results
+    } == {
+        (
+            pr.head,
+            mc.HUMAN,
+            ("protected path .github/workflows/extra.yml (matches .github/**)",),
+        )
+    }
+    assert "branch" not in mc.classify.__code__.co_varnames
+
+
+def test_a_pr_behind_its_base_is_compared_with_the_merge_base(
+    tmp_path: Path, template: Path
+) -> None:
+    """main moved on (a protected file) after the branch forked: not the PR's change."""
+    pr = make_pr(tmp_path, source_base(template), {"tests/test_new.py": "x\n"})
+    git(pr.workdir, "checkout", "-q", "main")
+    tip = commit(pr.workdir, {".github/workflows/ci.yml": "ci v9\n"}, "main moves on")
+    result = classify(PR(pr.workdir, tip, pr.head))
+    assert result.base == tip
+    assert result.merge_base == pr.base != tip
+    assert result.changed == ["tests/test_new.py"]
+    assert result.merge_class == mc.AUTO
+
+
+def test_every_reason_is_reported(tmp_path: Path, template: Path) -> None:
+    """The first human decides the class; the later rules still report theirs."""
+    base = source_base(template)
+    base["src/xippios/usda/psd/tasks.py"] = "__all__: list[str] = []\n"
+    changes = release(**{"src/xippios/usda/psd/tasks.py": '__all__ = ["get_data"]\n'})
+    changes[".github/workflows/extra.yml"] = "x\n"
+    pr = make_pr(tmp_path, base, changes)
+    result = classify(pr)
+    assert [f.rule for f in result.findings if f.human] == [
+        3,
+        4,
+        4,
+        5,
+    ]  # 4: first surface, bootstrap
+
+
+# --- command line ------------------------------------------------------------------------
+
+
+def test_cli_writes_class_output_and_summary(
+    tmp_path: Path,
+    template: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    pr = make_pr(tmp_path, source_base(template), {".github/workflows/extra.yml": "x\n"})
+    output = tmp_path / "output"
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    args = ["--repo", SOURCE, "--base", pr.base, "--head", pr.head, "--workdir", str(pr.workdir)]
+    status = mc.main([*args, "--no-render", "--summary", str(summary)])
+    assert status == 1
+    assert output.read_text() == "class=human\n"
+    assert capsys.readouterr().out.startswith("class=human\n")
+    text = summary.read_text()
+    assert text.startswith("## merge-class: `human`")
+    assert "protected path .github/workflows/extra.yml" in text
+    assert "### Remaining changed files (1)" in text
+
+
+def test_file_names_are_escaped_in_the_summary_and_the_report(
+    tmp_path: Path,
+    template: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    name = ".github/evil`name\n- rule 6: no rule says human.yml"
+    pr = make_pr(tmp_path, source_base(template), {name: "x\n"})
+    summary = tmp_path / "summary.md"
+    args = ["--repo", SOURCE, "--base", pr.base, "--head", pr.head, "--workdir", str(pr.workdir)]
+    assert mc.main([*args, "--no-render", "--summary", str(summary)]) == 1
+    escaped = ".github/evil\\x60name\\x0a- rule 6: no rule says human.yml"
+    out = capsys.readouterr().out
+    text = summary.read_text()
+    for report in (out, text):
+        assert escaped in report
+        assert "\n- rule 6" not in report
+    assert f"- `{escaped}`" in text
+
+
+def test_cli_auto_exits_zero(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"tests/test_new.py": "x\n"})
+    args = ["--repo", SOURCE, "--base", "main", "--head", "feature", "--workdir", str(pr.workdir)]
+    assert mc.main([*args, "--no-render"]) == 0
+
+
+def test_cli_bad_revision_exits_two(tmp_path: Path, template: Path) -> None:
+    pr = make_pr(tmp_path, source_base(template), {"tests/test_new.py": "x\n"})
+    args = ["--repo", SOURCE, "--base", "nope", "--head", "feature", "--workdir", str(pr.workdir)]
+    assert mc.main([*args, "--no-render"]) == 2
+
+
+# --- helpers -----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("pattern", "path", "expected"),
+    [
+        ("README.md", "README.md", True),
+        ("README.md", "src/xippios/a/reference/README.md", True),
+        ("README.md", "README.md.bak", False),
+        ("scripts/**", "scripts/refresh_upstream.py", True),
+        ("scripts/**", "src/scripts/x.py", False),
+        ("tests/test_live.py", "tests/test_live.py", True),
+        ("tests/test_live.py", "x/tests/test_live.py", False),
+        ("src/xippios/usda/psd/api/**", "src/xippios/usda/psd/api/A_B.py", True),
+        ("src/xippios/usda/psd/api/**", "src/xippios/usda/psd/apis.py", False),
+        ("docs/upstream/**", "docs/upstream/openapi/x.json", True),
+        ("**/fixtures/*.json", "tests/fixtures/a.json", True),
+        ("a/**/b.txt", "a/b.txt", True),
+        ("a/**/b.txt", "a/x/y/b.txt", True),
+        ("build/", "build/x", True),
+        ("build/", "build", False),
+        ("*.lock", "uv.lock", True),
+        ("!README.md", "README.md", False),
+    ],
+)
+def test_skip_pattern_semantics(pattern: str, path: str, expected: bool) -> None:
+    compiled = [c for c in [mc.compile_pattern(pattern)] if c is not None]
+    assert mc.matches_any(path, compiled) is expected
+
+
+def test_skip_patterns_reads_block_and_flow_lists() -> None:
+    assert mc.skip_patterns(COPIER_YML) == [
+        "src/xippios/{{ package_dir }}/__init__.py",
+        "src/xippios/{{ package_dir }}/_client.py",
+        "src/xippios/{{ package_dir }}/tasks.py",
+        "src/xippios/{{ package_dir }}/reference/**",
+        "scripts/**",
+        "tests/test_tasks.py",
+        "README.md",
+        "CHANGELOG.md",
+    ]
+    assert mc.skip_patterns("_skip_if_exists: ['a', \"b/**\"]  # inline\n") == ["a", "b/**"]
+    with pytest.raises(mc.RenderError):
+        mc.skip_patterns("_subdirectory: template\n")
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        (None, []),
+        (b"x = 1\n", []),
+        (b"__all__: list[str] = []\n", []),
+        (b'__all__ = ["a", "b"]\n', ["a", "b"]),
+        (b'__all__ = ["a"]\n__all__ += ["b"]\n', ["a", "b"]),
+        (b'__all__ = ["a"]\n__all__.append("b")\n', None),
+        (b"__all__ = [name for name in dir()]\n", None),
+        (b'if True:\n    __all__ = ["a"]\n', None),
+        (b"def broken(:\n", None),
+        (b'__all__: list[str] = []\n"""Docs that mention __all__ in passing."""\n', []),
+    ],
+)
+def test_exported_names(source: bytes | None, expected: list[str] | None) -> None:
+    assert mc.exported_names(source) == expected
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from ._impl import __all__\n",
+        "from ._impl import names as __all__\n",
+        "import _impl as __all__\n",
+        "from ._impl import *\n",
+        'def __getattr__(name):\n    return ["get_data"]\n',
+        "__getattr__ = lambda name: []\n",
+        'globals()["__all__"] = ["get_data"]\n',
+        'import sys\nsetattr(sys.modules[__name__], "__all__", ["get_data"])\n',
+        'NAME = "__all__"\n',
+        'vars()["__al" + "l__"] = ["get_data"]\n',
+        "import sys\nsys.modules[__name__].__dict__.update(x=1)\n",
+        '__all__: list[str] = []\nalias = __all__\nalias.append("get_data")\n',
+        'def __all__():\n    return ["get_data"]\n',
+        'for __all__ in [["get_data"]]:\n    pass\n',
+        "__all__ = []\ndel __all__\n",
+        '__all__ = []\n(__all__ := ["get_data"])\n',
+    ],
+)
+def test_all_that_cannot_be_read_statically_is_unreadable(source: str) -> None:
+    assert mc.exported_names(source.encode()) is None
+
+
+def test_normalize_url() -> None:
+    family = mc.normalize_url(mc.DEFAULT_TEMPLATE_URL)
+    assert mc.normalize_url("https://github.com/xippios/sdk-template") == family
+    assert mc.normalize_url("gh:xippios/sdk-template") == family
+    assert mc.normalize_url("git@github.com:xippios/sdk-template.git") == family
+    assert mc.normalize_url("https://github.com/xippios/sdk-template-fork.git") != family
