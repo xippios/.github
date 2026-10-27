@@ -4,8 +4,8 @@
 The rules, in order (README.md, "Merge classes"). Every rule is evaluated and every reason
 collected; the first ``human`` decides the class, the later ones only add to the summary.
 
-1. Scaffold, in a source repository only (``sdk-*`` other than sdk-core and sdk-template):
-   the base has no ``src/`` directory.
+1. Scaffold, in a source repository only (``sdk-*`` other than sdk-core, sdk-template and
+   sdk-gates): the base has no ``src/`` directory.
 2. Render trust: a changed file the template owns (rendered, and matched by no
    ``_skip_if_exists`` pattern) whose content and executable bit are identical to the
    template rendered at the head's ``_commit`` with the head's answers leaves the changed
@@ -30,7 +30,7 @@ collected; the first ``human`` decides the class, the later ones only add to the
    (read past Jinja, comments and strings, keys as TOML spells them, a key or header with
    a backslash refused; one that ends inside a multi-line string is human), any changed
    line of it that carries Jinja, and any changed line of it that looks like one of those
-   tables or their keys; in ``xippios/.github`` every pull request.
+   tables or their keys; in ``xippios/sdk-gates`` every pull request.
 4. First surface: a ``src/xippios/**/tasks.py`` whose ``__all__`` was empty or absent
    names at least one task. Bootstrap: in a source whose base exports no task, any
    changed file under ``src/``.
@@ -151,10 +151,12 @@ ADAPTER_MODULES = re.compile(r"src/xippios/(?:.+/)?(?:mcp|http|_version|api/__in
 # line that serves it; template-owned by name, too, when no render tells. tests/test_tasks.py
 # is the session's (skip-listed).
 FAMILY_TEST_FILES = frozenset({"tests/test_family.py", "tests/conftest.py"})
-# Every pull request of the organisation's .github repository is human.
-ORG_REPOSITORY = ".github"
-# The repositories named sdk-* that are not sources; rule 1 skips them.
-FAMILY_REPOSITORIES = frozenset({"sdk-core", "sdk-template"})
+# The gates repository itself, this classifier's home: every pull request there is human.
+ORG_REPOSITORY = "sdk-gates"
+# The repositories named sdk-* that are not sources: rule 1, the source checks of rule 3 and
+# the bootstrap of rule 4 skip them. The gates repository's name matches sdk-* since its
+# rename from .github, so it is listed here and never counts as a source.
+FAMILY_REPOSITORIES = frozenset({"sdk-core", "sdk-template", ORG_REPOSITORY})
 
 RELEASE_FILES = frozenset(
     {
@@ -1401,7 +1403,11 @@ def _repo_name(repo: str) -> str:
 
 
 def is_source(name: str) -> bool:
-    """Whether a repository is a source: named ``sdk-*``, and not sdk-core or sdk-template."""
+    """Whether a repository is a source: named ``sdk-*`` and none of FAMILY_REPOSITORIES.
+
+    sdk-core, sdk-template and the gates repository (``ORG_REPOSITORY``, named ``sdk-*``
+    since its rename from .github) are no sources.
+    """
     return name.startswith("sdk-") and name not in FAMILY_REPOSITORIES
 
 
@@ -1425,8 +1431,10 @@ def classify(
     name = _repo_name(repo)
     add = result.findings.append
 
-    # 1. Scaffold, sources only: sdk-template and .github have no src/ at all
-    if is_source(name):
+    # 1. Scaffold, sources only, settled by name before rule 1: sdk-core, sdk-template and
+    # the gates repository (ORG_REPOSITORY, named sdk-* too) are no sources.
+    source = is_source(name)
+    if source:
         entry = tree_entry(workdir, base_sha, "src")
         if entry is None or entry[1] != "tree":
             add(Finding(1, "scaffold: the base has no src/ directory"))
@@ -1481,14 +1489,14 @@ def classify(
             add(Finding(3, f"protected path {path} (matches {hits[0]})"))
             continue
         # An adapter changed by hand could expose tasks around rule 4.
-        if is_source(name) and path.startswith("src/"):
+        if source and path.startswith("src/"):
             if trust.owned is not None and path in trust.owned:
                 add(Finding(3, f"{path} is template-owned and differs from the render"))
             elif trust.owned is None and ADAPTER_MODULES.fullmatch(path):
                 add(Finding(3, f"{path} is template-owned and no render could compare it"))
         # The family check changed or deleted by hand would turn off silently. A deletion is
         # never identical to the render: human whatever the render says.
-        if is_source(name) and path in FAMILY_TEST_FILES:
+        if source and path in FAMILY_TEST_FILES:
             test_file = f"{path} is a template-owned test file"
             if tree_entry(workdir, head_sha, path) is None:
                 add(Finding(3, f"{test_file} deleted by the pull request"))
@@ -1548,7 +1556,7 @@ def classify(
             add(Finding(4, f"first surface: {path} exports {', '.join(after_names)}"))
     # The static reading has limits (an adapter, a module the tasks import, a name bound at
     # run time): while the base exports no task, any change under src/ is human.
-    if is_source(name):
+    if source:
         base_tasks = [p for p in list_files(workdir, fork, "src") if TASKS_MODULE.fullmatch(p)]
         exported = any(exported_names(read_blob(workdir, fork, p)) for p in base_tasks)
         bootstrap = [p for p in remaining if p.startswith("src/")]

@@ -1,5 +1,5 @@
-# CI of xippios/.github. The job `ci` is the check the `sdk-main-protection` ruleset
-# requires once this repository joins its list.
+# CI of xippios/sdk-gates. The job `ci` is the check the `sdk-main-protection` ruleset
+# requires; the ruleset's `sdk-*` pattern covers this repository by its name.
 name: CI
 
 on:

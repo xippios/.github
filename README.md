@@ -1,9 +1,13 @@
-# xippios/.github
+# xippios/sdk-gates
 
 The organisation's shared GitHub Actions workflows for the `sdk-*` repositories of the
 xippios SDK family: the two merge gates, `merge-class` and `family-review`, and the
 classifier behind the first. GitHub decides what merges: `ci`, `merge-class` and
 `family-review` pass, and auto-merge merges; a `human` class waits for Johannes.
+
+Renamed from `xippios/.github` on 2026-10-27. GitHub does not redirect `uses:` references
+to the old name, so every caller names `sdk-gates` (sdk-core since #26, sdk-template
+since v0.2.2).
 
 ## The workflows
 
@@ -72,8 +76,9 @@ comment, and `setup-uv` installs a pinned uv.
 The rules, in order. Every rule is evaluated: the first `human` decides the class, every
 reason is reported.
 
-1. **Scaffold**, in a source repository only (one named `sdk-*` other than `sdk-core` and
-   `sdk-template`; those two and this repository have no `src/`): the base has no `src/`
+1. **Scaffold**, in a source repository only (one named `sdk-*` other than `sdk-core`,
+   `sdk-template` and this repository, `sdk-gates`, whose name matches the pattern too;
+   `sdk-template` and this repository have no `src/` at all): the base has no `src/`
    directory: `human`.
 2. **Render trust**: the template is rendered with the head's answers at the commit the
    head's `_commit` of `.copier-answers.yml` resolves to on the template's `main`
@@ -167,7 +172,7 @@ reason is reported.
      `[build-system]`, `[tool.hatch]`, `[project.scripts]`, `[project.gui-scripts]`,
      `[project.entry-points]`, `[dependency-groups]` or `[project.optional-dependencies]`
      (`[tool.uv]`, `tool.uv.index-url = ...`, `uv.index-url = ...` under `[tool]`).
-   - In this repository, every pull request.
+   - In this repository, `sdk-gates`, every pull request.
 4. **First surface**: a `src/xippios/**/tasks.py` whose `__all__` was empty or absent
    names at least one task: `human`. An `__all__` that cannot be read statically is
    `human` too: anything but top-level assignments of a literal list or tuple of strings
@@ -246,13 +251,13 @@ permissions:
 jobs:
   merge-class:
     if: vars.GATES_CALLER == '1'
-    uses: xippios/.github/.github/workflows/merge-class.yml@main
+    uses: xippios/sdk-gates/.github/workflows/merge-class.yml@main
     permissions:
       contents: read
 
   family-review:
     if: vars.GATES_CALLER == '1'
-    uses: xippios/.github/.github/workflows/family-review.yml@main
+    uses: xippios/sdk-gates/.github/workflows/family-review.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     permissions:
@@ -271,7 +276,7 @@ offer it is Johannes's at gate 2.
 ## Rulesets
 
 - **`sdk-main-protection`** (org branch ruleset on `main` of the `sdk-*` repositories,
-  and of this repository once it joins the list): pull request required, `ci` required
+  this one among them by its name since the rename): pull request required, `ci` required
   and strict, `family-review` required once the org secret `ANTHROPIC_API_KEY` exists (by the
   required-workflow rule, or the slash-joined context `family-review / family-review` in caller
   mode, never the bare name)
