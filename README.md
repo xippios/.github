@@ -141,6 +141,13 @@ reason is reported.
      (an adapter changed by hand, which could expose tasks around rule 4); without a
      render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
      `src/xippios/` count as template-owned by name.
+   - In a source, also `tests/test_family.py` and `tests/conftest.py`, the template-owned
+     test files that carry the family conformance check and the plugin line that serves
+     it: changed and not identical to the render ("a template-owned test file changed by
+     hand"), or deleted, whatever the render says, since rule 2 trusts no deleted file.
+     Without a render (no answers file, `--no-render`, a failed render) both count as
+     template-owned by name. `tests/test_tasks.py` is the session's (skip-listed) and
+     stays free.
    - In `sdk-core`, also `src/**`.
    - In `sdk-template`, also `copier.yml`, `copier.yaml`, `scripts/**`, the template
      origin of every path protected in a source (the `template/` prefix, with or without
