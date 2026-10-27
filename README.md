@@ -109,9 +109,13 @@ reason is reported.
    question's literal default (one plain or quoted scalar without `{{`, `{%` or `{#`) in
    the template's `copier.yml` at the head's `_commit`; with another value, a Jinja
    default or a question unknown there it is `human` ("answers added with non-default
-   values"). `_commit` moving to an older or an unrelated commit is `human`, and so is a
-   `_commit` change or an added answer the template could not be checked for
-   (`--no-render`, a failed clone, a `_commit` the render refused).
+   values"). A key the base has and the head lacks is free when the template at the
+   head's `_commit` no longer asks it (a question a template release removed, whose
+   answer `copier update` drops); while that `copier.yml` has a question of its name,
+   whatever its `when:` or `ask:`, it is `human` ("answers dropped by hand"). `_commit`
+   moving to an older or an unrelated commit is `human`, and so is a `_commit` change or
+   an added or dropped answer the template could not be checked for (`--no-render`, a
+   failed clone, a `_commit` the render refused).
    **Core pin**: a non-empty `core_git_ref` on the head is accepted in two forms only:
    `main`, which uv reads as the branch of `xippios/sdk-core` before any tag or commit, and
    a full SHA (40 lowercase hex characters) of a commit on sdk-core's `main` (read from a
