@@ -54,7 +54,50 @@ api_title:
   default: "{{ source_slug }} API"
 
 """
-COPIER_YML_V2 = COPIER_YML.replace("_subdirectory:", QUESTIONS_V2 + "_subdirectory:")
+# Asked by v0.2.0 and removed by v0.3.0, as the real template removes them (needs_write_tools
+# in its PR 1, source_pkg and domain_topic in PR 3b): copier update drops their answers.
+# source_pkg is `when: false`, so no answers file records it.
+REMOVED_IN_V3 = """\
+source_pkg:
+  type: str
+  default: "{{ import_path }}"
+  when: false
+
+needs_write_tools:
+  type: bool
+  default: false
+
+domain_topic:
+  type: str
+  placeholder: agriculture
+
+"""
+COPIER_YML_V2 = COPIER_YML.replace(
+    "_subdirectory:", QUESTIONS_V2 + REMOVED_IN_V3 + "_subdirectory:"
+)
+
+# In their place v0.3.0 asks has_files at a literal default, and api_key_location behind
+# `when:` and `ask:`, as the real one does: a question hidden so still exists.
+QUESTIONS_V3 = """\
+gateway:
+  type: str
+  choices:
+    - none
+    - api.data.gov
+  default: none
+
+api_key_location:
+  type: str
+  default: "{{ 'header' if gateway == 'api.data.gov' else 'query' }}"
+  when: "{{ api_key_env != '' }}"
+  ask: "{{ gateway == 'none' }}"
+
+has_files:
+  type: bool
+  default: false
+
+"""
+COPIER_YML_V3 = COPIER_YML_V2.replace(REMOVED_IN_V3, QUESTIONS_V3)
 
 PYPROJECT = """\
 [project]
@@ -119,6 +162,14 @@ def template(tmp_path: Path) -> Path:
     git(repo, "tag", "rogue-tag")
     git(repo, "checkout", "-q", "main")
     return repo
+
+
+@pytest.fixture
+def template_v3(template: Path) -> Path:
+    """The template with v0.3.0 on main after v0.2.0: three questions removed."""
+    commit(template, {"copier.yml": COPIER_YML_V3, "CHANGELOG.md": "0.3.0\n"}, "v0.3.0")
+    git(template, "tag", "v0.3.0")
+    return template
 
 
 HEADER = "# Changes here will be overwritten by Copier; NEVER EDIT MANUALLY\n"
@@ -684,6 +735,134 @@ def test_an_added_answer_without_the_template_is_human(tmp_path: Path, template:
         "answers added, not checked against the template: rate_limit_burst",
         mc.NOT_CHECKED_CANONICAL,
     ]
+
+
+# --- rule 2: answers a template release removed (D85) -------------------------------------
+
+# The answers v0.2.0 records for the questions v0.3.0 removes (source_pkg it never records).
+REMOVED_ANSWERS = "domain_topic: agriculture\nneeds_write_tools: false\n"
+DROPPED = "answers dropped by hand: "
+
+
+def test_v030_removes_three_questions_and_keeps_the_hidden_ones() -> None:
+    """A question counts whatever its `when:` or `ask:`; only one that is gone frees a key."""
+    v2, v3 = mc.question_defaults(COPIER_YML_V2), mc.question_defaults(COPIER_YML_V3)
+    assert sorted(v2.keys() - v3.keys()) == ["domain_topic", "needs_write_tools", "source_pkg"]
+    assert "api_key_location" in v3
+
+
+@pytest.mark.parametrize(
+    "added", ["", "has_files: false\n"], ids=["dropped", "dropped-and-added-at-default"]
+)
+def test_an_answer_whose_question_the_template_removed_is_free(
+    tmp_path: Path, template_v3: Path, added: str
+) -> None:
+    """copier update drops needs_write_tools and domain_topic, which v0.3.0 no longer asks."""
+    base = source_base(template_v3)
+    base[".copier-answers.yml"] = answers(template_v3, "v0.2.0", extra=REMOVED_ANSWERS)
+    head_answers = answers(template_v3, "v0.3.0", extra=added)
+    changes = {".copier-answers.yml": head_answers, ".github/workflows/ci.yml": "ci v2\n"}
+    files = {**rendered(template_v3), ".copier-answers.yml": head_answers}
+    pr = make_pr(tmp_path, base, changes)
+    result = classify(pr, render=FakeRender(files), template=template_v3)
+    assert result.trusted == [".copier-answers.yml", ".github/workflows/ci.yml"]
+    assert [f.text for f in result.findings if f.human] == []
+    assert result.merge_class == mc.AUTO
+
+
+@pytest.mark.parametrize(
+    "key", ["rate_limit_provenance", "api_key_location"], ids=["asked", "behind-when-and-ask"]
+)
+def test_an_answer_dropped_while_the_template_still_asks_it_is_human(
+    tmp_path: Path, template_v3: Path, key: str
+) -> None:
+    """A key dropped by hand: its question exists at the head's _commit, hidden or not.
+
+    In the same adoption the answers of the questions v0.3.0 removed are free.
+    """
+    kept = {"api_key_location": "header", "rate_limit_provenance": "documented"}
+    base = source_base(template_v3)
+    base[".copier-answers.yml"] = answers(
+        template_v3,
+        "v0.2.0",
+        extra=REMOVED_ANSWERS + "".join(f"{k}: {v}\n" for k, v in kept.items()),
+    )
+    del kept[key]
+    head_answers = answers(
+        template_v3, "v0.3.0", extra="".join(f"{k}: {v}\n" for k, v in kept.items())
+    )
+    files = {**rendered(template_v3), ".copier-answers.yml": head_answers}
+    pr = make_pr(tmp_path, base, {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files), template=template_v3)
+    assert [f.text for f in result.findings if f.human] == [DROPPED + key]
+    assert result.merge_class == mc.HUMAN
+
+
+def test_a_removed_question_frees_its_answer_and_nothing_else(
+    tmp_path: Path, template_v3: Path
+) -> None:
+    """The dropped keys are free; the answer changed beside them is the session's."""
+    base = source_base(template_v3)
+    base[".copier-answers.yml"] = answers(template_v3, "v0.2.0", extra=REMOVED_ANSWERS)
+    head_answers = answers(template_v3, "v0.3.0", slug="usda-psd2")
+    files = {**rendered(template_v3), ".copier-answers.yml": head_answers}
+    pr = make_pr(tmp_path, base, {".copier-answers.yml": head_answers})
+    result = classify(pr, render=FakeRender(files), template=template_v3)
+    assert [f.text for f in result.findings if f.human] == ["answers changed: source_slug"]
+
+
+NOT_CHECKED_DROPPED = (
+    "answers dropped, not checked against the template: domain_topic, needs_write_tools"
+)
+
+
+@pytest.mark.parametrize(
+    ("case", "reasons"),
+    [
+        (
+            "no-render",
+            [
+                NOT_CHECKED_DROPPED,
+                "_commit changes from v0.2.0 to v0.3.0, not checked against the template",
+                mc.NOT_CHECKED_CANONICAL,
+            ],
+        ),
+        (
+            "failed-clone",
+            [
+                NOT_CHECKED_DROPPED,
+                "_commit changes from v0.2.0 to v0.3.0, not checked against the template",
+                mc.NOT_CHECKED_CANONICAL,
+            ],
+        ),
+        (
+            "commit-off-main",
+            [
+                NOT_CHECKED_DROPPED,
+                "_commit changes from v0.2.0 to rogue-tag, not checked against the template",
+                mc.NOT_CHECKED_CANONICAL,
+            ],
+        ),
+        # copier.yml was read before copier failed, so the dropped keys are judged; the
+        # answers file no render wrote back keeps the pull request human.
+        ("failed-render", [mc.NOT_CHECKED_CANONICAL]),
+    ],
+)
+def test_a_dropped_answer_without_the_template_is_human(
+    tmp_path: Path, template_v3: Path, case: str, reasons: list[str]
+) -> None:
+    """Without the template's questions nothing shows that a dropped key's is gone."""
+    src = tmp_path / "missing" if case == "failed-clone" else template_v3
+    ref = "rogue-tag" if case == "commit-off-main" else "v0.3.0"
+    base = source_base(template_v3)
+    base[".copier-answers.yml"] = answers(src, "v0.2.0", extra=REMOVED_ANSWERS)
+    head_answers = answers(src, ref)
+    pr = make_pr(tmp_path, base, {".copier-answers.yml": head_answers})
+    files = {**rendered(template_v3), ".copier-answers.yml": head_answers}
+    render = FakeRender(files, error="network down" if case == "failed-render" else None)
+    result = classify(pr, render=None if case == "no-render" else render, template=src)
+    assert [f.text for f in result.findings if f.human] == reasons
+    assert result.merge_class == mc.HUMAN
 
 
 # --- rule 2: the answers file's form ------------------------------------------------------

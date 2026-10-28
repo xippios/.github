@@ -14,12 +14,13 @@ collected; the first ``human`` decides the class, the later ones only add to the
    nothing. A change to ``.copier-answers.yml`` other than ``_commit`` moving forward
    along the template's main, ``core_version`` or ``core_git_ref`` is the session's:
    ``human``; an answer the base lacks (a question a template release added) is free
-   when it equals the question's literal default at the head's ``_commit``. The answers
-   file is read only inside a subset of YAML (``answers_problems``), and when it changed
-   or anything is trusted it must be byte-identical to the one copier writes back in the
-   render. A non-empty ``core_git_ref`` on the head must be ``main`` or a full SHA (40
-   lowercase hex characters, which uv takes as the commit itself) of a commit on
-   sdk-core's main.
+   when it equals the question's literal default at the head's ``_commit``, and one the
+   head lacks when the template there asks no question of that name (a release removed
+   it). The answers file is read only inside a subset of YAML (``answers_problems``), and
+   when it changed or anything is trusted it must be byte-identical to the one copier
+   writes back in the render. A non-empty ``core_git_ref`` on the head must be ``main``
+   or a full SHA (40 lowercase hex characters, which uv takes as the commit itself) of a
+   commit on sdk-core's main.
 3. Protected paths in what remains; everywhere, also the build and install tables of
    ``pyproject.toml``; in a source, also a template-owned file under ``src/`` that
    differs from the render (an adapter changed by hand) and a template-owned test file
@@ -634,14 +635,23 @@ def answer_changes(
     literal defaults (``question_defaults``), None when the template could not be read:
     an answer the base lacks is free when it equals its question's literal default, and
     human with another value, a default that is not literal, or a question unknown there.
+    An answer the head lacks is free when no question of that name is there (a template
+    release removed it, and ``copier update`` dropped its answer), and human while one is,
+    whatever its ``when`` or ``ask``: a key dropped by hand.
     """
     old, new = answer_table(before), answer_table(after)
     keys = sorted(k for k in (old.keys() | new.keys()) - FREE_ANSWERS if old.get(k) != new.get(k))
-    changed = [k for k in keys if k in old]
+    changed = [k for k in keys if k in old and k in new]
+    dropped = [k for k in keys if k not in new]
     added = [k for k in keys if k not in old]
     if defaults is not None:
+        dropped = [k for k in dropped if k in defaults]
         added = [k for k in added if not _is_default(new[k], defaults.get(k))]
     reasons = [f"answers changed: {', '.join(changed)}"] if changed else []
+    if dropped and defaults is not None:
+        reasons.append(f"answers dropped by hand: {', '.join(dropped)}")
+    elif dropped:
+        reasons.append(f"answers dropped, not checked against the template: {', '.join(dropped)}")
     if added and defaults is not None:
         reasons.append(f"answers added with non-default values: {', '.join(added)}")
     elif added:
