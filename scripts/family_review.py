@@ -28,7 +28,9 @@ under the workspace's real path; ``.git`` at any depth, ``.envrc``, ``.env`` and
 a symlink whose target leaves the workspace, and the checkout this script runs from when it
 lies inside the workspace are refused. A refusal, a missing or binary file is a tool result
 marked ``is_error``; a tool never raises. Answers are capped (``read_file`` 2,000 lines and
-64 KiB, ``list_files`` 500 paths, ``grep`` 200 matches, 64 KiB and 20 seconds).
+64 KiB, ``list_files`` 500 paths, ``grep`` 200 matches and 64 KiB). ``grep`` searches each
+line's first 4,000 characters, and a timer (``SIGALRM``) stops a search after 20 seconds,
+inside a regular expression too, as an ``is_error`` result.
 
 The job log is public: the script prints paths, counts, the verdict and redacted error
 text, never a file's content, a tool result or the prompt. Anything that looks like an
@@ -47,10 +49,10 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
-import time
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -85,6 +87,9 @@ MAX_ANSWER_BYTES = 64 * 1024
 LIST_MAX = 500
 GREP_MAX = 200
 GREP_SECONDS = 20.0
+# grep searches only this much of each line: a long line (a minified file, a one-line
+# fixture) would make one search of it quadratic or worse.
+GREP_SEARCH_CHARS = 4000
 # grep skips larger files; read_file refuses them. Both read a file whole.
 MAX_FILE_BYTES = 8 * 1024 * 1024
 GREP_LINE_CHARS = 300
@@ -258,8 +263,9 @@ TOOLS: list[dict[str, object]] = [
             "Search the text files of the working directory for a string, or for a Python "
             "regular expression with regex true, and return the matching lines as "
             "`path:line: text`, at most max_results (200, the default) and 64 KiB. Call "
-            "this to find where a name is defined or used. The search stops after 20 "
-            "seconds and says so."
+            "this to find where a name is defined or used. Each line is searched in its "
+            "first 4000 characters. A search that takes more than 20 seconds stops with an "
+            "error; narrow the glob or the pattern then."
         ),
         "strict": True,
         "input_schema": {
@@ -302,6 +308,10 @@ class PrepareError(RuntimeError):
 
 class ToolError(Exception):
     """A tool call refused or failed; its message goes back to the model as an error."""
+
+
+class GrepTimeout(Exception):
+    """grep's time budget ran out; raised by the SIGALRM handler, inside a regex too."""
 
 
 # --- output ------------------------------------------------------------------------------
@@ -695,6 +705,31 @@ def list_files(sandbox: Sandbox, args: Mapping[str, object]) -> str:
     return "\n".join(shown)
 
 
+def _on_alarm(signum: int, frame: object) -> None:
+    raise GrepTimeout
+
+
+@contextlib.contextmanager
+def _time_budget(seconds: float) -> Iterator[None]:
+    """Raise GrepTimeout in the block after ``seconds``; the main thread only.
+
+    CPython's regular expression engine checks for signals while it matches, so the
+    handler's exception stops a search that backtracks. The previous handler and timer are
+    restored whatever happens, the alarm firing on the way out included.
+    """
+    previous = signal.signal(signal.SIGALRM, _on_alarm)
+    try:
+        old_timer = signal.setitimer(signal.ITIMER_REAL, max(seconds, 0.001))
+        try:
+            yield
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+    finally:
+        signal.signal(signal.SIGALRM, previous)
+        if old_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *old_timer)
+
+
 def grep(sandbox: Sandbox, args: Mapping[str, object]) -> str:
     """Matching lines of the text files, at most 200 and 64 KiB, within 20 seconds."""
     pattern = _str_arg(args, "pattern")
@@ -709,39 +744,45 @@ def grep(sandbox: Sandbox, args: Mapping[str, object]) -> str:
         compiled = re.compile(pattern if regex else re.escape(pattern))
     except re.error as exc:
         raise ToolError(f"not a valid regular expression: {exc}") from exc
-    deadline = time.monotonic() + GREP_SECONDS
     found: list[str] = []
     budget = MAX_ANSWER_BYTES - 200
-    searched = skipped = 0
+    searched = skipped = long_lines = 0
     stop = ""
-    for relative, real in sandbox.walk():
-        if not files.fullmatch(relative):
-            continue
-        if time.monotonic() > deadline:
-            stop = f"the search stopped after {GREP_SECONDS:.0f} seconds; the results are partial"
-            break
-        try:
-            text = _text(real)
-        except (ToolError, OSError):
-            skipped += 1
-            continue
-        searched += 1
-        for number, line in enumerate(_lines(text), 1):
-            if number % 1000 == 0 and time.monotonic() > deadline:
-                break
-            if not compiled.search(line):
-                continue
-            entry = f"{relative}:{number}: {line[:GREP_LINE_CHARS]}"
-            size = len(entry.encode()) + 1
-            if len(found) >= limit or size > budget:
-                stop = f"cut at {len(found)} matches"
-                break
-            found.append(entry)
-            budget -= size
-        if stop:
-            break
+    try:
+        with _time_budget(GREP_SECONDS):
+            for relative, real in sandbox.walk():
+                if not files.fullmatch(relative):
+                    continue
+                try:
+                    text = _text(real)
+                except (ToolError, OSError):
+                    skipped += 1
+                    continue
+                searched += 1
+                for number, line in enumerate(_lines(text), 1):
+                    if len(line) > GREP_SEARCH_CHARS:
+                        long_lines += 1
+                    if not compiled.search(line[:GREP_SEARCH_CHARS]):
+                        continue
+                    entry = f"{relative}:{number}: {line[:GREP_LINE_CHARS]}"
+                    size = len(entry.encode()) + 1
+                    if len(found) >= limit or size > budget:
+                        stop = f"cut at {len(found)} matches"
+                        break
+                    found.append(entry)
+                    budget -= size
+                if stop:
+                    break
+    except GrepTimeout:
+        raise ToolError(
+            f"the search stopped at its {GREP_SECONDS:g}-second budget after {searched} files "
+            f"searched; narrow the glob or the pattern"
+        ) from None
     footer = f"[{len(found)} matches in {searched} files searched"
     footer += f", {skipped} binary or large files skipped" if skipped else ""
+    if long_lines:
+        footer += f", {long_lines} lines longer than {GREP_SEARCH_CHARS} characters searched"
+        footer += " in their beginning only"
     footer += f"; {stop}]" if stop else "]"
     return "\n".join([*found, footer])
 
@@ -1008,8 +1049,28 @@ def run_review(
     max_turns: int = MAX_TURNS,
     hidden: Sequence[Path] = (),
 ) -> Outcome:
-    """The tool loop, until ``submit_verdict``, a stop without a verdict, or the turn cap."""
+    """The tool loop, until ``submit_verdict``, a stop without a verdict, or the turn cap.
+
+    An unexpected error is no verdict too, with the counters so far and the error's class
+    only: the job log is public.
+    """
     outcome = Outcome(model=model, effort=effort)
+    try:
+        _loop(client, material, outcome, max_turns=max_turns, hidden=hidden)
+    except Exception as exc:
+        outcome.reason = f"internal error: {type(exc).__name__}"
+    return outcome
+
+
+def _loop(
+    client: Client,
+    material: Material,
+    outcome: Outcome,
+    *,
+    max_turns: int,
+    hidden: Sequence[Path],
+) -> None:
+    model, effort = outcome.model, outcome.effort
     sandbox = Sandbox(material.workspace, hidden)
     system = system_prompt(material, max_turns)
     messages: list[dict[str, object]] = [first_message(material)]
@@ -1017,7 +1078,7 @@ def run_review(
     while True:
         if outcome.turns >= max_turns:
             outcome.reason = f"the turn cap of {max_turns} was reached"
-            return outcome
+            return
         try:
             with client.messages.stream(
                 model=model,
@@ -1035,12 +1096,12 @@ def run_review(
         # stream is read arrives as an httpx2 error.
         except (anthropic.AnthropicError, httpx2.HTTPError) as exc:
             outcome.reason = api_error(exc)
-            return outcome
+            return
         outcome.turns += 1
         outcome.usage.add(response.usage)
         stop = response.stop_reason
         calls = [block for block in response.content if block.type == "tool_use"]
-        names = ",".join(sorted({block.name for block in calls})) or "-"
+        names = one_line(",".join(sorted({block.name for block in calls}))) or "-"
         print(
             f"family-review: turn {outcome.turns} stop_reason={stop} "
             f"tool_calls={len(calls)} tools={names}",
@@ -1051,19 +1112,19 @@ def run_review(
             details = response.stop_details
             category = getattr(details, "category", None) or "none"
             outcome.reason = f"the model refused, category {category}"
-            return outcome
+            return
         if stop == "max_tokens":
             outcome.reason = f"the response reached max_tokens ({MAX_TOKENS})"
-            return outcome
+            return
         if stop not in {"tool_use", "end_turn"}:
             outcome.reason = f"the response stopped with stop_reason {stop}"
-            return outcome
+            return
         if response.content:
             messages.append({"role": "assistant", "content": response.content})
         if not calls:
             if reprompted:
                 outcome.reason = "the model ended its turn twice without calling submit_verdict"
-                return outcome
+                return
             reprompted = True
             messages.append({"role": "user", "content": REPROMPT})
             continue
@@ -1076,7 +1137,7 @@ def run_review(
                     outcome.findings = [dict(f) for f in call.input["findings"]]
                     blocked = any(f["blocking"] for f in outcome.findings)
                     outcome.verdict = "not ready" if blocked else str(call.input["verdict"])
-                    return outcome
+                    return
                 answer, is_error = f"invalid verdict: {problem}; call submit_verdict again", True
             else:
                 answer, is_error = serve(sandbox, call.name, call.input)
@@ -1257,8 +1318,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     except PrepareError as exc:
         _notice(f"family-review: {one_line(str(exc))}", summary)
         return 2
-    except Exception as exc:  # The log is public: the class and a redacted message only.
-        reason = f"internal error: {type(exc).__name__}: {one_line(str(exc))}"
+    except Exception as exc:  # The log is public: the class only.
+        reason = f"internal error: {type(exc).__name__}"
         if args.command == "prepare":
             _notice(f"family-review: {reason}", summary)
             return 2

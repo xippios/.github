@@ -7,7 +7,9 @@ test needs a key or the network. ``gh`` is a fake on PATH that writes fixed JSON
 import json
 import os
 import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
 
 import anthropic
@@ -332,6 +334,68 @@ def test_a_refusal_is_no_verdict_with_its_category(workspace: Path, tmp_path: Pa
     assert result["summary"].startswith("family-review: no verdict (the model refused")
 
 
+def test_another_stop_reason_is_no_verdict(workspace: Path, tmp_path: Path, api) -> None:
+    api(message([{"type": "text", "text": "..."}], "pause_turn"))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert result["reason"] == "the response stopped with stop_reason pause_turn"
+
+
+def test_an_internal_error_keeps_the_counters_and_names_the_class_only(
+    workspace: Path, tmp_path: Path, api, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    def broken(args):
+        raise RuntimeError("SECRET_DETAIL")
+
+    monkeypatch.setattr(fr, "verdict_problem", broken)
+    api(
+        message([call("toolu_1", "read_file", {"path": "src/pkg/mod.py"})], usage=(7, 3, 0, 0)),
+        message([verdict()], usage=(5, 2, 0, 0)),
+    )
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert result["reason"] == "internal error: RuntimeError"
+    assert result["turns"] == 2
+    assert result["usage"]["input_tokens"] == 12
+    assert result["usage"]["output_tokens"] == 5
+    assert captured.out.startswith("family-review: no verdict (internal error: RuntimeError) ")
+    assert "SECRET_DETAIL" not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("command", ["review", "prepare"])
+def test_an_internal_error_outside_the_loop_names_the_class_only(
+    workspace: Path, tmp_path: Path, api, monkeypatch: pytest.MonkeyPatch, capsys, command
+) -> None:
+    def broken(*args, **kwargs):
+        raise RuntimeError("SECRET_DETAIL")
+
+    monkeypatch.setattr(fr, "load_material", broken)
+    monkeypatch.setattr(fr, "prepare", broken)
+    if command == "review":
+        code, result = run_review(workspace, tmp_path)
+        assert result["reason"] == "internal error: RuntimeError"
+    else:
+        code = fr.main(
+            ["prepare", "--repo", REPO, "--pr", "7", "--base-sha", BASE, "--head-sha", HEAD]
+        )
+    captured = capsys.readouterr()
+    assert code == 2
+    assert "internal error: RuntimeError" in captured.out
+    assert "SECRET_DETAIL" not in captured.out + captured.err
+
+
+def test_tool_names_in_the_progress_line_are_redacted(
+    workspace: Path, tmp_path: Path, api, capsys
+) -> None:
+    api(message([call("toolu_1", f"read_{FAKE_KEY}", {"path": "x"})]), message([verdict()]))
+    code, _ = run_review(workspace, tmp_path)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert FAKE_KEY not in err
+    assert "tools=read_[redacted]" in err
+
+
 def test_the_turn_cap_is_no_verdict(workspace: Path, tmp_path: Path, api) -> None:
     reads = [
         message([call(f"toolu_{i}", "read_file", {"path": "src/pkg/mod.py"})]) for i in range(3)
@@ -430,6 +494,19 @@ def test_the_credit_message_reaches_the_summary_readable(
     run_review(workspace, tmp_path)
     out = capsys.readouterr().out
     assert f"(API error: BadRequestError: {CREDIT} (request req_test1)) turns=0" in out
+
+
+@pytest.mark.parametrize("body", ["upstream connect error", {"detail": "no error key"}, None])
+def test_an_error_body_without_a_message_uses_the_sdks(
+    workspace: Path, tmp_path: Path, api, body
+) -> None:
+    response = httpx2.Response(503, request=REQUEST, headers={"request-id": "req_test1"})
+    api(anthropic.InternalServerError("upstream connect error", response=response, body=body))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert result["reason"] == (
+        "API error: InternalServerError: upstream connect error (request req_test1)"
+    )
 
 
 def test_an_api_error_message_is_redacted_and_cut(workspace: Path, tmp_path: Path, api, capsys):
@@ -702,9 +779,42 @@ def test_grep_caps_matches_and_time(workspace: Path, monkeypatch: pytest.MonkeyP
     assert answer.splitlines()[-1] == "[10 matches in 1 files searched; cut at 10 matches]"
     answer, _ = fr.serve(sandbox, "grep", {"pattern": r"^VAL\w+ = \d$", "regex": True})
     assert answer.splitlines()[0] == "src/pkg/mod.py:2: VALUE = 1"
-    monkeypatch.setattr(fr, "GREP_SECONDS", -1.0)
-    answer, _ = fr.serve(sandbox, "grep", {"pattern": "hit"})
-    assert "the search stopped after" in answer
+
+
+def test_grep_searches_the_beginning_of_a_long_line(workspace: Path) -> None:
+    sandbox = fr.Sandbox(workspace)
+    (workspace / "one-line.json").write_text("x" * 3990 + "EARLY" + "y" * 6000 + "LATE\n")
+    answer, is_error = fr.serve(sandbox, "grep", {"pattern": "EARLY", "glob": "one-line.json"})
+    assert not is_error
+    assert answer.splitlines()[0].startswith("one-line.json:1: xxx")
+    assert answer.splitlines()[-1] == (
+        "[1 matches in 1 files searched, 1 lines longer than 4000 characters searched in "
+        "their beginning only]"
+    )
+    answer, _ = fr.serve(sandbox, "grep", {"pattern": "LATE", "glob": "one-line.json"})
+    assert answer.startswith("[0 matches in 1 files searched, 1 lines longer than 4000")
+
+
+def test_grep_stops_a_backtracking_pattern_at_its_budget(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(a+)+$ takes minutes on 30 characters; the timer stops it inside the regex engine."""
+    sandbox = fr.Sandbox(workspace)
+    (workspace / "evil.txt").write_text("a" * 30 + "b\n")
+    monkeypatch.setattr(fr, "GREP_SECONDS", 0.2)
+    before = signal.getsignal(signal.SIGALRM)
+    started = time.monotonic()
+    answer, is_error = fr.serve(
+        sandbox, "grep", {"pattern": "(a+)+$", "regex": True, "glob": "evil.txt"}
+    )
+    assert time.monotonic() - started < 1.0
+    assert is_error
+    assert answer == (
+        "the search stopped at its 0.2-second budget after 1 files searched; narrow the glob "
+        "or the pattern"
+    )
+    assert signal.getsignal(signal.SIGALRM) is before
+    assert signal.getitimer(signal.ITIMER_REAL) == (0.0, 0.0)
 
 
 @pytest.mark.parametrize(
