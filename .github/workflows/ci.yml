@@ -26,7 +26,8 @@ jobs:
       # The family's ruff (the rev of the template's ruff-pre-commit hook).
       - run: uvx ruff@0.17.1 check scripts
       - run: uvx ruff@0.17.1 format --check scripts
-      - run: uv run --no-project --with pytest==9.1.1 pytest scripts/tests -q
+      # The review script's SDK at the version family-review.yml runs it with.
+      - run: uv run --no-project --with pytest==9.1.1 --with anthropic==2.3.0 pytest scripts/tests -q
       # actionlint runs the runner's shellcheck on every `run:` script.
       - run: uvx --from actionlint-py==1.7.12.25 actionlint
 
