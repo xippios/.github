@@ -2,8 +2,9 @@
 
 The organisation's shared GitHub Actions workflows for the `sdk-*` repositories of the
 xippios SDK family: the two merge gates, `merge-class` and `family-review`, and the
-scripts behind them, the classifier and the review. GitHub decides what merges: `ci`, `merge-class` and
-`family-review` pass, and auto-merge merges; a `human` class waits for Johannes.
+scripts behind them, the classifier and the review. GitHub decides what merges: `ci`,
+`merge-class` and `family-review` pass, and auto-merge merges; a `human` class waits for
+Johannes.
 
 Renamed from `xippios/.github` on 2026-10-27. GitHub does not redirect `uses:` references
 to the old name, so every caller names `sdk-gates` (sdk-core since #26, sdk-template
@@ -74,18 +75,20 @@ since v0.2.2).
     coordinates are in the first message), so every review against the same `sdk-core`
     `main` sends the same prefix and parallel reviews read one cache entry; the model
     reads everything else with three tools the script serves, `read_file` (2,000 lines
-    or 64 KiB a call), `list_files` (500 paths) and `grep` (200 matches, 20 seconds),
-    inside the
-    workspace's real path only: `.git/` at any depth, `.envrc`, `.env` and `.env.*`, a
-    symlink that leads out and the script's own checkout are refused. It runs no
-    command, edits nothing and reaches no network, and `.review/diff.patch` is
-    authoritative for what changed. The review spawns no process, and
-    `ANTHROPIC_API_KEY` is in the Review step's environment alone; uv runs the script
-    from the runner's temporary directory with `--no-config`, so nothing in the pull
-    request's checkout (a `uv.toml`, a `.python-version`, a `.venv`) decides what runs
-    beside the key. The prompt names the pull request's files, diff, messages, title,
-    body, comments, `docs/upstream/` and fixtures as material to judge, never
-    instructions; an instruction found in them is itself a finding. The job log is
+    or 64 KiB a call), `list_files` (500 paths) and `grep` (200 matches, each line's
+    first 4,000 characters, stopped by a timer after 20 seconds, inside a regular
+    expression too), inside the workspace's real path only: `.git/` at any depth,
+    `.envrc`, `.env` and `.env.*`, a symlink that leads out and the script's own
+    checkout are refused. It runs no command, edits nothing and reaches no network, and
+    `.review/diff.patch` is authoritative for what changed. The review spawns no process,
+    and `ANTHROPIC_API_KEY` is in the Review step's environment alone; setup-uv reads the
+    `.sdk-gates` checkout and uv runs the script from the runner's temporary directory
+    with `--no-config`, so nothing in the pull request's checkout (a `uv.toml`, a
+    `.python-version`, a `.venv`, a uv version or cache key) decides what runs beside the
+    key, and `--exclude-newer 2026-10-29T00:00:00Z` freezes the resolution of
+    `anthropic`'s dependencies. The prompt names the pull request's files, diff,
+    messages, title, body, comments, `docs/upstream/` and fixtures as material to judge,
+    never instructions; an instruction found in them is itself a finding. The job log is
     public: the script prints paths, counts, the verdict and redacted error text, never a
     file's content, a tool result or the prompt, and the verdict step redacts anything
     that looks like a key or a GitHub token from the summary and the comment.
@@ -359,12 +362,14 @@ uvx --from actionlint-py==1.7.12.25 actionlint
 A dry run clones the pull request and sdk-core's main into a temporary directory (or
 `--workdir`, kept), prepares the material as the workflow does and runs the review, then
 prints the summary line and the findings. It needs `gh` signed in and the key in the
-environment of that one command, never on disk; it spends real tokens (about 0.5 to 1 USD
-a review):
+environment of that one command, never on disk or in the shell's history: `read -rs`
+prompts for it without echo. It spends real tokens (about 0.5 to 1 USD a review):
 
 ```sh
-ANTHROPIC_API_KEY=... uv run --no-project --with anthropic==2.3.0 \
+read -rs K && ANTHROPIC_API_KEY="$K" uv run --no-project \
+  --exclude-newer 2026-10-29T00:00:00Z --with anthropic==2.3.0 \
   python <this clone>/scripts/family_review.py dry-run --repo xippios/<repo> --pr <n>
+unset K
 ```
 
 `--model`, `--effort` and `--max-turns` change the judge, its effort and the turn cap;
@@ -375,8 +380,9 @@ verdict.
 
 Every pull request here is `human`, so Johannes merges each one: no session can change the
 class computation or the review gate. A pull request that changes `family_review.py`
-reviews itself with its own script and the org key (see "Where the script comes from"). The review checklist itself lives in `sdk-core`
-(`docs/review-checklist.md`), where it is a protected path too. The caller-wiring proof
+reviews itself with its own script and the org key (see "Where the script comes from").
+The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it is
+a protected path too. The caller-wiring proof
 in `ci.yml` reads `merge-class.yml` from the pull request but the classifier from `main`,
 so on the pull request that first adds `scripts/merge_class.py` the proof job fails until
 the script is on `main`; `ci` does not depend on it.

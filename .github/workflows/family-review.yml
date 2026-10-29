@@ -43,9 +43,12 @@
 # starts; it reads with three tools the script serves (read_file, list_files, grep) inside
 # the workspace's real path only: `.git/`, `.envrc`, `.env` files, symlinks that lead out and
 # the script's own checkout are refused. The review spawns no process, and ANTHROPIC_API_KEY
-# is in the Review step's environment alone. uv runs from the runner's temporary directory
-# with --no-config, so nothing in the pull request's checkout (a uv.toml, a .python-version,
-# a .venv) decides what runs beside the key.
+# is in the Review step's environment alone. setup-uv reads the .sdk-gates checkout, and uv
+# runs from the runner's temporary directory with --no-config, so nothing in the pull
+# request's checkout (a uv.toml, a .python-version, a .venv, a uv version or cache key)
+# decides what runs beside the key. Both uv runs resolve with --exclude-newer
+# 2026-10-29T00:00:00Z: anthropic is pinned, and its dependencies are frozen at that date
+# instead of resolved afresh in the step that holds the key.
 #
 # The job log is public: the script prints paths, counts, the verdict and redacted error
 # text, never a file's content, a tool result or the prompt. `edited` is among the types
@@ -145,11 +148,14 @@ jobs:
           path: .sdk-gates
           persist-credentials: false
 
+      # Pointed at the script's checkout, so no uv version or cache key comes from the pull
+      # request.
       - name: Install uv
         if: steps.gate.outputs.run == 'true'
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
         with:
           version: "0.13.5"
+          working-directory: .sdk-gates
           enable-cache: false
 
       # Everything the review judges, prepared here because the review runs no command.
@@ -170,7 +176,8 @@ jobs:
             echo "family-review: .sdk-gates is a link; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          uv run --no-project --no-config --with anthropic==2.3.0 \
+          uv run --no-project --no-config --exclude-newer 2026-10-29T00:00:00Z \
+            --with anthropic==2.3.0 \
             python "$GITHUB_WORKSPACE/.sdk-gates/scripts/family_review.py" prepare \
             --repo "$REPO" --pr "$PR" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
             --workspace "$GITHUB_WORKSPACE"
@@ -185,7 +192,8 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          uv run --no-project --no-config --with anthropic==2.3.0 \
+          uv run --no-project --no-config --exclude-newer 2026-10-29T00:00:00Z \
+            --with anthropic==2.3.0 \
             python "$GITHUB_WORKSPACE/.sdk-gates/scripts/family_review.py" review \
             --workspace "$GITHUB_WORKSPACE" --review "$GITHUB_WORKSPACE/.review" \
             --docs "$GITHUB_WORKSPACE/.sdk-core-main" --out "$RUNNER_TEMP/verdict.json"
