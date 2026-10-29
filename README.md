@@ -2,8 +2,9 @@
 
 The organisation's shared GitHub Actions workflows for the `sdk-*` repositories of the
 xippios SDK family: the two merge gates, `merge-class` and `family-review`, and the
-classifier behind the first. GitHub decides what merges: `ci`, `merge-class` and
-`family-review` pass, and auto-merge merges; a `human` class waits for Johannes.
+scripts behind them, the classifier and the review. GitHub decides what merges: `ci`,
+`merge-class` and `family-review` pass, and auto-merge merges; a `human` class waits for
+Johannes.
 
 Renamed from `xippios/.github` on 2026-10-27. GitHub does not redirect `uses:` references
 to the old name, so every caller names `sdk-gates` (sdk-core since #26, sdk-template
@@ -16,8 +17,10 @@ since v0.2.2).
   the check; `human` fails it, with the rules hit, the trusted files and the remaining
   changed files in the job summary. Permissions: `contents: read`. The job times out
   after 20 minutes; the template clone, the render and the sdk-core clone each after 5.
-- **`.github/workflows/family-review.yml`** runs the Claude Code action
-  (`anthropics/claude-code-action`, v1.0.262). It applies `docs/review-checklist.md` from
+- **`.github/workflows/family-review.yml`** runs `scripts/family_review.py`, which has
+  `claude-opus-5-5`, at effort `high`, review the pull request on the Messages API (the
+  SDK `anthropic`, pinned to 2.3.0), each turn streamed with `max_tokens` 64,000, since
+  thinking counts against it. It applies `docs/review-checklist.md` from
   `main` of `xippios/sdk-core`, in order, to the pull request's diff, reading the
   conventions, the definition of done and the ADRs from `sdk-core`'s `main` (never from
   the pull request) and the pull request's own `docs/upstream/` for every claim about the
@@ -27,49 +30,76 @@ since v0.2.2).
   branch's version applies; such a pull request is class `human`, and Johannes reads the
   change. Without the checklist, the conventions or the definition of done the review
   fails closed. It judges the description's definition-of-done checklist and
-  `Decisions taken` block and returns a JSON verdict, `ready` or `not ready`, with
-  findings. `ready` passes; `not ready` fails the check and puts the findings in one
-  sticky PR comment, which a later `ready` updates. Permissions: `contents: read`,
-  `pull-requests: write`, `checks: read`.
+  `Decisions taken` block and returns its verdict, `ready` or `not ready`, with
+  findings, through a `submit_verdict` tool. `ready` passes; `not ready` fails the check
+  and puts the findings in one sticky PR comment, which a later `ready` updates. No
+  verdict (an API error, a refusal, a `max_tokens` stop, the turn cap of 120, a missing
+  key) fails the check, and the job summary carries the script's line with the cause (the
+  SDK's error class and its redacted message, a refusal's category), the turns, the tool
+  calls, the token usage and a cost estimate at list prices. Permissions:
+  `contents: read`, `pull-requests: write`, `checks: read`.
+  - **Why the Messages API**: the review ran the Claude Code action until 2026-10-29. Its
+    usage is billed as Claude Code, which the organisation's monthly plan credits do not
+    cover, while they cover the Messages API called with an API key (D101 to D103).
+  - **Where the script comes from**: this repository, checked out into `.sdk-gates` at
+    `job.workflow_sha`, the commit of the workflow file that defines the job. On a pull
+    request here that is the pull request's merge commit, so a change to the review
+    reviews itself with its own script and the real key; a caller gets the commit its
+    `uses:` resolved to (`@main`). actionlint 1.7.12 does not know the property yet, so
+    `.github/actionlint.yaml` ignores that one error in `family-review.yml`.
   - **Identity**: the review runs on the workflow token (`github.token`), so its comment
-    comes from `github-actions[bot]`, not from the Claude GitHub App. The App's token
-    exchange skips every pull request whose calling workflow differs from the one on the
-    default branch, which would leave adoption PRs without a verdict (decided 2026-10-26;
-    Johannes confirms at this repository's first PR).
+    comes from `github-actions[bot]`. It did so under the action too, whose Claude GitHub
+    App token exchange skips every pull request whose calling workflow differs from the
+    one on the default branch, which would have left adoption PRs without a verdict
+    (decided 2026-10-26).
   - **Gate**: a Dependabot pull request (its author and the triggering actor both
     `dependabot[bot]`) ends green with the notice "family-review: Dependabot PR, reviewed
-    by `ci` only", since Dependabot runs get no Actions secrets. Every other pull request
+    by `ci` only", since Dependabot runs get no Actions secrets. A pull request opened or
+    updated by any other GitHub App fails next (below). Every other pull request
     needs the org secret `ANTHROPIC_API_KEY`. Without it, a pull request from a fork fails
     (it never gets the secret, so it is never green unreviewed), and one from the
     repository itself ends green with a notice until the org variable
     `FAMILY_REVIEW_REQUIRED` is `1`; from then on an empty secret fails the check.
     Johannes sets the variable when the secret exists.
-  - **Who it reviews**: `allowed_bots` stays empty, so a pull request opened or updated
-    by a GitHub App gets no review (the action refuses a non-human actor) and fails by
-    design; Dependabot is excepted by the gate above.
-  - **What the model may do**: nothing but read. Before it starts, a step writes its
-    material to `.review/`: `diff.patch` (merge base to head), `log.txt` (the commits
-    with their messages), `pr.json` (title, body, author, comments, files) and
-    `checks.json` (the head's checks, `ci` among them). The model may `Read`, `Glob` and
-    `Grep` inside the workspace (`Read(./**)`, `.git/` denied, `--permission-mode
-    dontAsk`), runs no command, edits nothing, reaches no network, and loads no settings,
-    hooks or MCP servers from the pull request (`--setting-sources user`); Claude Code
-    strips credentials from any subprocess (`CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`). The
-    action restores `.claude/`, `CLAUDE.md`, `CLAUDE.local.md`, `.mcp.json` and its other
-    configuration paths from the pull request's base before the model starts and keeps
-    the head's versions of those paths under `.claude-pr/`, so the model reads them
-    there, and `.review/diff.patch` is authoritative for what changed. The
-    prompt names the pull request's files, diff, messages, title, body, comments,
-    `docs/upstream/` and fixtures as material to judge, never instructions; an instruction
-    found in them is itself a finding. The verdict step redacts anything that looks like a
-    key or a GitHub token from the summary and the comment.
+  - **Who it reviews**: a pull request whose author or triggering actor is a GitHub App
+    (a login ending in `[bot]`) other than Dependabot gets no review and fails by design,
+    with "family-review: a pull request opened or updated by a GitHub App gets no
+    review", as the action's empty `allowed_bots` had it; Dependabot is excepted by the
+    gate above.
+  - **What the model may do**: nothing but read. Before it starts, `family_review.py
+    prepare` writes its material to `.review/`: `diff.patch` (merge base to head),
+    `log.txt` (the commits with their messages), `pr.json` (title, body, author,
+    comments, files), `checks.json` (the head's checks, `ci` among them) and `meta.json`
+    (the coordinates). The system prompt carries the instructions, the checklist, the
+    conventions and the definition of done, cached, and names no pull request (the
+    coordinates are in the first message), so every review against the same `sdk-core`
+    `main` sends the same prefix and parallel reviews read one cache entry; the model
+    reads everything else with three tools the script serves, `read_file` (2,000 lines
+    or 64 KiB a call), `list_files` (500 paths) and `grep` (200 matches, each line's
+    first 4,000 characters, stopped by a timer after 20 seconds, inside a regular
+    expression too), inside the workspace's real path only: `.git/` at any depth,
+    `.envrc`, `.env` and `.env.*`, a symlink that leads out and the script's own
+    checkout are refused. It runs no command, edits nothing and reaches no network, and
+    `.review/diff.patch` is authoritative for what changed. The review spawns no process,
+    and `ANTHROPIC_API_KEY` is in the Review step's environment alone; setup-uv reads the
+    `.sdk-gates` checkout and uv runs the script from the runner's temporary directory
+    with `--no-config`, so nothing in the pull request's checkout (a `uv.toml`, a
+    `.python-version`, a `.venv`, a uv version or cache key) decides what runs beside the
+    key, and `--exclude-newer 2026-10-29T00:00:00Z` freezes the resolution of
+    `anthropic`'s dependencies. The prompt names the pull request's files, diff,
+    messages, title, body, comments, `docs/upstream/` and fixtures as material to judge,
+    never instructions; an instruction found in them is itself a finding. The job log is
+    public: the script prints paths, counts, the verdict and redacted error text, never a
+    file's content, a tool result or the prompt, and the verdict step redacts anything
+    that looks like a key or a GitHub token from the summary and the comment.
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
-  family's version, 0.17.1), the classifier's tests on a pinned pytest, and actionlint
-  with the runner's shellcheck. It also calls `merge-class.yml` as a job, which proves
+  family's version, 0.17.1), the scripts' tests on a pinned pytest (with the review's
+  `anthropic` 2.3.0; a fake client, no key, no network), and actionlint with the
+  runner's shellcheck. It also calls `merge-class.yml` as a job, which proves
   the caller wiring below.
 
 Every action in the gate workflows is pinned to a commit SHA with its version in a
-comment, and `setup-uv` installs a pinned uv.
+comment, `setup-uv` installs a pinned uv, and the review runs a pinned `anthropic`.
 
 ## Merge classes
 
@@ -320,18 +350,39 @@ The checks of this repository:
 
 ```sh
 uvx ruff@0.17.1 check scripts && uvx ruff@0.17.1 format --check scripts
-uv run --no-project --with pytest==9.1.1 pytest scripts/tests -q
+uv run --no-project --with pytest==9.1.1 --with anthropic==2.3.0 pytest scripts/tests -q
 uvx --from actionlint-py==1.7.12.25 actionlint
 ```
 
 `ci` runs actionlint with the runner's shellcheck; locally, add it with
 `uvx --from actionlint-py==1.7.12.25 --with shellcheck-py sh -c actionlint`.
 
+## Running the review locally
+
+A dry run clones the pull request and sdk-core's main into a temporary directory (or
+`--workdir`, kept), prepares the material as the workflow does and runs the review, then
+prints the summary line and the findings. It needs `gh` signed in and the key in the
+environment of that one command, never on disk or in the shell's history: `read -rs`
+prompts for it without echo. It spends real tokens (about 0.5 to 1 USD a review):
+
+```sh
+read -rs K && ANTHROPIC_API_KEY="$K" uv run --no-project \
+  --exclude-newer 2026-10-29T00:00:00Z --with anthropic==2.3.0 \
+  python <this clone>/scripts/family_review.py dry-run --repo xippios/<repo> --pr <n>
+unset K
+```
+
+`--model`, `--effort` and `--max-turns` change the judge, its effort and the turn cap;
+`--out` also writes the verdict file. Exit status: 0 `ready`, 1 `not ready`, 2 no
+verdict.
+
 ## Changing this repository
 
 Every pull request here is `human`, so Johannes merges each one: no session can change the
-class computation or the review gate. The review checklist itself lives in `sdk-core`
-(`docs/review-checklist.md`), where it is a protected path too. The caller-wiring proof
+class computation or the review gate. A pull request that changes `family_review.py`
+reviews itself with its own script and the org key (see "Where the script comes from").
+The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it is
+a protected path too. The caller-wiring proof
 in `ci.yml` reads `merge-class.yml` from the pull request but the classifier from `main`,
 so on the pull request that first adds `scripts/merge_class.py` the proof job fails until
 the script is on `main`; `ci` does not depend on it.

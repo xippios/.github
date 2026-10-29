@@ -1,0 +1,9 @@
+# actionlint 1.7.12 (the version ci.yml runs) does not know the job context's workflow
+# identity properties (`job.workflow_sha` and its siblings), which GitHub's contexts
+# reference documents for checking out a reusable workflow's own repository at its own
+# commit. family-review.yml checks out the review script that way; this ignores exactly that
+# one error in that one file. Remove it once actionlint knows the property.
+paths:
+  .github/workflows/family-review.yml:
+    ignore:
+      - 'property "workflow_sha" is not defined in object type \{check_run_id'
