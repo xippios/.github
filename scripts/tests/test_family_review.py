@@ -63,20 +63,44 @@ def finding(file="src/pkg/mod.py", line=2, blocking=False, text="A finding."):
     return {"file": file, "line": line, "blocking": blocking, "text": text}
 
 
+class MidStream:
+    """A scripted error raised while the stream is read, after the request succeeded."""
+
+    def __init__(self, error):
+        self.error = error
+
+
+class FakeStream:
+    """The SDK's MessageStreamManager and MessageStream in one: the request on enter."""
+
+    def __init__(self, item):
+        self.item = item
+
+    def __enter__(self):
+        if isinstance(self.item, BaseException):
+            raise self.item
+        return self
+
+    def __exit__(self, *exc):
+        return None
+
+    def get_final_message(self):
+        if isinstance(self.item, MidStream):
+            raise self.item.error
+        return self.item
+
+
 class FakeMessages:
-    """``messages.create`` that records each request and plays a script."""
+    """``messages.stream`` that records each request and plays a script."""
 
     def __init__(self, script):
         self.script = list(script)
         self.requests = []
 
-    def create(self, **kwargs):
+    def stream(self, **kwargs):
         # The loop appends to its list afterwards: keep this request's view of it.
         self.requests.append({**kwargs, "messages": list(kwargs["messages"])})
-        item = self.script.pop(0)
-        if isinstance(item, BaseException):
-            raise item
-        return item
+        return FakeStream(self.script.pop(0))
 
 
 class FakeClient:
@@ -221,15 +245,13 @@ def test_the_request_caches_the_prefix_and_forces_nothing(
     assert [block["type"] for block in system] == ["text"] * 4
     assert system[-1]["cache_control"] == {"type": "ephemeral"}
     assert all("cache_control" not in block for block in system[:-1])
-    assert f"Pull request {REPO}#11: base {BASE}, head" in system[0]["text"]
-    assert HEAD in system[0]["text"]
     assert ".claude-pr" not in system[0]["text"]
     assert "the action" not in system[0]["text"]
     assert "at most 120 turns" in system[0]["text"]
     labels = [block["text"].split("\n", 1)[0] for block in system[1:]]
     assert labels == [f"The file `.sdk-core-main/{doc}`:" for doc in fr.DOCUMENTS]
     assert request["model"] == "claude-opus-5-5"
-    assert request["max_tokens"] == 16000
+    assert request["max_tokens"] == 64000
     assert request["output_config"] == {"effort": "high"}
     for absent in ("thinking", "tool_choice", "betas", "temperature"):
         assert absent not in request
@@ -242,6 +264,23 @@ def test_the_request_caches_the_prefix_and_forces_nothing(
     assert first["role"] == "user"
     assert "`.review/`" in first["content"]
     assert "`.sdk-core-main/`" in first["content"]
+
+
+def test_the_system_prompt_names_no_pull_request(workspace: Path, tmp_path: Path, api) -> None:
+    """The coordinates are in the first message: every pull request shares the prefix."""
+    client = api(message([verdict()]))
+    run_review(workspace, tmp_path)
+    request = client.messages.requests[0]
+    for block in request["system"]:
+        for coordinate in (REPO, "#11", BASE, HEAD):
+            assert coordinate not in block["text"]
+    first = request["messages"][0]["content"]
+    assert first.startswith(f"Review pull request {REPO}#11: base {BASE}, head {HEAD}.")
+
+    other = fr.load_material(workspace, workspace / ".review", workspace / ".sdk-core-main")
+    other.repo, other.pr, other.base, other.head = "xippios/sdk-other", 3, HEAD, BASE
+    assert fr.system_prompt(other, fr.MAX_TURNS) == request["system"]
+    assert fr.first_message(other)["content"] != first
 
 
 def test_options_reach_the_request(workspace: Path, tmp_path: Path, api) -> None:
@@ -281,7 +320,7 @@ def test_max_tokens_is_no_verdict(workspace: Path, tmp_path: Path, api) -> None:
     api(message([call("toolu_1", "read_file", {"path": "x"})], "max_tokens"))
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert result["reason"] == "the response reached max_tokens (16000)"
+    assert result["reason"] == "the response reached max_tokens (64000)"
 
 
 def test_a_refusal_is_no_verdict_with_its_category(workspace: Path, tmp_path: Path, api) -> None:
@@ -402,6 +441,26 @@ def test_an_api_error_message_is_redacted_and_cut(workspace: Path, tmp_path: Pat
     assert "[redacted]" in out
     message = result["reason"].removeprefix("API error: BadRequestError: ")
     assert len(message.split(" (request ")[0]) == fr.ERROR_CHARS
+
+
+@pytest.mark.parametrize(
+    ("error", "name"),
+    [
+        (status_error(anthropic.APIStatusError, 200, "Overloaded"), "APIStatusError"),
+        (
+            httpx2.RemoteProtocolError("peer closed connection", request=REQUEST),
+            "RemoteProtocolError",
+        ),
+    ],
+)
+def test_an_error_while_the_stream_is_read_is_no_verdict(
+    workspace: Path, tmp_path: Path, api, capsys, error, name
+) -> None:
+    api(MidStream(error))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert result["reason"].startswith(f"API error: {name}: ")
+    assert capsys.readouterr().out.startswith(f"family-review: no verdict (API error: {name}: ")
 
 
 def test_an_error_after_some_turns_keeps_their_usage(workspace: Path, tmp_path: Path, api) -> None:

@@ -12,8 +12,10 @@ a dry run runs both in a temporary directory.
   checklist, the conventions, the definition of done or an ADR gets its branch's version of
   exactly those. With ``--workdir`` it first clones the repository there, with the pull
   request's head and sdk-core's main.
-- ``review`` runs the review on the Messages API: the instructions and the three family
-  documents in the system prompt (cached), the rest read by the model with three read-only
+- ``review`` runs the review on the Messages API, each turn streamed with ``max_tokens``
+  64,000 (thinking counts against it): the instructions and the three family documents in
+  the system prompt, cached and the same for every pull request (the pull request's
+  coordinates are in the first message), the rest read by the model with three read-only
   tools, ``read_file``, ``list_files`` and ``grep``, and the verdict returned by a call of
   ``submit_verdict`` (Opus 5.5 refuses a forced ``tool_choice``, so the instructions ask for
   it). The verdict, the findings and the usage go to ``--out``, one summary line to stdout
@@ -50,18 +52,21 @@ import sys
 import tempfile
 import time
 from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
 
 import anthropic
+import httpx2
 
 MODEL = "claude-opus-5-5"
 EFFORT = "high"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 MAX_TURNS = 120
-# Non-streaming; thinking is always on for Opus 5.5 and counts against it.
-MAX_TOKENS = 16000
+# Thinking is always on for Opus 5.5 and counts against it; a max_tokens stop is a lost
+# review. Streamed: the SDK refuses a non-streaming request it expects to run this long.
+MAX_TOKENS = 64000
 KEY_ENV = "ANTHROPIC_API_KEY"
 
 # List prices of claude-opus-5-5 in USD per million tokens; a cache write (5-minute TTL)
@@ -113,8 +118,8 @@ You are the `family-review` check of the xippios SDK family. You read and judge;
 you run no command and no check, and you change nothing: no edits, no commits,
 no comments. Your only output is the verdict.
 
-Pull request {repo}#{pr}: base {base}, head {head}. The working directory holds the
-head's tree. What you judge was prepared for you:
+The first message names the pull request, its base and its head. The working directory
+holds the head's tree. What you judge was prepared for you:
 
 - `{review}/diff.patch`: the diff from the merge base of base and head to the head;
 - `{review}/log.txt`: the pull request's commits with their full messages;
@@ -158,8 +163,9 @@ at most {max_turns} turns, one turn being one response of yours.
 """
 
 FIRST_MESSAGE = """\
-Review pull request {repo}#{pr}. Its material is under `{review}/`, the family documents \
-under `{docs}/`. Read what you need with the tools, then call `submit_verdict`."""
+Review pull request {repo}#{pr}: base {base}, head {head}. Its material is under \
+`{review}/`, the family documents under `{docs}/`. Read what you need with the tools, then \
+call `submit_verdict`."""
 
 VERDICT_SCHEMA: dict[str, object] = {
     "type": "object",
@@ -780,11 +786,19 @@ def verdict_problem(args: object) -> str | None:
 # --- the review --------------------------------------------------------------------------
 
 
+class FinalMessage(Protocol):
+    """The part of the SDK's ``MessageStream`` the review uses."""
+
+    def get_final_message(self) -> anthropic.types.Message:
+        """The message, once the stream has been read to its end."""
+        ...
+
+
 class MessagesAPI(Protocol):
     """The part of ``anthropic.Anthropic().messages`` the review uses."""
 
-    def create(self, **kwargs: object) -> anthropic.types.Message:
-        """One Messages API request."""
+    def stream(self, **kwargs: object) -> AbstractContextManager[FinalMessage]:
+        """One streamed Messages API request."""
         ...
 
 
@@ -941,12 +955,12 @@ def load_material(workspace: Path, review: Path, docs: Path) -> Material:
 
 
 def system_prompt(material: Material, max_turns: int) -> list[dict[str, object]]:
-    """The instructions, then the three documents; the last block carries the cache mark."""
+    """The instructions, then the three documents; the last block carries the cache mark.
+
+    Nothing in it names the pull request, so every review against the same sdk-core main
+    sends the same prefix and parallel reviews read one cache entry.
+    """
     instructions = INSTRUCTIONS.format(
-        repo=material.repo,
-        pr=material.pr,
-        base=material.base,
-        head=material.head,
         review=material.review_label,
         docs=material.docs_label,
         max_turns=max_turns,
@@ -963,13 +977,15 @@ def first_message(material: Material) -> dict[str, object]:
     text = FIRST_MESSAGE.format(
         repo=material.repo,
         pr=material.pr,
+        base=material.base,
+        head=material.head,
         review=material.review_label,
         docs=material.docs_label,
     )
     return {"role": "user", "content": text}
 
 
-def api_error(exc: anthropic.AnthropicError) -> str:
+def api_error(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
     """``API error: <class>: <message>``, the message from the error body where it has one."""
     message = None
     body = getattr(exc, "body", None)
@@ -1003,7 +1019,7 @@ def run_review(
             outcome.reason = f"the turn cap of {max_turns} was reached"
             return outcome
         try:
-            response = client.messages.create(
+            with client.messages.stream(
                 model=model,
                 max_tokens=MAX_TOKENS,
                 system=system,
@@ -1011,10 +1027,13 @@ def run_review(
                 messages=messages,
                 output_config={"effort": effort},
                 cache_control={"type": "ephemeral"},
-            )
+            ) as stream:
+                response = stream.get_final_message()
         # The SDK's classes, most specific first, are subclasses of AnthropicError; the
         # summary names the class the SDK raised (AuthenticationError, BadRequestError, ...).
-        except anthropic.AnthropicError as exc:
+        # An error event in the stream arrives as one of them; a connection lost while the
+        # stream is read arrives as an httpx2 error.
+        except (anthropic.AnthropicError, httpx2.HTTPError) as exc:
             outcome.reason = api_error(exc)
             return outcome
         outcome.turns += 1

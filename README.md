@@ -18,7 +18,8 @@ since v0.2.2).
   after 20 minutes; the template clone, the render and the sdk-core clone each after 5.
 - **`.github/workflows/family-review.yml`** runs `scripts/family_review.py`, which has
   `claude-opus-5-5`, at effort `high`, review the pull request on the Messages API (the
-  SDK `anthropic`, pinned to 2.3.0). It applies `docs/review-checklist.md` from
+  SDK `anthropic`, pinned to 2.3.0), each turn streamed with `max_tokens` 64,000, since
+  thinking counts against it. It applies `docs/review-checklist.md` from
   `main` of `xippios/sdk-core`, in order, to the pull request's diff, reading the
   conventions, the definition of done and the ADRs from `sdk-core`'s `main` (never from
   the pull request) and the pull request's own `docs/upstream/` for every claim about the
@@ -69,9 +70,12 @@ since v0.2.2).
     `log.txt` (the commits with their messages), `pr.json` (title, body, author,
     comments, files), `checks.json` (the head's checks, `ci` among them) and `meta.json`
     (the coordinates). The system prompt carries the instructions, the checklist, the
-    conventions and the definition of done, cached; the model reads everything else with
-    three tools the script serves, `read_file` (2,000 lines or 64 KiB a call),
-    `list_files` (500 paths) and `grep` (200 matches, 20 seconds), inside the
+    conventions and the definition of done, cached, and names no pull request (the
+    coordinates are in the first message), so every review against the same `sdk-core`
+    `main` sends the same prefix and parallel reviews read one cache entry; the model
+    reads everything else with three tools the script serves, `read_file` (2,000 lines
+    or 64 KiB a call), `list_files` (500 paths) and `grep` (200 matches, 20 seconds),
+    inside the
     workspace's real path only: `.git/` at any depth, `.envrc`, `.env` and `.env.*`, a
     symlink that leads out and the script's own checkout are refused. It runs no
     command, edits nothing and reaches no network, and `.review/diff.patch` is
