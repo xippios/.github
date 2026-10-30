@@ -1,0 +1,16 @@
+name: Gap
+description: A gap in a convention, for the next core minor
+title: "[gap] "
+labels: ["kind:gap", "proposed"]
+body:
+  - type: input
+    id: by
+    attributes: { label: Requested by, description: session (repository name) or human }
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What, description: the gap, the option taken for now, the packages it touches }
+    validations: { required: true }
+  - type: input
+    id: why
+    attributes: { label: Why / ADR }

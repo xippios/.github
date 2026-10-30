@@ -1,0 +1,19 @@
+name: Question
+description: A question for the human, recommendation first; the closing comment is the decision (G5)
+title: "[question] "
+labels: ["kind:question", "gate:G5"]
+body:
+  - type: input
+    id: by
+    attributes: { label: Asked by, description: session (repository name) or human }
+    validations: { required: true }
+  - type: textarea
+    id: recommendation
+    attributes: { label: Recommendation, description: the option the asker would take, and why }
+    validations: { required: true }
+  - type: textarea
+    id: options
+    attributes: { label: Other options }
+  - type: textarea
+    id: context
+    attributes: { label: Context, description: "cite history: issues, PRs, commits; never paste it" }
