@@ -1,0 +1,20 @@
+name: Gate
+description: A human action, assigned to the human
+title: "[gate] "
+labels: ["kind:gate"]
+body:
+  - type: input
+    id: by
+    attributes: { label: Filed by, description: session (repository name) or human }
+    validations: { required: true }
+  - type: dropdown
+    id: gate
+    attributes:
+      label: Gate
+      description: "G1 a repository or its settings · G2 a run waiting at an environment · G3 a human-class PR · G4 the organisation · G5 a decision (the gate:G<n> label follows)"
+      options: ["G1", "G2", "G3", "G4", "G5"]
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What the human does, description: one action, with the command or the link }
+    validations: { required: true }

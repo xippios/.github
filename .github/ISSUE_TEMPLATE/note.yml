@@ -1,0 +1,8 @@
+name: Note
+description: Intake from outside (phone included); triaged by coordinate inbox file, then closed
+labels: ["kind:note"]
+body:
+  - type: textarea
+    id: note
+    attributes: { label: Note }
+    validations: { required: true }

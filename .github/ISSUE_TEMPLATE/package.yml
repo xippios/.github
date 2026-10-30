@@ -1,0 +1,19 @@
+name: Package
+description: A package to build, with its plan and milestone
+title: "[package] "
+labels: ["kind:package", "proposed"]
+body:
+  - type: input
+    id: by
+    attributes: { label: Requested by, description: session (repository name) or human }
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What, description: the scope of the package }
+    validations: { required: true }
+  - type: input
+    id: why
+    attributes: { label: Why / ADR }
+  - type: input
+    id: plan
+    attributes: { label: Plan, description: "plans/<repository>/<version>.md in the root; the milestone is <repository> <version>" }

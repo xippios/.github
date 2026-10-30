@@ -1,0 +1,19 @@
+name: Change
+description: A change requested of this repository
+title: "[change] "
+labels: ["kind:change", "proposed"]
+body:
+  - type: input
+    id: by
+    attributes: { label: Requested by, description: session (repository name) or human }
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What }
+    validations: { required: true }
+  - type: input
+    id: why
+    attributes: { label: Why / ADR }
+  - type: input
+    id: consumers
+    attributes: { label: Consumers, description: repositories that must adopt }
