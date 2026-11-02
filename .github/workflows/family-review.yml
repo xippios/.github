@@ -54,7 +54,7 @@
 # text, never a file's content, a tool result or the prompt. `edited` is among the types
 # because the description is judged. Actions are pinned to commit SHAs, the version in a
 # comment.
-name: family-review
+name: Review
 
 on:
   pull_request:

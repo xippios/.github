@@ -11,7 +11,7 @@
 #
 # `edited` is among the types because a change of the base branch arrives as `edited`.
 # Actions are pinned to commit SHAs, the version in a comment.
-name: merge-class
+name: Merge class
 
 on:
   pull_request:
