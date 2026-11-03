@@ -1,21 +1,14 @@
-# xippios/.github
+# xippios/sdk-gates
 
-The organisation's `.github` repository: its defaults, the issue forms under
-`.github/ISSUE_TEMPLATE/` and the pull request template of every repository, and the
-reusable gate workflows. Two families call the gates. The coordinate workspaces
-(coordinate, sdk and web; coordinate-core 0.4.0) call `auto.yml`, the `auto` gate. The
-`sdk-*` repositories of the xippios SDK family call `merge-class` and `family-review`, the
-two merge gates with the scripts behind them, the classifier and the review, until the sdk
-migration moves the family to the coordinate gates (coordinate-core plan §11.7). GitHub
-decides what merges: the required checks pass, the required approvals are there, and
-auto-merge merges; a `human` class waits for Johannes.
+The organisation's shared GitHub Actions workflows for the `sdk-*` repositories of the
+xippios SDK family: the two merge gates, `merge-class` and `family-review`, and the
+scripts behind them, the classifier and the review. GitHub decides what merges: `ci`,
+`merge-class` and `family-review` pass, and auto-merge merges; a `human` class waits for
+Johannes.
 
-Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
-`.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
-clone in the coordinate root is `defaults`. GitHub redirects the old name, so the
-`uses: xippios/sdk-gates/…` lines in the `gates.yml` of sdk-core and sdk-template keep
-working until the next sdk-template release rewrites them to `xippios/.github/…`. The old
-workflows still check this repository out into `.sdk-gates`, a directory name only.
+Renamed from `xippios/.github` on 2026-10-27. GitHub does not redirect `uses:` references
+to the old name, so every caller names `sdk-gates` (sdk-core since #26, sdk-template
+since v0.2.2).
 
 ## The workflows
 
@@ -123,10 +116,10 @@ comment, `setup-uv` installs a pinned uv, and the review runs a pinned `anthropi
 The rules, in order. Every rule is evaluated: the first `human` decides the class, every
 reason is reported.
 
-1. **Scaffold**, in a source repository only (one named `sdk-*` other than `sdk-core` and
-   `sdk-template`; the classifier also exempts `sdk-gates`, this repository's name until
-   the rename back, and as `.github` it matches no pattern at all; `sdk-template` and this
-   repository have no `src/`): the base has no `src/` directory: `human`.
+1. **Scaffold**, in a source repository only (one named `sdk-*` other than `sdk-core`,
+   `sdk-template` and this repository, `sdk-gates`, whose name matches the pattern too;
+   `sdk-template` and this repository have no `src/` at all): the base has no `src/`
+   directory: `human`.
 2. **Render trust**: the template is rendered with the head's answers at the commit the
    head's `_commit` of `.copier-answers.yml` resolves to on the template's `main`
    (`uvx copier copy --defaults --trust --skip-tasks --vcs-ref <that SHA> --data-file
@@ -223,10 +216,7 @@ reason is reported.
      `[build-system]`, `[tool.hatch]`, `[project.scripts]`, `[project.gui-scripts]`,
      `[project.entry-points]`, `[dependency-groups]` or `[project.optional-dependencies]`
      (`[tool.uv]`, `tool.uv.index-url = ...`, `uv.index-url = ...` under `[tool]`).
-   - In the repository named `sdk-gates`, every pull request: this one until the rename
-     back. As `.github` it is an ordinary repository to the classifier, and what holds every
-     pull request here for Johannes is the `GitHub Main` ruleset with `.github/CODEOWNERS`
-     (see Changing this repository); `merge-class` is not required here.
+   - In this repository, `sdk-gates`, every pull request.
 4. **First surface**: a `src/xippios/**/tasks.py` whose `__all__` was empty or absent
    names at least one task: `human`. An `__all__` that cannot be read statically is
    `human` too: anything but top-level assignments of a literal list or tuple of strings
@@ -258,9 +248,9 @@ answers are escaped in the summary and the report.
 - The core pin check accepts only `main` and a full SHA, the two forms no ref created
   later can take over in uv's reading. A tag or a short commit name read anywhere else
   (by a human, by a tool) can still be shadowed by a branch created later; the classifier
-  cannot see that, so it rests on the rulesets below: `XIPPIOS SDK Tags` on `v*` of every
-  `sdk-*` repository; a branch ruleset on sdk-core forbidding `v*` and hex-like branch
-  names is not there today, so that part of the net is open.
+  cannot see that, so it rests on the rulesets below: the `v*` tag ruleset of every
+  `sdk-*` repository and the branch ruleset on sdk-core that forbids `v*` and hex-like
+  branch names.
 
 ## Wiring and check contexts
 
@@ -289,31 +279,52 @@ beside `ci.yml`. It runs on `pull_request` with
 because the description is judged and to `merge-class` because a change of the base
 branch arrives as `edited`. The caller can ship before the ruleset decision: both jobs
 carry `if: vars.GATES_CALLER == '1'` and run only once Johannes sets that repository
-variable, which he does per repository if the editor does not offer the required-work## Rulesets
+variable, which he does per repository if the editor does not offer the required-workflow
+rule. It passes the review exactly one secret, never `secrets: inherit`:
 
-The organisation's rulesets by name (gate coordinate#9; `gh api orgs/xippios/rulesets`), as
-far as they touch this repository and the gates:
+```yaml
+name: gates
 
-- **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
-  required, one approving review, review from code owners (`.github/CODEOWNERS` names
-  Johannes for every path), stale approvals dismissed on push, `ci` required, merge or
-  squash, no bypass actor. Neither `merge-class` nor `family-review` is required here:
-  `ci` calls `merge-class.yml` as a job only to prove the caller wiring.
-- **`XIPPIOS SDK Main`** (org branch ruleset on `main` of `sdk-*` and `xippios-mcp`):
-  pull request required, no approval count, an extra approval for unattributed changes,
-  review threads resolved, stale approvals dismissed on push, `ci` required and strict,
-  merge, squash or rebase, no bypass actor. The gate checks `merge-class` and
-  `family-review` run from each repository's `gates.yml` and are not required, so the
-  class is informational there until the sdk migration moves the family to the coordinate
-  gates.
-- **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of `sdk-*` and `xippios-mcp`):
-  update and deletion restricted, bypass for the organisation's admins, so a `v*` tag, once
-  created, is moved or deleted by no session.
-- The coordinate and web workspaces have theirs, `Coordinate Main`, `Coordinate Core`,
-  `Coordinate Tags`, `XIPPIOS Web Main` and `XIPPIOS Web Tags`, described in
-  coordinate-core's `docs/identities/setup.md` §7.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
 
-quired, no
+permissions:
+  contents: read
+
+jobs:
+  merge-class:
+    if: vars.GATES_CALLER == '1'
+    uses: xippios/sdk-gates/.github/workflows/merge-class.yml@main
+    permissions:
+      contents: read
+
+  family-review:
+    if: vars.GATES_CALLER == '1'
+    uses: xippios/sdk-gates/.github/workflows/family-review.yml@main
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: read
+```
+
+Caller mode is **not a boundary**: the check contexts come from the caller's own
+`gates.yml` on the pull request's head, and a ruleset cannot tell those jobs from any
+other Actions job of the same name, so a pull request that edits `gates.yml` can replace
+the call with a job that merely passes. Only the required-workflow wiring reads the gate
+from this repository whatever the pull request changes; the choice if the editor does not
+offer it is Johannes's at gate 2.
+
+## Rulesets
+
+- **`sdk-main-protection`** (org branch ruleset on `main` of the `sdk-*` repositories,
+  this one among them by its name since the rename): pull request required, `ci` required
+  and strict, `family-review` required once the org secret `ANTHROPIC_API_KEY` exists (by the
+  required-workflow rule, or the slash-joined context `family-review / family-review` in caller
+  mode, never the bare name)
+  (and with it the org variable `FAMILY_REVIEW_REQUIRED=1`), no approvals required, no
   bypass actor.
 - **`sdk-merge-class`** (org branch ruleset, same targets): requires the merge-class check (the
   required-workflow rule, or the slash-joined context `merge-class / merge-class` in caller mode
@@ -377,9 +388,8 @@ verdict.
 
 ## Changing this repository
 
-Every pull request here waits for Johannes: the `GitHub Main` ruleset wants his code-owner
-approval (below) and `ci` green, so no session can change the gates, the class computation
-or the review on its own. A pull request that changes `family_review.py`
+Every pull request here is `human`, so Johannes merges each one: no session can change the
+class computation or the review gate. A pull request that changes `family_review.py`
 reviews itself with its own script and the org key (see "Where the script comes from").
 The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it is
 a protected path too. The caller-wiring proof

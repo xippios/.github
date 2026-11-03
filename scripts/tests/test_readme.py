@@ -17,7 +17,7 @@ def test_the_readme_is_titled_by_the_repositorys_name() -> None:
 def test_the_caller_example_names_the_repository_as_it_is() -> None:
     assert "uses: xippios/.github/.github/workflows/merge-class.yml@main" in README
     assert "uses: xippios/.github/.github/workflows/family-review.yml@main" in README
-    assert "uses: xippios/sdk-gates/" not in README
+    assert "uses: xippios/sdk-gates/.github/workflows/" not in README
 
 
 def test_the_rulesets_named_are_the_organisations() -> None:
