@@ -30,3 +30,6 @@ def test_the_rulesets_named_are_the_organisations() -> None:
 
 def test_ci_describes_this_repository() -> None:
     assert CI.startswith("# CI of xippios/.github.")
+    # the proof job fails on a protected path, not on every pull request (the sdk-gates rule)
+    assert "is human (rule 3)" not in CI
+    assert "`GitHub Main`" in CI
