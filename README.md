@@ -12,10 +12,13 @@ auto-merge merges; a `human` class waits for Johannes.
 
 Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
 `.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
-clone in the coordinate root is `defaults`. GitHub redirects the old name, so the
-`uses: xippios/sdk-gates/…` lines in the `gates.yml` of sdk-core and sdk-template keep
-working until the next sdk-template release rewrites them to `xippios/.github/…`. The old
-workflows still check this repository out into `.sdk-gates`, a directory name only.
+clone in the coordinate root is `defaults`. GitHub redirects the old name: the old
+workflows still check this repository out as `xippios/sdk-gates`, through the redirect,
+into `.sdk-gates`, and this repository's own runs prove that step. The
+`uses: xippios/sdk-gates/…` lines in the `gates.yml` of sdk-core and sdk-template are
+expected to resolve the same way (coordinate-core plan §11.2), unproven until a gates run
+there has run since the rename back; the next sdk-template release rewrites them to
+`xippios/.github/…`.
 
 ## The workflows
 
