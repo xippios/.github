@@ -1,4 +1,4 @@
-# Every pull request of this repository is human (merge class rule 3): every path is Johannes's,
+# Every path of this repository is Johannes's,
 # so the organisation ruleset's code-owner review (gate coordinate#9) is the human's approval.
 # `coordinate sync` writes the root's CODEOWNERS from workspace.toml; this one is kept by hand.
 
