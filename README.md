@@ -17,6 +17,16 @@ since v0.2.2).
   the check; `human` fails it, with the rules hit, the trusted files and the remaining
   changed files in the job summary. Permissions: `contents: read`. The job times out
   after 20 minutes; the template clone, the render and the sdk-core clone each after 5.
+- **`.github/workflows/auto.yml`** (coordinate-core 0.4.0, C50) is the `auto` gate of the
+  coordinate workspaces: a reusable workflow each repository's `gates.yml` calls on
+  `pull_request`. A pull request on a `run/*` branch of the repository itself, opened by the
+  platform account named in the organisation variable `COORDINATE_PLATFORM_LOGIN`, is approved
+  with the coordinate App's token (`COORDINATE_APP_ID`, `COORDINATE_APP_PEM`), so it merges on
+  green CI under a ruleset that requires one approval; every push runs it again, since the
+  rulesets dismiss stale approvals. Every other pull request is skipped here and waits for the
+  reviewer's `coordinate pr review` or the human's code-owner approval. Permissions:
+  `contents: read`, `pull-requests: read`; the App writes, and needs Pull requests: write on its
+  installation. The job times out after 5 minutes.
 - **`.github/workflows/family-review.yml`** runs `scripts/family_review.py`, which has
   `claude-opus-5-5`, at effort `high`, review the pull request on the Messages API (the
   SDK `anthropic`, pinned to 2.3.0), each turn streamed with `max_tokens` 64,000, since
