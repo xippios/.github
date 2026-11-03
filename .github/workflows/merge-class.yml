@@ -7,7 +7,7 @@
 # One wiring (C58, 2026-11-03; two until then): called as a job from a repository's caller
 # workflow, gates.yml (`on: workflow_call`, check `merge-class / merge-class`). The caller runs
 # on `pull_request`, so `github.event.pull_request` is there. The classifier is always read from main
-# of xippios/sdk-gates, never from the pull request, so it changes only through a PR here.
+# of xippios/.github, never from the pull request, so it changes only through a PR here.
 #
 # `edited` is among the caller's types because a change of the base branch arrives as `edited`.
 # Actions are pinned to commit SHAs, the version in a comment.
@@ -39,10 +39,10 @@ jobs:
           persist-credentials: false
       # Into a directory the first checkout's content cannot shadow: actions/checkout
       # empties a target that is not already a clone of the repository it checks out.
-      - name: Check out the classifier from main of xippios/sdk-gates
+      - name: Check out the classifier from main of xippios/.github
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: xippios/sdk-gates
+          repository: xippios/.github
           ref: main
           path: .sdk-gates
           persist-credentials: false

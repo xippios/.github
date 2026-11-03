@@ -12,8 +12,8 @@
 # billed as Claude Code, which the organisation's monthly plan credits do not cover, while
 # they cover the Messages API called with an API key.
 #
-# The script comes from xippios/sdk-gates at `job.workflow_sha`, the commit of the workflow
-# file that defines this job (GitHub's contexts reference): for a caller, the sdk-gates commit
+# The script comes from xippios/.github at `job.workflow_sha`, the commit of the workflow
+# file that defines this job (GitHub's contexts reference): for a caller, the .github commit
 # its `uses:` resolved to. The workflow runs as a called job only; it left this repository's
 # own pull requests on 2026-11-03 (C58). actionlint 1.7.12
 # does not know the `job.workflow_*` properties yet: .github/actionlint.yaml ignores that one
@@ -138,11 +138,11 @@ jobs:
 
       # The review script, from the commit that defines this job (see the header); the
       # script refuses its own checkout to the model's tools.
-      - name: Check out the review script from xippios/sdk-gates
+      - name: Check out the review script from xippios/.github
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: xippios/sdk-gates
+          repository: xippios/.github
           ref: ${{ job.workflow_sha }}
           path: .sdk-gates
           persist-credentials: false
