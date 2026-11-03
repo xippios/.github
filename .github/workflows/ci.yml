@@ -1,5 +1,5 @@
-# CI of xippios/sdk-gates. The job `ci` is the check the `sdk-main-protection` ruleset
-# requires; the ruleset's `sdk-*` pattern covers this repository by its name.
+# CI of xippios/.github. The job `ci` is the check the organisation's `GitHub Main` ruleset
+# requires on this repository's main (README.md, Rulesets).
 name: CI
 
 on:
@@ -32,10 +32,12 @@ jobs:
       - run: uvx --from actionlint-py==1.7.12.25 actionlint
 
   # Proof of the caller wiring: merge-class.yml called as a job, as a source's ci.yml would
-  # call it, giving the check `merge-class / merge-class`. Every pull request of this
-  # repository is human (rule 3), so this job fails by design and Johannes merges. It cannot
-  # carry `continue-on-error` (a job that calls a reusable workflow takes no such key) and
-  # needs none: `ci` does not depend on it, and no ruleset requires it here.
+  # call it, giving the check `merge-class / merge-class`. As `.github` the repository is an
+  # ordinary one to the classifier, so the job fails whenever a pull request touches a
+  # protected path (`.github/**`, this file among them) and passes otherwise; Johannes merges
+  # by the `GitHub Main` ruleset either way. It cannot carry `continue-on-error` (a job that
+  # calls a reusable workflow takes no such key) and needs none: `ci` does not depend on it,
+  # and no ruleset requires it here.
   merge-class:
     if: github.event_name == 'pull_request'
     uses: ./.github/workflows/merge-class.yml
