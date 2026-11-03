@@ -1,6 +1,7 @@
 # The merge-class check of the xippios SDK family: classifies a pull request as `auto`
-# (the check passes) or `human` (it fails, with the reasons in the job summary); a human
-# PR waits for Johannes. The rules are
+# (the check passes) or `human` (it fails, with the reasons in the job summary); on the sdk
+# family the class is informational until the sdk migration, since its ruleset requires `ci`
+# alone. The rules are
 # in README.md and scripts/merge_class.py.
 #
 # One wiring (C58, 2026-11-03; two until then): called as a job from a repository's caller

@@ -12,13 +12,15 @@ auto-merge merges.
 
 Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
 `.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
-clone in the coordinate root is `defaults`. GitHub redirects the old name: the old
-workflows still check this repository out as `xippios/sdk-gates`, through the redirect,
-into `.sdk-gates`, and this repository's own runs prove that step. The
-`uses: xippios/sdk-gates/…` lines in the `gates.yml` of sdk-core and sdk-template are
-expected to resolve the same way (coordinate-core plan §11.2), unproven until a gates run
-there has run since the rename back; the next sdk-template release rewrites them to
-`xippios/.github/…`.
+clone in the coordinate root is `defaults`. GitHub redirected the old name until 2026-11-03:
+the last run that checked this repository out as `xippios/sdk-gates` passed that step at
+13:21 UTC (run 41643651975), and by 14:09 UTC the name answered 404 (run 41650920936). Since
+C58 no run of this repository exercises that checkout. What still names `xippios/sdk-gates`
+must change: the checkout step of both old workflows (gap .github#16, its own PR) and the
+`uses:` lines in the `gates.yml` of sdk-core, sdk-template and the other sdk callers, which
+the next sdk-template release rewrites to `xippios/.github/…`; until then those gate checks
+fail at the call, and the sdk family's ruleset, which requires `ci` alone, merges without
+them.
 
 ## The workflows
 
