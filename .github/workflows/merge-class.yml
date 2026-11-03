@@ -1,21 +1,19 @@
 # The merge-class check of the xippios SDK family: classifies a pull request as `auto`
-# (the check passes) or `human` (it fails, with the reasons in the job summary); a human
-# PR is merged by Johannes with the bypass of the `sdk-merge-class` ruleset. The rules are
+# (the check passes) or `human` (it fails, with the reasons in the job summary); on the sdk
+# family the class is informational until the sdk migration, since its ruleset requires `ci`
+# alone. The rules are
 # in README.md and scripts/merge_class.py.
 #
-# Two wirings (decided 2026-10-26): required by a ruleset as a workflow (`on: pull_request`,
-# check `merge-class`), or called as a job from a repository's caller workflow, gates.yml
-# (`on: workflow_call`, check `merge-class / merge-class`). The caller runs on
-# `pull_request` too, so `github.event.pull_request` is there either way. The classifier is always read from main
-# of xippios/sdk-gates, never from the pull request, so it changes only through a PR here.
+# One wiring (C58, 2026-11-03; two until then): called as a job from a repository's caller
+# workflow, gates.yml (`on: workflow_call`, check `merge-class / merge-class`). The caller runs
+# on `pull_request`, so `github.event.pull_request` is there. The classifier is always read from main
+# of xippios/.github, never from the pull request, so it changes only through a PR here.
 #
-# `edited` is among the types because a change of the base branch arrives as `edited`.
+# `edited` is among the caller's types because a change of the base branch arrives as `edited`.
 # Actions are pinned to commit SHAs, the version in a comment.
 name: Merge class
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened, edited]
   workflow_call:
     outputs:
       class:
@@ -41,10 +39,10 @@ jobs:
           persist-credentials: false
       # Into a directory the first checkout's content cannot shadow: actions/checkout
       # empties a target that is not already a clone of the repository it checks out.
-      - name: Check out the classifier from main of xippios/sdk-gates
+      - name: Check out the classifier from main of xippios/.github
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: xippios/sdk-gates
+          repository: xippios/.github
           ref: main
           path: .sdk-gates
           persist-credentials: false

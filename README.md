@@ -8,17 +8,19 @@ reusable gate workflows. Two families call the gates. The coordinate workspaces
 two merge gates with the scripts behind them, the classifier and the review, until the sdk
 migration moves the family to the coordinate gates (coordinate-core plan §11.7). GitHub
 decides what merges: the required checks pass, the required approvals are there, and
-auto-merge merges; a `human` class waits for Johannes.
+auto-merge merges.
 
 Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
 `.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
-clone in the coordinate root is `defaults`. GitHub redirects the old name: the old
-workflows still check this repository out as `xippios/sdk-gates`, through the redirect,
-into `.sdk-gates`, and this repository's own runs prove that step. The
-`uses: xippios/sdk-gates/…` lines in the `gates.yml` of sdk-core and sdk-template are
-expected to resolve the same way (coordinate-core plan §11.2), unproven until a gates run
-there has run since the rename back; the next sdk-template release rewrites them to
-`xippios/.github/…`.
+clone in the coordinate root is `defaults`. GitHub redirected the old name until 2026-11-03:
+the last run that checked this repository out as `xippios/sdk-gates` passed that step at
+13:21 UTC (run 41643651975), and by 14:09 UTC the name answered 404 (run 41650920936). Since
+C58 no run of this repository exercises that checkout. Both old workflows now check the
+repository out as `xippios/.github` (gap .github#16), into the directory still named
+`.sdk-gates`. What still names the old repository is the `uses:` lines in the `gates.yml` of
+sdk-core, sdk-template and the other sdk callers, which the sdk migration rewrites to
+`xippios/.github/…`; until then those gate checks fail at the call, and the sdk family's
+ruleset, which requires `ci` alone, merges without them.
 
 ## The workflows
 
@@ -63,10 +65,9 @@ there has run since the rename back; the next sdk-template release rewrites them
     usage is billed as Claude Code, which the organisation's monthly plan credits do not
     cover, while they cover the Messages API called with an API key (D101 to D103).
   - **Where the script comes from**: this repository, checked out into `.sdk-gates` at
-    `job.workflow_sha`, the commit of the workflow file that defines the job. On a pull
-    request here that is the pull request's merge commit, so a change to the review
-    reviews itself with its own script and the real key; a caller gets the commit its
-    `uses:` resolved to (`@main`). actionlint 1.7.12 does not know the property yet, so
+    `job.workflow_sha`, the commit of the workflow file that defines the job: for a caller,
+    the commit its `uses:` resolved to (`@main`). The review no longer runs on this
+    repository's own pull requests (C58). actionlint 1.7.12 does not know the property yet, so
     `.github/actionlint.yaml` ignores that one error in `family-review.yml`.
   - **Identity**: the review runs on the workflow token (`github.token`), so its comment
     comes from `github-actions[bot]`. It did so under the action too, whose Claude GitHub
@@ -116,8 +117,7 @@ there has run since the rename back; the next sdk-template release rewrites them
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
   family's version, 0.17.1), the scripts' tests on a pinned pytest (with the review's
   `anthropic` 2.3.0; a fake client, no key, no network), and actionlint with the
-  runner's shellcheck. It also calls `merge-class.yml` as a job, which proves
-  the caller wiring below.
+  runner's shellcheck.
 
 Every action in the gate workflows is pinned to a commit SHA with its version in a
 comment, `setup-uv` installs a pinned uv, and the review runs a pinned `anthropic`.
@@ -268,14 +268,15 @@ answers are escaped in the summary and the report.
 
 ## Wiring and check contexts
 
-"Require workflows to pass before merging" may be an Enterprise-only ruleset rule, so both
-workflows carry `on: pull_request` (types `opened`, `synchronize`, `reopened`, `edited`;
-`edited` because the description is judged and a base change arrives as `edited`) and
-`on: workflow_call` (decided 2026-10-26). The ruleset editor decides which wiring applies.
+Both workflows carry `on: workflow_call` alone (C58, 2026-11-03): a repository calls them as
+jobs from its `gates.yml`, which runs on `pull_request` with the types `opened`,
+`synchronize`, `reopened` and `edited` (`edited` because the description is judged and a base
+change arrives as `edited`). The required-workflow wiring, an Enterprise-only ruleset rule,
+went with the `on: pull_request` trigger; until then both also ran on this repository's own
+pull requests.
 
 | Wiring | Merge class check | Review check |
 | --- | --- | --- |
-| Required workflow (a ruleset requires the workflow from this repository, `ref` `main`) | `merge-class` | `family-review` |
 | Caller (a repository's `gates.yml` calls the workflow as a job) | `merge-class / merge-class` | `family-review / family-review` |
 
 A skipped caller job reports one check named after the caller job alone (`merge-class`,
@@ -339,8 +340,8 @@ far as they touch this repository and the gates:
 - **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
   required, one approving review, review from code owners (`.github/CODEOWNERS` names
   Johannes for every path), stale approvals dismissed on push, `ci` required, merge or
-  squash, no bypass actor. Neither `merge-class` nor `family-review` is required here:
-  `ci` calls `merge-class.yml` as a job only to prove the caller wiring.
+  squash, no bypass actor. Neither `merge-class` nor `family-review` runs here: both left this repository's own pull
+  requests (C58).
 - **`XIPPIOS SDK Main`** (org branch ruleset on `main` of `sdk-*` and `xippios-mcp`):
   pull request required, no approval count, an extra approval for unattributed changes,
   review threads resolved, stale approvals dismissed on push, `ci` required and strict,
@@ -405,13 +406,10 @@ verdict.
 
 Every pull request here waits for Johannes: the `GitHub Main` ruleset wants his code-owner
 approval (below) and `ci` green, so no session can change the gates, the class computation
-or the review on its own. A pull request that changes `family_review.py`
-reviews itself with its own script and the org key (see "Where the script comes from").
-The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it is
-a protected path too. The caller-wiring proof
-in `ci.yml` reads `merge-class.yml` from the pull request but the classifier from `main`,
-so on the pull request that first adds `scripts/merge_class.py` the proof job fails until
-the script is on `main`; `ci` does not depend on it.
+or the review on its own. A pull request that changes `family_review.py` is checked by `ci`
+and the dry run below; the review no longer runs on this repository's own pull requests
+(C58). The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it
+is a protected path too.
 
 `.github/CODEOWNERS` names Johannes for every path, so the organisation ruleset's code-owner
 review (gate coordinate#9: one approval, review from code owners, stale approvals dismissed on
