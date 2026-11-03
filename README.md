@@ -396,3 +396,9 @@ a protected path too. The caller-wiring proof
 in `ci.yml` reads `merge-class.yml` from the pull request but the classifier from `main`,
 so on the pull request that first adds `scripts/merge_class.py` the proof job fails until
 the script is on `main`; `ci` does not depend on it.
+
+`.github/CODEOWNERS` names Johannes for every path, so the organisation ruleset's code-owner
+review (gate coordinate#9: one approval, review from code owners, stale approvals dismissed on
+push) is the human's approval on every pull request here; a machine user's approval, the
+reviewer's included, is a recommendation. `coordinate sync` writes the root's CODEOWNERS from
+`workspace.toml`; this repository's is kept by hand.
