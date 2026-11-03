@@ -12,26 +12,38 @@ TEXT = (ROOT / ".github" / "workflows" / "auto.yml").read_text()
 
 def test_auto_is_a_reusable_workflow_named_auto() -> None:
     assert "name: Auto\n" in TEXT
-    assert "workflow_call:" in TEXT and "pull_request:" not in TEXT  # the caller's gates.yml runs on pull_request
+    assert "workflow_call:" in TEXT
+    assert "pull_request:" not in TEXT  # the caller's gates.yml runs on pull_request
 
 
 def test_only_a_runs_pull_request_by_the_platform_from_this_repository_is_approved() -> None:
     condition = TEXT.split("if: >-", 1)[1].split("steps:", 1)[0]
     assert "startsWith(github.event.pull_request.head.ref, 'run/')" in condition
-    assert "github.event.pull_request.head.repo.full_name == github.repository" in condition  # no forks
+    # no forks
+    assert "github.event.pull_request.head.repo.full_name == github.repository" in condition
     assert "github.event.pull_request.user.login == vars.COORDINATE_PLATFORM_LOGIN" in condition
-    assert "vars.COORDINATE_PLATFORM_LOGIN != ''" in condition  # unset variable: nothing is approved
-    assert not re.search(r"\b[a-z]-[a-z]+-ai\b", TEXT)  # no login in the file; the variable carries it
+    # an unset variable: nothing is approved
+    assert "vars.COORDINATE_PLATFORM_LOGIN != ''" in condition
+    # no login in the file; the variable carries it
+    assert not re.search(r"\b[a-z]-[a-z]+-ai\b", TEXT)
 
 
 def test_the_approval_is_the_apps_and_only_an_approval() -> None:
-    assert "actions/create-github-app-token@" in TEXT and "# v2." in TEXT  # pinned to a sha, the version in a comment
-    assert "vars.COORDINATE_APP_ID" in TEXT and "secrets.COORDINATE_APP_PEM" in TEXT
-    assert "-f event=APPROVE" in TEXT and 'commit_id="$HEAD"' in TEXT
-    assert "REQUEST_CHANGES" not in TEXT and "COMMENT" not in TEXT and "pr merge" not in TEXT
+    # pinned to a sha, the version in a comment
+    assert "actions/create-github-app-token@" in TEXT
+    assert "# v2." in TEXT
+    assert "vars.COORDINATE_APP_ID" in TEXT
+    assert "secrets.COORDINATE_APP_PEM" in TEXT
+    assert "-f event=APPROVE" in TEXT
+    assert 'commit_id="$HEAD"' in TEXT
+    assert "REQUEST_CHANGES" not in TEXT
+    assert "COMMENT" not in TEXT
+    assert "pr merge" not in TEXT
 
 
 def test_the_workflows_own_permissions_are_read_only() -> None:
     permissions = TEXT.split("permissions:", 1)[1].split("jobs:", 1)[0]
-    assert "contents: read" in permissions and "pull-requests: read" in permissions and "write" not in permissions
+    assert "contents: read" in permissions
+    assert "pull-requests: read" in permissions
+    assert "write" not in permissions
     assert "timeout-minutes:" in TEXT
