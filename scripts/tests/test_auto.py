@@ -44,6 +44,14 @@ def test_the_approval_is_the_apps_and_only_an_approval() -> None:
 def test_the_workflows_own_permissions_are_read_only() -> None:
     permissions = TEXT.split("permissions:", 1)[1].split("jobs:", 1)[0]
     assert "contents: read" in permissions
-    assert "pull-requests: read" in permissions
+    assert "pull-requests" not in permissions  # nothing uses the workflow token for PRs
     assert "write" not in permissions
     assert "timeout-minutes:" in TEXT
+
+
+def test_the_secret_is_declared_and_the_app_token_narrowed() -> None:
+    triggers = TEXT.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert "COORDINATE_APP_PEM:" in triggers
+    assert "required: true" in triggers
+    assert "permission-pull-requests: write" in TEXT
+    assert "secrets: inherit" not in TEXT  # the caller passes the one secret by name (C65)

@@ -35,8 +35,9 @@ there has run since the rename back; the next sdk-template release rewrites them
   green CI under a ruleset that requires one approval; every push runs it again, since the
   rulesets dismiss stale approvals. Every other pull request is skipped here and waits for the
   reviewer's `coordinate pr review` or the human's code-owner approval. Permissions:
-  `contents: read`, `pull-requests: read`; the App writes, and needs Pull requests: write on its
-  installation. The job times out after 5 minutes.
+  `contents: read`; the App writes with a token narrowed to Pull requests: write, which its
+  installation must grant; the caller passes `COORDINATE_APP_PEM` by name, never
+  `secrets: inherit` (C65). The job times out after 5 minutes.
 - **`.github/workflows/family-review.yml`** runs `scripts/family_review.py`, which has
   `claude-opus-5-5`, at effort `high`, review the pull request on the Messages API (the
   SDK `anthropic`, pinned to 2.3.0), each turn streamed with `max_tokens` 64,000, since
