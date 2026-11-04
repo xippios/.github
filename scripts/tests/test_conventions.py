@@ -1,4 +1,4 @@
-"""Tests for family_review.py, offline: a fake Messages client, real temporary git repositories.
+"""Tests for conventions.py, offline: a fake Messages client, real temporary git repositories.
 
 The fake client returns the SDK's own ``Message`` objects and raises its own error classes; no
 test needs a key or the network. ``gh`` is a fake on PATH that writes fixed JSON.
@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 import anthropic
-import family_review as fr
+import conventions as fr
 import httpx2
 import pytest
 
@@ -196,7 +196,7 @@ def test_two_tool_calls_then_the_verdict(
     code, result = run_review(workspace, tmp_path)
 
     line = (
-        "family-review: verdict=ready findings=1 blocking=0 turns=3 tool_calls=4 input=160 "
+        "conventions: verdict=ready findings=1 blocking=0 turns=3 tool_calls=4 input=160 "
         "cache_write=1035 cache_read=2030 output=60 cost_estimate_usd=0.01 "
         "model=claude-opus-5-5 effort=high"
     )
@@ -314,7 +314,7 @@ def test_end_turn_twice_is_no_verdict(workspace: Path, tmp_path: Path, api, caps
     assert "without calling submit_verdict" in result["reason"]
     assert len(client.messages.requests) == 2
     out = capsys.readouterr().out
-    assert out.startswith("family-review: no verdict (the model ended its turn twice")
+    assert out.startswith("conventions: no verdict (the model ended its turn twice")
     assert "turns=2 " in out
 
 
@@ -331,7 +331,7 @@ def test_a_refusal_is_no_verdict_with_its_category(workspace: Path, tmp_path: Pa
     code, result = run_review(workspace, tmp_path)
     assert code == 2
     assert result["reason"] == "the model refused, category cyber"
-    assert result["summary"].startswith("family-review: no verdict (the model refused")
+    assert result["summary"].startswith("conventions: no verdict (the model refused")
 
 
 def test_another_stop_reason_is_no_verdict(workspace: Path, tmp_path: Path, api) -> None:
@@ -359,7 +359,7 @@ def test_an_internal_error_keeps_the_counters_and_names_the_class_only(
     assert result["turns"] == 2
     assert result["usage"]["input_tokens"] == 12
     assert result["usage"]["output_tokens"] == 5
-    assert captured.out.startswith("family-review: no verdict (internal error: RuntimeError) ")
+    assert captured.out.startswith("conventions: no verdict (internal error: RuntimeError) ")
     assert "SECRET_DETAIL" not in captured.out + captured.err
 
 
@@ -424,7 +424,7 @@ def test_a_blocking_finding_makes_it_not_ready(workspace: Path, tmp_path: Path, 
     code, result = run_review(workspace, tmp_path)
     assert code == 1
     assert result["verdict"] == "not ready"
-    assert result["summary"].startswith("family-review: verdict=not ready findings=1 blocking=1 ")
+    assert result["summary"].startswith("conventions: verdict=not ready findings=1 blocking=1 ")
 
 
 def test_no_key_is_no_verdict_and_no_client(
@@ -436,7 +436,7 @@ def test_no_key_is_no_verdict_and_no_client(
     assert code == 2
     assert result["verdict"] is None
     out = capsys.readouterr().out
-    assert out.startswith("family-review: no verdict (ANTHROPIC_API_KEY is not set) turns=0 ")
+    assert out.startswith("conventions: no verdict (ANTHROPIC_API_KEY is not set) turns=0 ")
 
 
 def test_missing_material_is_no_verdict(workspace: Path, tmp_path: Path, api) -> None:
@@ -482,7 +482,7 @@ def test_an_api_error_is_no_verdict_with_its_class(
     out = capsys.readouterr().out
     assert code == 2
     assert result["verdict"] is None
-    assert out.startswith(f"family-review: no verdict (API error: {name}: ")
+    assert out.startswith(f"conventions: no verdict (API error: {name}: ")
     assert "turns=0 tool_calls=0 input=0 " in out
     assert len(result["reason"]) <= len(f"API error: {name}: ") + fr.ERROR_CHARS + 30
 
@@ -537,7 +537,7 @@ def test_an_error_while_the_stream_is_read_is_no_verdict(
     code, result = run_review(workspace, tmp_path)
     assert code == 2
     assert result["reason"].startswith(f"API error: {name}: ")
-    assert capsys.readouterr().out.startswith(f"family-review: no verdict (API error: {name}: ")
+    assert capsys.readouterr().out.startswith(f"conventions: no verdict (API error: {name}: ")
 
 
 def test_an_error_after_some_turns_keeps_their_usage(workspace: Path, tmp_path: Path, api) -> None:
@@ -594,7 +594,7 @@ def sandbox(workspace: Path, tmp_path: Path) -> fr.Sandbox:
     (workspace / "git-link").symlink_to(workspace / ".git" / "config")
     (workspace / "ok-link").symlink_to(workspace / "src" / "pkg" / "mod.py")
     (workspace / ".sdk-gates" / "scripts").mkdir(parents=True)
-    (workspace / ".sdk-gates" / "scripts" / "family_review.py").write_text("GATES_CONTENT\n")
+    (workspace / ".sdk-gates" / "scripts" / "conventions.py").write_text("GATES_CONTENT\n")
     return fr.Sandbox(workspace, hidden=[workspace / ".sdk-gates"])
 
 
@@ -615,7 +615,7 @@ def sandbox(workspace: Path, tmp_path: Path) -> fr.Sandbox:
         "out-link",
         "outdir/outside.txt",
         "git-link",
-        ".sdk-gates/scripts/family_review.py",
+        ".sdk-gates/scripts/conventions.py",
         "",
     ],
 )
@@ -651,7 +651,7 @@ def test_list_and_grep_skip_what_the_sandbox_refuses(sandbox: fr.Sandbox) -> Non
     assert ".review/diff.patch" in paths
     for refused in (".git/config", "sub/.git/HEAD", ".envrc", ".env", ".env.local", "nested/.env"):
         assert refused not in paths
-    for refused in ("passwd-link", "out-link", "git-link", ".sdk-gates/scripts/family_review.py"):
+    for refused in ("passwd-link", "out-link", "git-link", ".sdk-gates/scripts/conventions.py"):
         assert refused not in paths
     assert not any(p.startswith("outdir/") for p in paths)
     for pattern in ("OUTSIDE_CONTENT", "GIT_CONTENT", "ENV_CONTENT", "GATES_CONTENT", "root:"):
@@ -988,7 +988,7 @@ def test_prepare_writes_the_review_material(
     assert (core / "conventions.md").read_text() == "# docs/conventions.md, main\n"
     assert not (core / "adr" / "0002-new.md").exists()
     out = capsys.readouterr().out
-    assert "family-review: .review/diff.patch " in out
+    assert "conventions: .review/diff.patch " in out
     assert "the pull request's branch" not in out
     assert not summary.exists()
 
@@ -1013,8 +1013,8 @@ def test_an_sdk_core_pull_request_reads_its_changed_documents(
     # Unchanged by the pull request: main's version stays.
     assert (core / "review-checklist.md").read_text() == "# docs/review-checklist.md, main\n"
     notices = [
-        "family-review: docs/adr/0002-new.md read from the pull request's branch",
-        "family-review: docs/conventions.md read from the pull request's branch",
+        "conventions: docs/adr/0002-new.md read from the pull request's branch",
+        "conventions: docs/conventions.md read from the pull request's branch",
     ]
     out = capsys.readouterr().out
     assert [line for line in out.splitlines() if "branch" in line] == notices
@@ -1028,9 +1028,9 @@ def test_an_sdk_core_pull_request_that_deletes_a_document_cannot_run(
     assert prepare("xippios/sdk-core", ws, base, head) == 2
     assert not (ws / ".sdk-core-main" / "docs" / "conventions.md").exists()
     out = capsys.readouterr().out
-    assert "family-review: docs/conventions.md deleted on the pull request's branch" in out
+    assert "conventions: docs/conventions.md deleted on the pull request's branch" in out
     assert (
-        "family-review: .sdk-core-main/docs/conventions.md is missing; the review cannot run" in out
+        "conventions: .sdk-core-main/docs/conventions.md is missing; the review cannot run" in out
     )
 
 
@@ -1043,7 +1043,7 @@ def test_prepare_needs_sdk_core_main(tmp_path: Path, fake_gh: Path, capsys, kind
         core.symlink_to(moved)
     assert prepare(REPO, ws, base, head) == 2
     out = capsys.readouterr().out
-    assert "family-review: .sdk-core-main is missing or a link; the review cannot run" in out
+    assert "conventions: .sdk-core-main is missing or a link; the review cannot run" in out
 
 
 def test_prepare_needs_full_shas_without_workdir(tmp_path: Path, fake_gh: Path, capsys) -> None:
@@ -1073,7 +1073,7 @@ def test_dry_run_prepares_and_reviews(
     code = fr.main(["dry-run", "--repo", REPO, "--pr", "7", "--out", str(out_file)])
     assert code == 1
     out = capsys.readouterr().out.splitlines()
-    assert out[-3].startswith("family-review: verdict=not ready findings=2 blocking=1 turns=2 ")
+    assert out[-3].startswith("conventions: verdict=not ready findings=2 blocking=1 turns=2 ")
     assert out[-2] == "src/pkg/mod.py:2 [blocking] Key [redacted] here."
     assert out[-1] == "the pull request [non-blocking] A finding."
     answer = client.messages.requests[1]["messages"][-1]["content"][0]["content"]
@@ -1088,5 +1088,5 @@ def test_dry_run_without_a_key_clones_nothing(
     monkeypatch.setattr(fr, "clone_pull_request", lambda *a: pytest.fail("no clone without a key"))
     assert fr.main(["dry-run", "--repo", REPO, "--pr", "7"]) == 2
     assert capsys.readouterr().out.startswith(
-        "family-review: no verdict (ANTHROPIC_API_KEY is not set)"
+        "conventions: no verdict (ANTHROPIC_API_KEY is not set)"
     )

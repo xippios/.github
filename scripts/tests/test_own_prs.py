@@ -1,5 +1,5 @@
 """The old workflows left this repository's own pull requests (C58, .github#12): merge-class.yml
-and family-review.yml run as called jobs only, ci.yml carries no proof job, and nothing here
+and conventions.yml run as called jobs only, ci.yml carries no proof job, and nothing here
 claims that every pull request is human by the classifier's rule 3."""
 
 from pathlib import Path
@@ -14,7 +14,7 @@ def triggers(name: str) -> str:
 
 
 def test_the_old_workflows_run_as_called_jobs_only() -> None:
-    for name in ("merge-class.yml", "family-review.yml"):
+    for name in ("merge-class.yml", "conventions.yml"):
         block = triggers(name)
         assert "workflow_call:" in block
         assert "pull_request:" not in block

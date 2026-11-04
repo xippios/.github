@@ -8,7 +8,7 @@ WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
 
 
 def test_the_old_workflows_check_the_repository_out_by_its_name() -> None:
-    for name in ("merge-class.yml", "family-review.yml"):
+    for name in ("merge-class.yml", "conventions.yml"):
         text = (WORKFLOWS / name).read_text()
         assert "repository: xippios/.github" in text
         assert "xippios/sdk-gates" not in text
