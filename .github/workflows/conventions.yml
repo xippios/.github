@@ -1,13 +1,12 @@
-# The conventions review of the xippios SDK family (C57, check `conventions`): this
-# repository's scripts/conventions.py has claude-opus-5-5, at effort high on the Messages API,
-# apply the review checklist from sdk-core's main to the pull request and return a verdict.
-# `ready` passes the check; `not
-# ready` fails it, and the findings go to one sticky PR comment; no verdict (an API error, a
-# refusal, the turn cap) fails it with the cause, the turns and the token usage in the job
-# summary. The checklist, conventions, definition of done and ADRs are read from sdk-core's
-# main, never from the pull request; the one exception is an sdk-core pull request that
-# changes them, reviewed against its branch's version of exactly those documents (it is class
-# human, so Johannes reads the change). Without them the review fails closed.
+# The conventions review of the xippios SDK family (C57, check `conventions`): this repository's
+# scripts/conventions.py has claude-opus-5-5, at effort high on the Messages API, apply the
+# review checklist from sdk-core's main to the pull request and return a verdict. `ready` passes
+# the check; `not ready` fails it, and the findings go to one sticky PR comment; no verdict (an
+# API error, a refusal, the turn cap) fails it with the cause, the turns and the token usage in
+# the job summary. The checklist, conventions, definition of done and ADRs are read from
+# sdk-core's main, never from the pull request; the one exception is an sdk-core pull request
+# that changes them, reviewed against its branch's version of exactly those documents (it is
+# class human, so Johannes reads the change). Without them the review fails closed.
 #
 # The review left the Claude Code action on 2026-10-29 (D101 to D103): the action's usage is
 # billed as Claude Code, which the organisation's monthly plan credits do not cover, while

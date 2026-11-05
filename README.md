@@ -20,9 +20,9 @@ C58 no run of this repository exercises that checkout. Both old workflows now ch
 repository out as `xippios/.github` (gap .github#16), into the directory still named
 `.sdk-gates`. What still names the old repository is the `uses:` lines in the `gates.yml` of
 sdk-core, sdk-template and the other sdk callers, which the sdk migration rewrites to
-`xippios/.github/…`, the review's line to `conventions.yml` (C57); until then those gate
-checks fail at the call, and the sdk family's
-ruleset, which requires `ci` alone, merges without them.
+`xippios/.github/…`, the review's job to `conventions:` calling `conventions.yml` (C57);
+until then those gate checks fail at the call, and the sdk family's ruleset, which requires
+`ci` alone, merges without them.
 
 ## The workflows
 
@@ -350,10 +350,11 @@ far as they touch this repository and the gates:
   pull request required, no approval count, an extra approval for unattributed changes,
   review threads resolved, stale approvals dismissed on push, `ci` required and strict,
   merge, squash or rebase, no bypass actor. The gate checks `merge-class` and
-  `conventions` run from each repository's `gates.yml` (whose review line names the old
-  workflow until the sdk migration) and are not required, so the
-  class is informational there until the sdk migration moves the family to the coordinate
-  gates.
+  `conventions` run from each repository's `gates.yml` and are not required, so the class is
+  informational there until the sdk migration moves the family to the coordinate gates. Until
+  then a caller's review job keeps its old id and workflow; the migration renames both, the job
+  id to `conventions` as in the caller example above, so the check reads
+  `conventions / conventions`.
 - **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of `sdk-*` and `xippios-mcp`):
   update and deletion restricted, bypass for the organisation's admins, so a `v*` tag, once
   created, is moved or deleted by no session.
