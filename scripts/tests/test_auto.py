@@ -1,6 +1,6 @@
 """auto.yml: the auto gate of the coordinate workspaces (coordinate-core 0.4.0, C50). A reusable
 workflow that approves a run's pull request, on a `run/*` branch of the repository and opened by the
-platform account of the organisation variable, with the coordinate App's token, and nothing else.
+platform account of the organization variable, with the coordinate App's token, and nothing else.
 Read as text: the workflows of this repository are checked by actionlint, not parsed here."""
 
 import re

@@ -1,5 +1,5 @@
 """README.md and ci.yml describe this repository by its name, `.github`, never as `sdk-gates`,
-its name from 2026-10-27 to the rename back, and name the organisation's rulesets as they are
+its name from 2026-10-27 to the rename back, and name the organization's rulesets as they are
 (.github#10)."""
 
 from pathlib import Path
@@ -20,7 +20,7 @@ def test_the_caller_example_names_the_repository_as_it_is() -> None:
     assert "uses: xippios/sdk-gates/.github/workflows/" not in README
 
 
-def test_the_rulesets_named_are_the_organisations() -> None:
+def test_the_rulesets_named_are_the_organizations() -> None:
     for name in ("GitHub Main", "XIPPIOS SDK Main", "XIPPIOS SDK Tags"):
         assert f"`{name}`" in README
     for old in ("sdk-main-protection", "sdk-merge-class"):

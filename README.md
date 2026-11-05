@@ -1,9 +1,10 @@
 # xippios/.github
 
-The organisation's `.github` repository: its defaults, the issue forms under
+The organization's `.github` repository: its defaults, the issue forms under
 `.github/ISSUE_TEMPLATE/` and the pull request template of every repository, and the
 reusable gate workflows. Two families call the gates. The coordinate workspaces
-(coordinate, sdk and web; coordinate-core 0.4.0) call `auto.yml`, the `auto` gate. The
+(coordinate, sdk and web; coordinate-core 0.4.0) call `auto.yml`, the `auto` gate, and from
+coordinate-core 0.5.1 `spelling.yml`, the spelling check (C79). The
 `sdk-*` repositories of the xippios SDK family call `merge-class` and `conventions`, the
 two merge gates with the scripts behind them, the classifier and the conventions review,
 until the sdk migration moves the family to the coordinate gates (coordinate-core plan §11.7).
@@ -49,7 +50,7 @@ python3 scripts/forms.py --style <root>/docs/style --out . --check
 - **`.github/workflows/auto.yml`** (coordinate-core 0.4.0, C50) is the `auto` gate of the
   coordinate workspaces: a reusable workflow each repository's `gates.yml` calls on
   `pull_request`. A pull request on a `run/*` branch of the repository itself, opened by the
-  platform account named in the organisation variable `COORDINATE_PLATFORM_LOGIN`, is approved
+  platform account named in the organization variable `COORDINATE_PLATFORM_LOGIN`, is approved
   with the coordinate App's token (`COORDINATE_APP_ID`, `COORDINATE_APP_PEM`), so it merges on
   green CI under a ruleset that requires one approval; every push runs it again, since the
   rulesets dismiss stale approvals. Every other pull request is skipped here and waits for the
@@ -57,6 +58,31 @@ python3 scripts/forms.py --style <root>/docs/style --out . --check
   `contents: read`; the App writes with a token narrowed to Pull requests: write, which its
   installation must grant; the caller passes `COORDINATE_APP_PEM` by name, never
   `secrets: inherit` (C65). The job times out after 5 minutes.
+- **`.github/workflows/spelling.yml`** (coordinate-core 0.5.1, C79, .github#18) is the
+  spelling check of the coordinate workspaces: a reusable workflow a repository's `gates.yml`
+  calls as a job with the paths to check, check `spelling / spelling`. It runs codespell,
+  pinned to 2.4.3, with its built-in `en-GB_to_en-US` dictionary only, so a British spelling
+  fails it and a typo does not (the typo dictionaries flag identifiers). Three flags widen
+  codespell's defaults to what C79 covers: `--regex` splits words at every non-letter and at a
+  camelCase hump, so a possessive, a snake_case and a camelCase name are checked by their
+  parts; `--check-hidden` checks `.claude` and `.github`, which codespell skips even when named;
+  `--skip .git` keeps a caller that names `.` out of the repository's objects. The caller's
+  `gates.yml` alone decides what is checked: codespell runs from the runner's temporary
+  directory, so no `.codespellrc`, `setup.cfg` or `pyproject.toml` of the checkout is read, and
+  uv runs with `--no-config`. `ignore-words` defaults to `cancelled`, GitHub's spelling of a
+  run's conclusion and of `cancelled()`. A named path that does not exist fails the check,
+  since codespell passes it in silence. Permissions: `contents: read`; no secret. The job times
+  out after 5 minutes. A root's caller:
+
+  ```yaml
+  spelling:
+    uses: xippios/.github/.github/workflows/spelling.yml@main
+    with:
+      paths: rules docs README.md CLAUDE.md .claude
+  ```
+
+  A line that must keep a British word, such as a compatibility read of an old key, carries
+  codespell's inline `codespell:ignore` comment.
 - **`.github/workflows/conventions.yml`**, the conventions review (C57, check `conventions`):
   it judges a pull request against the standing documents of its family, while the
   reviewer judges it against the plan of its package. It runs `scripts/conventions.py`, which has
@@ -81,7 +107,7 @@ python3 scripts/forms.py --style <root>/docs/style --out . --check
   calls, the token usage and a cost estimate at list prices. Permissions:
   `contents: read`, `pull-requests: write`, `checks: read`.
   - **Why the Messages API**: the review ran the Claude Code action until 2026-10-29. Its
-    usage is billed as Claude Code, which the organisation's monthly plan credits do not
+    usage is billed as Claude Code, which the organization's monthly plan credits do not
     cover, while they cover the Messages API called with an API key (D101 to D103).
   - **Where the script comes from**: this repository, checked out into `.sdk-gates` at
     `job.workflow_sha`, the commit of the workflow file that defines the job: for a caller,
@@ -135,11 +161,14 @@ python3 scripts/forms.py --style <root>/docs/style --out . --check
     that looks like a key or a GitHub token from the summary and the comment.
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
   family's version, 0.17.1), the scripts' tests on a pinned pytest (with the review's
-  `anthropic` 2.3.0; a fake client, no key, no network), and actionlint with the
-  runner's shellcheck.
+  `anthropic` 2.3.0 and `spelling.yml`'s codespell; a fake client, no key, no network), and
+  actionlint with the runner's shellcheck. It calls `spelling.yml` over `README.md`, `.github`
+  and `scripts` as the job `spelling`, and `ci` fails when that job did not pass, so the
+  ruleset's one required check covers both.
 
 Every action in the gate workflows is pinned to a commit SHA with its version in a
-comment, `setup-uv` installs a pinned uv, and the review runs a pinned `anthropic`.
+comment, `setup-uv` installs a pinned uv, the review runs a pinned `anthropic`, and the
+spelling check a pinned codespell.
 
 ## Merge classes
 
@@ -353,7 +382,7 @@ offer it is Johannes's at gate 2.
 
 ## Rulesets
 
-The organisation's rulesets by name (gate coordinate#9; `gh api orgs/xippios/rulesets`), as
+The organization's rulesets by name (gate coordinate#9; `gh api orgs/xippios/rulesets`), as
 far as they touch this repository and the gates:
 
 - **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
@@ -371,7 +400,7 @@ far as they touch this repository and the gates:
   id to `conventions` as in the caller example above, so the check reads
   `conventions / conventions`.
 - **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of `sdk-*` and `xippios-mcp`):
-  update and deletion restricted, bypass for the organisation's admins, so a `v*` tag, once
+  update and deletion restricted, bypass for the organization's admins, so a `v*` tag, once
   created, is moved or deleted by no session.
 - The coordinate and web workspaces have theirs, `Coordinate Main`, `Coordinate Core`,
   `Coordinate Tags`, `XIPPIOS Web Main` and `XIPPIOS Web Tags`, described in
@@ -432,7 +461,7 @@ and the dry run below; the review no longer runs on this repository's own pull r
 (C58). The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it
 is a protected path too.
 
-`.github/CODEOWNERS` names Johannes for every path, so the organisation ruleset's code-owner
+`.github/CODEOWNERS` names Johannes for every path, so the organization ruleset's code-owner
 review (gate coordinate#9: one approval, review from code owners, stale approvals dismissed on
 push) is the human's approval on every pull request here; a machine user's approval, the
 reviewer's included, is a recommendation. `coordinate sync` writes the root's CODEOWNERS from
