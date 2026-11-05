@@ -1,12 +1,12 @@
-# The family review of the xippios SDK family: this repository's scripts/family_review.py
-# has claude-opus-5-5, at effort high on the Messages API, apply the review checklist from
-# sdk-core's main to the pull request and return a verdict. `ready` passes the check; `not
-# ready` fails it, and the findings go to one sticky PR comment; no verdict (an API error, a
-# refusal, the turn cap) fails it with the cause, the turns and the token usage in the job
-# summary. The checklist, conventions, definition of done and ADRs are read from sdk-core's
-# main, never from the pull request; the one exception is an sdk-core pull request that
-# changes them, reviewed against its branch's version of exactly those documents (it is class
-# human, so Johannes reads the change). Without them the review fails closed.
+# The conventions review of the xippios SDK family (C57, check `conventions`): this repository's
+# scripts/conventions.py has claude-opus-5-5, at effort high on the Messages API, apply the
+# review checklist from sdk-core's main to the pull request and return a verdict. `ready` passes
+# the check; `not ready` fails it, and the findings go to one sticky PR comment; no verdict (an
+# API error, a refusal, the turn cap) fails it with the cause, the turns and the token usage in
+# the job summary. The checklist, conventions, definition of done and ADRs are read from
+# sdk-core's main, never from the pull request; the one exception is an sdk-core pull request
+# that changes them, reviewed against its branch's version of exactly those documents (it is
+# class human, so Johannes reads the change). Without them the review fails closed.
 #
 # The review left the Claude Code action on 2026-10-29 (D101 to D103): the action's usage is
 # billed as Claude Code, which the organisation's monthly plan credits do not cover, while
@@ -27,7 +27,7 @@
 #
 # One wiring (C58, 2026-11-03; two until then): called as a job from a repository's gates.yml,
 # which passes ANTHROPIC_API_KEY alone (`on: workflow_call`, check
-# `family-review / family-review`); the caller runs on
+# `conventions / conventions`); the caller runs on
 # `pull_request` with the types opened, synchronize, reopened and edited, so
 # `github.event.pull_request` is there and a base change arrives as `edited`.
 #
@@ -55,7 +55,7 @@
 # text, never a file's content, a tool result or the prompt. `edited` is among the types
 # because the description is judged. Actions are pinned to commit SHAs, the version in a
 # comment.
-name: Review
+name: Conventions
 
 on:
   workflow_call:
@@ -69,13 +69,13 @@ permissions:
   checks: read
 
 jobs:
-  family-review:
-    name: family-review
+  conventions:
+    name: conventions
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # A new push or edit supersedes the review of the previous state.
     concurrency:
-      group: family-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+      group: conventions-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
       - name: Gate
@@ -99,21 +99,21 @@ jobs:
           if [ "$AUTHOR" = "dependabot[bot]" ] && [ "$ACTOR" = "dependabot[bot]" ]; then
             # The backticks are Markdown for the summary, not a command substitution.
             # shellcheck disable=SC2016
-            echo 'family-review: Dependabot PR, reviewed by `ci` only' | tee -a "$GITHUB_STEP_SUMMARY"
+            echo 'conventions: Dependabot PR, reviewed by `ci` only' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           elif app "$AUTHOR" || app "$ACTOR"; then
-            echo "family-review: a pull request opened or updated by a GitHub App gets no review" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "conventions: a pull request opened or updated by a GitHub App gets no review" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           elif [ "$HAS_KEY" = "true" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           elif [ "$HEAD_REPO" != "$REPO" ]; then
-            echo "family-review: a pull request from a fork gets no secrets; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "conventions: a pull request from a fork gets no secrets; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           elif [ "$REQUIRED" = "1" ]; then
-            echo "family-review: FAMILY_REVIEW_REQUIRED is 1 but ANTHROPIC_API_KEY is empty; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "conventions: FAMILY_REVIEW_REQUIRED is 1 but ANTHROPIC_API_KEY is empty; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           else
-            echo "family-review: no ANTHROPIC_API_KEY org secret; review skipped (required by no ruleset until it exists)" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "conventions: no ANTHROPIC_API_KEY org secret; review skipped (required by no ruleset until it exists)" | tee -a "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -172,12 +172,12 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           if [ -L "$GITHUB_WORKSPACE/.sdk-gates" ]; then
-            echo "family-review: .sdk-gates is a link; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "conventions: .sdk-gates is a link; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           uv run --no-project --no-config --exclude-newer 2026-10-29T00:00:00Z \
             --with anthropic==2.3.0 \
-            python "$GITHUB_WORKSPACE/.sdk-gates/scripts/family_review.py" prepare \
+            python "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" prepare \
             --repo "$REPO" --pr "$PR" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
             --workspace "$GITHUB_WORKSPACE"
 
@@ -193,7 +193,7 @@ jobs:
         run: |
           uv run --no-project --no-config --exclude-newer 2026-10-29T00:00:00Z \
             --with anthropic==2.3.0 \
-            python "$GITHUB_WORKSPACE/.sdk-gates/scripts/family_review.py" review \
+            python "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" review \
             --workspace "$GITHUB_WORKSPACE" --review "$GITHUB_WORKSPACE/.review" \
             --docs "$GITHUB_WORKSPACE/.sdk-core-main" --out "$RUNNER_TEMP/verdict.json"
 
@@ -217,7 +217,7 @@ jobs:
           import subprocess
           import sys
 
-          MARKER = "<!-- family-review -->"
+          MARKER = "<!-- conventions -->"
           # An Anthropic key, a GitHub token of any kind.
           KEY = re.compile(r"sk-ant-[A-Za-z0-9_-]+|gh[opsur]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+")
           PR = os.environ["PR"]
@@ -249,11 +249,11 @@ jobs:
               line = result.get("summary") if isinstance(result, dict) else None
               if not isinstance(line, str) or not line.strip():
                   line = (
-                      "family-review: no verdict (the review wrote no result; see the Prepare "
+                      "conventions: no verdict (the review wrote no result; see the Prepare "
                       "and Review steps)"
                   )
               text = (
-                  "## family-review: no verdict\n\n"
+                  "## conventions: no verdict\n\n"
                   + KEY.sub("[redacted]", one_line(line))
                   + "\n\nThe review returned no verdict; the check fails.\n"
               )
@@ -263,7 +263,7 @@ jobs:
           findings = [f for f in result.get("findings") or [] if isinstance(f, dict)]
           blocking = any(f.get("blocking") for f in findings)
           verdict = "ready" if result.get("verdict") == "ready" and not blocking else "not ready"
-          lines = [MARKER, f"## family-review: `{verdict}`", ""]
+          lines = [MARKER, f"## conventions: `{verdict}`", ""]
           lines += [f"Head `{os.environ['HEAD_SHA'][:12]}`.", ""]
           for finding in findings:
               where = one_line(finding.get("file") or "the pull request").replace("`", "'")
@@ -294,7 +294,7 @@ jobs:
           elif verdict != "ready":
               posted = gh("pr", "comment", PR, "--body-file", "-", body=body)
           if posted is not None and posted.returncode != 0:
-              print(f"family-review: posting the PR comment failed: {posted.stderr.strip()}",
+              print(f"conventions: posting the PR comment failed: {posted.stderr.strip()}",
                     file=sys.stderr)
           sys.exit(0 if verdict == "ready" else 1)
           PY
