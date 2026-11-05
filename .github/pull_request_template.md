@@ -1,11 +1,24 @@
-by: <session or human>
+## What
 
-<what this PR does and why; cite the plan, the issue, the decision>
+<!-- one sentence that states the whole change. Then one bullet per part of the change, each naming the command, file or behavior it touches. -->
+
+## Why
+
+<!-- the plan step or the row, and the decisions it implements, cited. -->
+
+## Proof
+
+<!-- the test run and what else was checked. Write the tests as one bullet: the command, the count, and the URLs of the red test commit and the green behavior commit. Put long output in `<details>`. -->
+
+## Consumers
+
+<!-- who must act or adopt after the merge, one bullet each. -->
 
 ## Decisions taken
 
-- none
+<!-- a numbered list of the decisions this PR took that the plan did not settle, each with its reason. -->
 
-Closes #
+None.
 
-Milestone: set `<repository> <version>` on the PR when it belongs to a package.
+<!-- one line per row or step the PR closes. -->
+Closes <URL>
