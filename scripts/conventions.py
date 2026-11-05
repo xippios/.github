@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""The family review of a pull request in a xippios SDK repository: ``ready`` or ``not ready``.
+"""The conventions review of a pull request in a xippios SDK repository: ``ready`` or ``not ready``.
 
-The check ``family-review`` (README.md, "The workflows") runs two commands of this script;
+The check ``conventions`` (README.md, "The workflows") runs two commands of this script;
 a dry run runs both in a temporary directory.
 
 - ``prepare`` writes the material the review judges to ``.review/`` in the checkout of the
@@ -119,7 +119,7 @@ REPROMPT = "Call submit_verdict now."
 VERDICTS = ("ready", "not ready")
 
 INSTRUCTIONS = """\
-You are the `family-review` check of the xippios SDK family. You read and judge;
+You are the `conventions` check of the xippios SDK family. You read and judge;
 you run no command and no check, and you change nothing: no edits, no commits,
 no comments. Your only output is the verdict.
 
@@ -456,7 +456,7 @@ def _governing_exception(workspace: Path, base: str, head: str, summary: str | N
         else:
             target.unlink(missing_ok=True)
             how = "deleted on"
-        _notice(f"family-review: {printable(path)} {how} the pull request's branch", summary)
+        _notice(f"conventions: {printable(path)} {how} the pull request's branch", summary)
 
 
 def prepare(
@@ -498,7 +498,7 @@ def prepare(
     (review / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     for name in sorted(p.name for p in review.iterdir()):
         size = (review / name).stat().st_size
-        print(f"family-review: {REVIEW_DIR}/{name} {size} bytes", flush=True)
+        print(f"conventions: {REVIEW_DIR}/{name} {size} bytes", flush=True)
 
     core = workspace / CORE_DIR
     if core.is_symlink() or not core.is_dir():
@@ -916,9 +916,9 @@ class Outcome:
             f"cost_estimate_usd={usage.cost():.2f} model={self.model} effort={self.effort}"
         )
         if self.verdict is None:
-            return redact(f"family-review: no verdict ({self.reason}) {counts}")
+            return redact(f"conventions: no verdict ({self.reason}) {counts}")
         return redact(
-            f"family-review: verdict={self.verdict} findings={len(self.findings)} "
+            f"conventions: verdict={self.verdict} findings={len(self.findings)} "
             f"blocking={self.blocking} {counts}"
         )
 
@@ -1103,7 +1103,7 @@ def _loop(
         calls = [block for block in response.content if block.type == "tool_use"]
         names = one_line(",".join(sorted({block.name for block in calls}))) or "-"
         print(
-            f"family-review: turn {outcome.turns} stop_reason={stop} "
+            f"conventions: turn {outcome.turns} stop_reason={stop} "
             f"tool_calls={len(calls)} tools={names}",
             file=sys.stderr,
             flush=True,
@@ -1299,7 +1299,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             with contextlib.ExitStack() as stack:
                 if args.workdir is None:
                     scratch = stack.enter_context(
-                        tempfile.TemporaryDirectory(prefix="family-review-")
+                        tempfile.TemporaryDirectory(prefix="conventions-")
                     )
                     args.workdir = Path(scratch) / "checkout"
                 args.base_sha = args.head_sha = None
@@ -1316,12 +1316,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         _report(outcome, summary, findings=True)
         return outcome.exit_code
     except PrepareError as exc:
-        _notice(f"family-review: {one_line(str(exc))}", summary)
+        _notice(f"conventions: {one_line(str(exc))}", summary)
         return 2
     except Exception as exc:  # The log is public: the class only.
         reason = f"internal error: {type(exc).__name__}"
         if args.command == "prepare":
-            _notice(f"family-review: {reason}", summary)
+            _notice(f"conventions: {reason}", summary)
             return 2
         outcome = Outcome(model=args.model, effort=args.effort, reason=reason)
         _write_out(args.out, outcome)

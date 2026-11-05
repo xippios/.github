@@ -4,9 +4,10 @@ The organisation's `.github` repository: its defaults, the issue forms under
 `.github/ISSUE_TEMPLATE/` and the pull request template of every repository, and the
 reusable gate workflows. Two families call the gates. The coordinate workspaces
 (coordinate, sdk and web; coordinate-core 0.4.0) call `auto.yml`, the `auto` gate. The
-`sdk-*` repositories of the xippios SDK family call `merge-class` and `family-review`, the
-two merge gates with the scripts behind them, the classifier and the review, until the sdk
-migration moves the family to the coordinate gates (coordinate-core plan §11.7). GitHub
+`sdk-*` repositories of the xippios SDK family call `merge-class` and `conventions`, the
+two merge gates with the scripts behind them, the classifier and the conventions review,
+until the sdk migration moves the family to the coordinate gates (coordinate-core plan §11.7).
+The conventions review keeps its place beside the reviewer for good (C57). GitHub
 decides what merges: the required checks pass, the required approvals are there, and
 auto-merge merges.
 
@@ -19,7 +20,8 @@ C58 no run of this repository exercises that checkout. Both old workflows now ch
 repository out as `xippios/.github` (gap .github#16), into the directory still named
 `.sdk-gates`. What still names the old repository is the `uses:` lines in the `gates.yml` of
 sdk-core, sdk-template and the other sdk callers, which the sdk migration rewrites to
-`xippios/.github/…`; until then those gate checks fail at the call, and the sdk family's
+`xippios/.github/…`, the review's line to `conventions.yml` (C57); until then those gate
+checks fail at the call, and the sdk family's
 ruleset, which requires `ci` alone, merges without them.
 
 ## The workflows
@@ -40,7 +42,9 @@ ruleset, which requires `ci` alone, merges without them.
   `contents: read`; the App writes with a token narrowed to Pull requests: write, which its
   installation must grant; the caller passes `COORDINATE_APP_PEM` by name, never
   `secrets: inherit` (C65). The job times out after 5 minutes.
-- **`.github/workflows/family-review.yml`** runs `scripts/family_review.py`, which has
+- **`.github/workflows/conventions.yml`**, the conventions review (C57, check `conventions`):
+  it judges a pull request against the standing documents of its family, while the
+  reviewer judges it against the plan of its package. It runs `scripts/conventions.py`, which has
   `claude-opus-5-5`, at effort `high`, review the pull request on the Messages API (the
   SDK `anthropic`, pinned to 2.3.0), each turn streamed with `max_tokens` 64,000, since
   thinking counts against it. It applies `docs/review-checklist.md` from
@@ -68,14 +72,14 @@ ruleset, which requires `ci` alone, merges without them.
     `job.workflow_sha`, the commit of the workflow file that defines the job: for a caller,
     the commit its `uses:` resolved to (`@main`). The review no longer runs on this
     repository's own pull requests (C58). actionlint 1.7.12 does not know the property yet, so
-    `.github/actionlint.yaml` ignores that one error in `family-review.yml`.
+    `.github/actionlint.yaml` ignores that one error in `conventions.yml`.
   - **Identity**: the review runs on the workflow token (`github.token`), so its comment
     comes from `github-actions[bot]`. It did so under the action too, whose Claude GitHub
     App token exchange skips every pull request whose calling workflow differs from the
     one on the default branch, which would have left adoption PRs without a verdict
     (decided 2026-10-26).
   - **Gate**: a Dependabot pull request (its author and the triggering actor both
-    `dependabot[bot]`) ends green with the notice "family-review: Dependabot PR, reviewed
+    `dependabot[bot]`) ends green with the notice "conventions: Dependabot PR, reviewed
     by `ci` only", since Dependabot runs get no Actions secrets. A pull request opened or
     updated by any other GitHub App fails next (below). Every other pull request
     needs the org secret `ANTHROPIC_API_KEY`. Without it, a pull request from a fork fails
@@ -85,10 +89,10 @@ ruleset, which requires `ci` alone, merges without them.
     Johannes sets the variable when the secret exists.
   - **Who it reviews**: a pull request whose author or triggering actor is a GitHub App
     (a login ending in `[bot]`) other than Dependabot gets no review and fails by design,
-    with "family-review: a pull request opened or updated by a GitHub App gets no
+    with "conventions: a pull request opened or updated by a GitHub App gets no
     review", as the action's empty `allowed_bots` had it; Dependabot is excepted by the
     gate above.
-  - **What the model may do**: nothing but read. Before it starts, `family_review.py
+  - **What the model may do**: nothing but read. Before it starts, `conventions.py
     prepare` writes its material to `.review/`: `diff.patch` (merge base to head),
     `log.txt` (the commits with their messages), `pr.json` (title, body, author,
     comments, files), `checks.json` (the head's checks, `ci` among them) and `meta.json`
@@ -196,7 +200,7 @@ reason is reported.
      `[project.entry-points.*]` ("build or install routes changed"). The dependency lists
      stay free. `.github/**` protects the workflow definitions, not the code a workflow
      runs with a secret: the tests and scripts that `live.yml` runs with a key can merge
-     `auto`, and the family review reads them.
+     `auto`, and the conventions review reads them.
    - In a source, also a template-owned file under `src/` that differs from the render
      (an adapter changed by hand, which could expose tasks around rule 4); without a
      render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
@@ -277,10 +281,10 @@ pull requests.
 
 | Wiring | Merge class check | Review check |
 | --- | --- | --- |
-| Caller (a repository's `gates.yml` calls the workflow as a job) | `merge-class / merge-class` | `family-review / family-review` |
+| Caller (a repository's `gates.yml` calls the workflow as a job) | `merge-class / merge-class` | `conventions / conventions` |
 
 A skipped caller job reports one check named after the caller job alone (`merge-class`,
-`family-review`), never the slash-joined context, and GitHub counts a skipped check as
+`conventions`), never the slash-joined context, and GitHub counts a skipped check as
 passing. So a ruleset must never require the bare names: while `GATES_CALLER` is unset, a
 switched-off `gates.yml` would satisfy both. In caller mode a ruleset requires the
 slash-joined contexts, and only once the variable is set in every repository the ruleset
@@ -314,9 +318,9 @@ jobs:
     permissions:
       contents: read
 
-  family-review:
+  conventions:
     if: vars.GATES_CALLER == '1'
-    uses: xippios/.github/.github/workflows/family-review.yml@main
+    uses: xippios/.github/.github/workflows/conventions.yml@main
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     permissions:
@@ -340,13 +344,14 @@ far as they touch this repository and the gates:
 - **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
   required, one approving review, review from code owners (`.github/CODEOWNERS` names
   Johannes for every path), stale approvals dismissed on push, `ci` required, merge or
-  squash, no bypass actor. Neither `merge-class` nor `family-review` runs here: both left this repository's own pull
+  squash, no bypass actor. Neither `merge-class` nor `conventions` runs here: both left this repository's own pull
   requests (C58).
 - **`XIPPIOS SDK Main`** (org branch ruleset on `main` of `sdk-*` and `xippios-mcp`):
   pull request required, no approval count, an extra approval for unattributed changes,
   review threads resolved, stale approvals dismissed on push, `ci` required and strict,
   merge, squash or rebase, no bypass actor. The gate checks `merge-class` and
-  `family-review` run from each repository's `gates.yml` and are not required, so the
+  `conventions` run from each repository's `gates.yml` (whose review line names the old
+  workflow until the sdk migration) and are not required, so the
   class is informational there until the sdk migration moves the family to the coordinate
   gates.
 - **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of `sdk-*` and `xippios-mcp`):
@@ -394,7 +399,7 @@ prompts for it without echo. It spends real tokens (about 0.5 to 1 USD a review)
 ```sh
 read -rs K && ANTHROPIC_API_KEY="$K" uv run --no-project \
   --exclude-newer 2026-10-29T00:00:00Z --with anthropic==2.3.0 \
-  python <this clone>/scripts/family_review.py dry-run --repo xippios/<repo> --pr <n>
+  python <this clone>/scripts/conventions.py dry-run --repo xippios/<repo> --pr <n>
 unset K
 ```
 
@@ -406,7 +411,7 @@ verdict.
 
 Every pull request here waits for Johannes: the `GitHub Main` ruleset wants his code-owner
 approval (below) and `ci` green, so no session can change the gates, the class computation
-or the review on its own. A pull request that changes `family_review.py` is checked by `ci`
+or the review on its own. A pull request that changes `conventions.py` is checked by `ci`
 and the dry run below; the review no longer runs on this repository's own pull requests
 (C58). The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it
 is a protected path too.
