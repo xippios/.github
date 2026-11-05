@@ -3,6 +3,7 @@
 name: Change
 description: "A change requested of this repository. Title: a change in the imperative: `Refuse a heading inside a section flag`."
 type: change
+labels: ["proposed"]
 body:
   - type: textarea
     id: what

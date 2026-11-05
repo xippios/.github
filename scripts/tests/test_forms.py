@@ -162,6 +162,14 @@ def test_a_row_has_one_field_per_section_in_order(style: Path) -> None:
     assert "`issue new doubles`" in files[Path(".github/ISSUE_TEMPLATE/gap.yml")]
 
 
+def test_a_row_or_package_from_the_browser_is_proposed(style: Path) -> None:
+    files = forms.generate(style)
+    for kind in ("change", "gap", "package"):
+        assert '\nlabels: ["proposed"]\n' in files[Path(f".github/ISSUE_TEMPLATE/{kind}.yml")]
+    for kind in ("gate", "note"):
+        assert "\nlabels:" not in files[Path(f".github/ISSUE_TEMPLATE/{kind}.yml")]
+
+
 def test_question_and_gate_follow_their_templates(style: Path) -> None:
     files = forms.generate(style)
     question = files[Path(".github/ISSUE_TEMPLATE/question.yml")]

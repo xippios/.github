@@ -64,9 +64,18 @@ class Kind:
 
 
 KINDS = (
-    Kind("change", "Change", "A change requested of this repository.", "Row: change or gap"),
-    Kind("gap", "Gap", "A gap: what was seen, where, and how.", "Row: change or gap"),
-    Kind("package", "Package", "A package with its plan and milestone.", "Package"),
+    # A row is proposed until accepted, as `coordinate issue new` labels it.
+    Kind(
+        "change",
+        "Change",
+        "A change requested of this repository.",
+        "Row: change or gap",
+        ("proposed",),
+    ),
+    Kind(
+        "gap", "Gap", "A gap: what was seen, where, and how.", "Row: change or gap", ("proposed",)
+    ),
+    Kind("package", "Package", "A package with its plan and milestone.", "Package", ("proposed",)),
     Kind(
         "question",
         "Question",

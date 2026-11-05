@@ -3,6 +3,7 @@
 name: Package
 description: "A package with its plan and milestone. Title: `<repository> <version>`."
 type: package
+labels: ["proposed"]
 body:
   - type: textarea
     id: what
