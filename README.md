@@ -2,9 +2,10 @@
 
 The organization's `.github` repository: its defaults, the issue forms under
 `.github/ISSUE_TEMPLATE/` and the pull request template of every repository, and the
-reusable gate workflows. Two families call the gates. The coordinate workspaces
-(coordinate, sdk and web; coordinate-core 0.4.0) call `auto.yml`, the `auto` gate, and from
-coordinate-core 0.5.1 `spelling.yml`, the spelling check (C79). The
+reusable gate workflows. Two families call the gates. The coordinate workspaces call
+`spelling.yml`, the spelling check (C79), from coordinate-core 0.5.1; their `auto` gate, which
+approved a run's pull request with the coordinate App, retired with 0.5.2, since the reviewer
+reviews a run's pull request like any other (coordinate-core#133, .github#26). The
 `sdk-*` repositories of the xippios SDK family call `merge-class` and `conventions`, the
 two merge gates with the scripts behind them, the classifier and the conventions review,
 until the sdk migration moves the family to the coordinate gates (coordinate-core plan §11.7).
@@ -47,17 +48,6 @@ python3 scripts/forms.py --style <root>/docs/style --out . --check
   the check; `human` fails it, with the rules hit, the trusted files and the remaining
   changed files in the job summary. Permissions: `contents: read`. The job times out
   after 20 minutes; the template clone, the render and the sdk-core clone each after 5.
-- **`.github/workflows/auto.yml`** (coordinate-core 0.4.0, C50) is the `auto` gate of the
-  coordinate workspaces: a reusable workflow each repository's `gates.yml` calls on
-  `pull_request`. A pull request on a `run/*` branch of the repository itself, opened by the
-  platform account named in the organization variable `COORDINATE_PLATFORM_LOGIN`, is approved
-  with the coordinate App's token (`COORDINATE_APP_ID`, `COORDINATE_APP_PEM`), so it merges on
-  green CI under a ruleset that requires one approval; every push runs it again, since the
-  rulesets dismiss stale approvals. Every other pull request is skipped here and waits for the
-  reviewer's `coordinate pr review` or the human's code-owner approval. Permissions:
-  `contents: read`; the App writes with a token narrowed to Pull requests: write, which its
-  installation must grant; the caller passes `COORDINATE_APP_PEM` by name, never
-  `secrets: inherit` (C65). The job times out after 5 minutes.
 - **`.github/workflows/spelling.yml`** (coordinate-core 0.5.1, C79, .github#18) is the
   spelling check of the coordinate workspaces: a reusable workflow a repository's `gates.yml`
   calls as a job with the paths to check, check `spelling / spelling`. It runs codespell,
