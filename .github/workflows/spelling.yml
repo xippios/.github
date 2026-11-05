@@ -24,7 +24,7 @@ on:
   workflow_call:
     inputs:
       paths:
-        description: the files and directories to check, separated by spaces
+        description: the files and directories to check, separated by spaces or newlines
         required: true
         type: string
       ignore-words:
