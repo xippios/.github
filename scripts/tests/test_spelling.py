@@ -170,6 +170,20 @@ def test_a_path_that_does_not_exist_fails(tmp_path: Path, caller: Path) -> None:
     assert "CLAUDE.md does not exist" in out
 
 
+def test_paths_one_per_line_are_all_checked(tmp_path: Path, caller: Path) -> None:
+    (caller / "docs").mkdir()
+    (caller / "docs" / "plan.md").write_text(f"The {BEHAVIOR_GB}.\n")
+    code, out = check(tmp_path, "rules\ndocs\n")
+    assert code != 0, out
+    assert f"docs/plan.md:1: {BEHAVIOR_GB} ==> " in out
+
+
+def test_an_absolute_path_fails_as_missing(tmp_path: Path, caller: Path) -> None:
+    code, out = check(tmp_path, f"rules {caller / 'rules'}")
+    assert code != 0, out
+    assert f"{caller / 'rules'} does not exist" in out
+
+
 def test_no_path_fails(tmp_path: Path, caller: Path) -> None:
     code, out = check(tmp_path, "  ")
     assert code != 0, out
