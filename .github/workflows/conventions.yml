@@ -9,7 +9,7 @@
 # class human, so Johannes reads the change). Without them the review fails closed.
 #
 # The review left the Claude Code action on 2026-10-29 (D101 to D103): the action's usage is
-# billed as Claude Code, which the organisation's monthly plan credits do not cover, while
+# billed as Claude Code, which the organization's monthly plan credits do not cover, while
 # they cover the Messages API called with an API key.
 #
 # The script comes from xippios/.github at `job.workflow_sha`, the commit of the workflow

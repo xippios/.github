@@ -1,6 +1,6 @@
 # The auto gate of the xippios workspaces (coordinate-core 0.4.0, C50): a run's pull request, on a
-# `run/*` branch of this repository and opened by the platform account named in the organisation
-# variable COORDINATE_PLATFORM_LOGIN, is approved with the coordinate App's token (the organisation's
+# `run/*` branch of this repository and opened by the platform account named in the organization
+# variable COORDINATE_PLATFORM_LOGIN, is approved with the coordinate App's token (the organization's
 # COORDINATE_APP_ID and COORDINATE_APP_PEM), so it merges on green CI under a ruleset that requires
 # one approval. Every other pull request gets nothing here: the reviewer's `coordinate pr review`
 # or the human's code-owner approval decides. A reusable workflow, called from each repository's

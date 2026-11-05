@@ -107,7 +107,8 @@ def test_the_inputs_reach_the_script_through_its_environment() -> None:
 
 
 def test_actions_are_pinned_to_commits_and_the_checkout_keeps_no_token() -> None:
-    uses = re.findall(r"uses: (\S+)( # v[\d.]+)?", SPELLING)
+    steps = "\n".join(line for line in SPELLING.splitlines() if not line.startswith("#"))
+    uses = re.findall(r"uses: (\S+)( # v[\d.]+)?", steps)
     assert uses
     for ref, version in uses:
         assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), ref

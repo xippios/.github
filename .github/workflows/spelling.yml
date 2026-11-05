@@ -1,0 +1,78 @@
+# The spelling check of the coordinate workspaces (C79, coordinate-core 0.5.1, .github#18):
+# codespell, pinned, with its built-in en-GB_to_en-US dictionary over the paths the caller names,
+# so the record stays in American English, identifiers and config keys included. A reusable
+# workflow, called as a job from a repository's gates.yml
+# (`uses: xippios/.github/.github/workflows/spelling.yml@main`, check `spelling / spelling`) with
+# `paths`; it reads the caller's checkout and needs no secret.
+#
+# codespell's defaults miss part of what C79 covers, so the step widens them:
+# - `--regex` splits a word at every non-letter and at a camelCase hump. The default keeps a
+#   possessive, a snake_case name and a camelCase name whole, so a British word inside passes.
+# - `--check-hidden`: without it codespell skips `.claude` and `.github`, even when named.
+# - `--skip .git`: a caller that names `.` does not scan the repository's objects.
+# Only en-GB_to_en-US: the typo dictionaries flag identifiers, such as O_WRONLY.
+#
+# What is checked is the caller's gates.yml alone: codespell runs from the runner's temporary
+# directory, so a `.codespellrc`, `setup.cfg` or `pyproject.toml` in the checkout cannot skip a
+# path or ignore a word, and uv runs with --no-config. `ignore-words` defaults to `cancelled`,
+# GitHub's spelling of a run's conclusion and of `cancelled()`. A named path that does not exist
+# fails the check, since codespell passes a missing path in silence.
+# Actions are pinned to commit SHAs, the version in a comment.
+name: Spelling
+
+on:
+  workflow_call:
+    inputs:
+      paths:
+        description: the files and directories to check, separated by spaces
+        required: true
+        type: string
+      ignore-words:
+        description: the words codespell lets pass, separated by commas
+        required: false
+        type: string
+        default: cancelled
+
+permissions:
+  contents: read
+
+jobs:
+  spelling:
+    name: spelling
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          version: "0.13.5"
+          enable-cache: false
+      - name: codespell
+        env:
+          PATHS: ${{ inputs.paths }}
+          IGNORE_WORDS: ${{ inputs.ignore-words }}
+        run: |
+          read -r -a paths <<< "$PATHS"
+          if [ "${#paths[@]}" -eq 0 ]; then
+            echo "::error::spelling: the caller names no path"
+            exit 1
+          fi
+          targets=()
+          missing=0
+          for path in "${paths[@]}"; do
+            if [ -e "$path" ]; then
+              targets+=("$GITHUB_WORKSPACE/$path")
+            else
+              echo "::error::spelling: $path does not exist"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          cd "$RUNNER_TEMP"
+          uvx --no-config codespell@2.4.3 --builtin en-GB_to_en-US \
+            --regex '[A-Z]?[a-z]+|[A-Z]+(?![a-z])' --check-hidden --skip .git \
+            --ignore-words-list "$IGNORE_WORDS" -- "${targets[@]}"
