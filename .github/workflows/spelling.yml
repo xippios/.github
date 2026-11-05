@@ -54,7 +54,9 @@ jobs:
           PATHS: ${{ inputs.paths }}
           IGNORE_WORDS: ${{ inputs.ignore-words }}
         run: |
-          read -r -a paths <<< "$PATHS"
+          # -d '': every line of the input, so a YAML block with one path per line is read whole;
+          # read ends at the input's end with status 1.
+          read -r -d '' -a paths <<< "$PATHS" || true
           if [ "${#paths[@]}" -eq 0 ]; then
             echo "::error::spelling: the caller names no path"
             exit 1
@@ -62,7 +64,8 @@ jobs:
           targets=()
           missing=0
           for path in "${paths[@]}"; do
-            if [ -e "$path" ]; then
+            # Tested as codespell gets it, under the checkout: an absolute path is missing there.
+            if [ -e "$GITHUB_WORKSPACE/$path" ]; then
               targets+=("$GITHUB_WORKSPACE/$path")
             else
               echo "::error::spelling: $path does not exist"
