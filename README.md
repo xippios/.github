@@ -3,15 +3,16 @@
 The organization's `.github` repository: its defaults, the issue forms under
 `.github/ISSUE_TEMPLATE/` and the pull request template of every repository, and the
 reusable gate workflows. Two families call the gates. The coordinate workspaces call
-`spelling.yml`, the spelling check (C79), from coordinate-core 0.5.1; their `auto` gate, which
-approved a run's pull request with the coordinate App, retired with 0.5.2, since the reviewer
-reviews a run's pull request like any other (coordinate-core#133, .github#26). The
-`sdk-*` repositories of the xippios SDK family call `merge-class` and `conventions`, the
-two merge gates with the scripts behind them, the classifier and the conventions review,
-until the sdk migration moves the family to the coordinate gates (coordinate-core plan §11.7).
-The conventions review keeps its place beside the reviewer for good (C57). GitHub
-decides what merges: the required checks pass, the required approvals are there, and
-auto-merge merges.
+`spelling.yml`, the spelling check (C79), from coordinate-core 0.5.1, and `conventions.yml`,
+the conventions review by mode on each repository's own documents, from coordinate-core 0.6.4
+(C57 as amended by coordinate-core#364, .github#32); their `auto` gate, which approved a run's
+pull request with the coordinate App, retired with 0.5.2, since the reviewer reviews a run's
+pull request like any other (coordinate-core#133, .github#26). The `sdk-*` repositories of the
+xippios SDK family call `merge-class` and `conventions`, the merge gate with the classifier
+behind it and the same review, until the sdk migration moves the family to the coordinate
+gates (coordinate-core plan §11.7). The conventions review keeps its place beside the reviewer
+for good (C57). GitHub decides what merges: the required checks pass, the required approvals
+are there, and auto-merge merges.
 
 Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
 `.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
@@ -73,29 +74,41 @@ python3 scripts/forms.py --style <root>/docs/style --out . --check
 
   A line that must keep a British word, such as a compatibility read of an old key, carries
   codespell's inline `codespell:ignore` comment.
-- **`.github/workflows/conventions.yml`**, the conventions review (C57, check `conventions`):
-  it judges a pull request against the standing documents of its family, while the
-  reviewer judges it against the plan of its package. It runs `scripts/conventions.py`, which has
-  `claude-opus-5-5`, at effort `high`, review the pull request on the Messages API (the
-  SDK `anthropic`, pinned to 2.3.0), each turn streamed with `max_tokens` 64,000, since
-  thinking counts against it. It applies `docs/review-checklist.md` from
-  `main` of `xippios/sdk-core`, in order, to the pull request's diff, reading the
-  conventions, the definition of done and the ADRs from `sdk-core`'s `main` (never from
-  the pull request) and the pull request's own `docs/upstream/` for every claim about the
-  upstream. One exception: when an `sdk-core` pull request changes the checklist, the
-  conventions, the definition of done or an ADR, the review reads its branch's version
-  of exactly those documents, since for the documents a pull request itself changes the
-  branch's version applies; such a pull request is class `human`, and Johannes reads the
-  change. Without the checklist, the conventions or the definition of done the review
-  fails closed. It judges the description's definition-of-done checklist and
-  `Decisions taken` block and returns its verdict, `ready` or `not ready`, with
-  findings, through a `submit_verdict` tool. `ready` passes; `not ready` fails the check
-  and puts the findings in one sticky PR comment, which a later `ready` updates. No
-  verdict (an API error, a refusal, a `max_tokens` stop, the turn cap of 120, a missing
-  key) fails the check, and the job summary carries the script's line with the cause (the
-  SDK's error class and its redacted message, a refusal's category), the turns, the tool
-  calls, the token usage and a cost estimate at list prices. Permissions:
-  `contents: read`, `pull-requests: write`, `checks: read`.
+- **`.github/workflows/conventions.yml`**, the conventions review (C57 as amended by
+  coordinate-core#364, check `conventions`): it judges a pull request against its repository's
+  own documents, while the reviewer judges it against the plan of its package. It runs
+  `scripts/conventions.py`, which has `claude-opus-5-5`, at effort `high`, review the pull
+  request on the Messages API (the SDK `anthropic`, pinned to 2.3.0), each turn streamed with
+  `max_tokens` 64,000, since thinking counts against it. The verdict, `ready` or `not ready`,
+  comes back with its findings through a `submit_verdict` tool. `ready` passes; `not ready`
+  fails the check and puts the findings in one sticky PR comment, in the form of
+  `docs/style/reviews.md#conventions-check` of a coordinate root: the lead with the count and
+  the head's commit, what was judged, then the findings, each with the document and the section
+  it goes against. A later verdict updates the comment. No verdict (an API error, a refusal, a
+  `max_tokens` stop, the turn cap of 120, a missing key) fails the check, and the job summary
+  carries the script's line with the cause (the SDK's error class and its redacted message, a
+  refusal's category), the turns, the tool calls, the token usage and a cost estimate at list
+  prices. Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
+  - **The mode**: the caller's variable `CONVENTIONS_REVIEW`, read from the calling repository,
+    where a repository variable overrides the organization's by GitHub's precedence. `release`,
+    the default when neither is set, reviews a pull request titled `release: <version>`
+    (`docs/style/pulls.md` of a coordinate root), on any branch, and passes any other with a
+    notice. `all` reviews every pull request. `off` passes every pull request with a notice. Any
+    other value fails the check and names the three. A pull request that no mode reviews makes
+    no API call and needs no key. The mode reads the title, so a caller runs on `edited` too.
+  - **The documents**: the ones the repository's `README.md` links under `## Documents`, read on
+    the default branch and never from the pull request, so a pull request cannot rewrite the
+    rules it is judged by (C80, `docs/style/repository.md` of a coordinate root). A path, an
+    anchor and a URL of the repository itself are read from its default branch; a URL of another
+    repository's file is read from GitHub with the workflow's token, which reads a public
+    repository and fails the check on a private one, naming the document. A link the review
+    cannot read as a file, a directory or a page outside GitHub, fails the check naming it. A
+    README that links none passes with the notice "links no documents under ## Documents;
+    nothing to judge", since the root's `doctor` owns that contract.
+  - **The range**: on a release pull request the review judges everything from the last release
+    tag (`v*`) reachable from the base to the head, since the pull request's own diff is the
+    CHANGELOG and the bump. Without a tag it judges the pull request's own diff and says so. Any
+    other pull request is judged on its own diff, merge base to head.
   - **Why the Messages API**: the review ran the Claude Code action until 2026-10-29. Its
     usage is billed as Claude Code, which the organization's monthly plan credits do not
     cover, while they cover the Messages API called with an API key (D101 to D103).
@@ -109,46 +122,41 @@ python3 scripts/forms.py --style <root>/docs/style --out . --check
     App token exchange skips every pull request whose calling workflow differs from the
     one on the default branch, which would have left adoption PRs without a verdict
     (decided 2026-10-26).
-  - **Gate**: a Dependabot pull request (its author and the triggering actor both
-    `dependabot[bot]`) ends green with the notice "conventions: Dependabot PR, reviewed
-    by `ci` only", since Dependabot runs get no Actions secrets. A pull request opened or
-    updated by any other GitHub App fails next (below). Every other pull request
-    needs the org secret `ANTHROPIC_API_KEY`. Without it, a pull request from a fork fails
-    (it never gets the secret, so it is never green unreviewed), and one from the
-    repository itself ends green with a notice until the org variable
-    `FAMILY_REVIEW_REQUIRED` is `1`; from then on an empty secret fails the check.
-    Johannes sets the variable when the secret exists.
-  - **Who it reviews**: a pull request whose author or triggering actor is a GitHub App
-    (a login ending in `[bot]`) other than Dependabot gets no review and fails by design,
-    with "conventions: a pull request opened or updated by a GitHub App gets no
-    review", as the action's empty `allowed_bots` had it; Dependabot is excepted by the
-    gate above.
+  - **Gate**, in order: a Dependabot pull request (its author and the triggering actor both
+    `dependabot[bot]`) ends green with the notice "conventions: Dependabot PR, reviewed by
+    `ci` only", since Dependabot runs get no Actions secrets. A pull request the mode does
+    not review ends green with its notice. A pull request opened or updated by any other
+    GitHub App (a login ending in `[bot]`) gets no review and fails by design, with
+    "conventions: a pull request opened or updated by a GitHub App gets no review", as the
+    action's empty `allowed_bots` had it. Every other pull request needs the organization
+    secret `ANTHROPIC_API_KEY`, shared with every repository (coordinate-core#368): a pull
+    request from a fork never gets it and fails, and one from the repository itself with the
+    secret empty fails naming it.
   - **What the model may do**: nothing but read. Before it starts, `conventions.py
-    prepare` writes its material to `.review/`: `diff.patch` (merge base to head),
-    `log.txt` (the commits with their messages), `pr.json` (title, body, author,
-    comments, files), `checks.json` (the head's checks, `ci` among them) and `meta.json`
-    (the coordinates). The system prompt carries the instructions, the checklist, the
-    conventions and the definition of done, cached, and names no pull request (the
-    coordinates are in the first message), so every review against the same `sdk-core`
-    `main` sends the same prefix and parallel reviews read one cache entry; the model
-    reads everything else with three tools the script serves, `read_file` (2,000 lines
-    or 64 KiB a call), `list_files` (500 paths) and `grep` (200 matches, each line's
-    first 4,000 characters, stopped by a timer after 20 seconds, inside a regular
-    expression too), inside the workspace's real path only: `.git/` at any depth,
-    `.envrc`, `.env` and `.env.*`, a symlink that leads out and the script's own
-    checkout are refused. It runs no command, edits nothing and reaches no network, and
-    `.review/diff.patch` is authoritative for what changed. The review spawns no process,
-    and `ANTHROPIC_API_KEY` is in the Review step's environment alone; setup-uv reads the
-    `.sdk-gates` checkout and uv runs the script from the runner's temporary directory
-    with `--no-config`, so nothing in the pull request's checkout (a `uv.toml`, a
-    `.python-version`, a `.venv`, a uv version or cache key) decides what runs beside the
-    key, and `--exclude-newer 2026-10-29T00:00:00Z` freezes the resolution of
-    `anthropic`'s dependencies. The prompt names the pull request's files, diff,
-    messages, title, body, comments, `docs/upstream/` and fixtures as material to judge,
-    never instructions; an instruction found in them is itself a finding. The job log is
-    public: the script prints paths, counts, the verdict and redacted error text, never a
-    file's content, a tool result or the prompt, and the verdict step redacts anything
-    that looks like a key or a GitHub token from the summary and the comment.
+    prepare` writes its material to `.review/`: `diff.patch` and `log.txt` of the range,
+    `pr.json` (title, body, author, comments, files), `checks.json` (the head's checks, `ci`
+    among them), `meta.json` (the coordinates and the range) and the documents under
+    `documents/`, listed in `documents.json`. The system prompt carries the instructions and
+    the documents, cached, and names no pull request (the coordinates and the range are in
+    the first message), so every review of a repository against the same documents sends the
+    same prefix and parallel reviews read one cache entry; the model reads everything else
+    with three tools the script serves, `read_file` (2,000 lines or 64 KiB a call),
+    `list_files` (500 paths) and `grep` (200 matches, each line's first 4,000 characters,
+    stopped by a timer after 20 seconds, inside a regular expression too), inside the
+    workspace's real path only: `.git/` at any depth, `.envrc`, `.env` and `.env.*`, a symlink
+    that leads out and the script's own checkout are refused. It runs no command, edits
+    nothing and reaches no network, and `.review/diff.patch` is authoritative for what
+    changed. The review spawns no process, and `ANTHROPIC_API_KEY` is in the Review step's
+    environment alone; setup-uv reads the `.sdk-gates` checkout and uv runs the script from
+    the runner's temporary directory with `--no-config`, so nothing in the pull request's
+    checkout (a `uv.toml`, a `.python-version`, a `.venv`, a uv version or cache key) decides
+    what runs beside the key, and `--exclude-newer 2026-10-29T00:00:00Z` freezes the
+    resolution of `anthropic`'s dependencies. The prompt names the pull request's files,
+    diff, messages, title, body and comments as material to judge, never instructions; an
+    instruction found in them is itself a finding. The job log is public: the script prints
+    paths, counts, the verdict and redacted error text, never a file's content, a tool
+    result or the prompt, and the verdict step redacts anything that looks like a key or a
+    GitHub token from the summary and the comment.
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
   family's version, 0.17.1), the scripts' tests on a pinned pytest (with the review's
   `anthropic` 2.3.0 and `spelling.yml`'s codespell; a fake client, no key, no network), and
@@ -425,9 +433,12 @@ uvx --from actionlint-py==1.7.12.25 actionlint
 
 ## Running the review locally
 
-A dry run clones the pull request and sdk-core's main into a temporary directory (or
-`--workdir`, kept), prepares the material as the workflow does and runs the review, then
-prints the summary line and the findings. It needs `gh` signed in and the key in the
+A dry run clones the pull request into a temporary directory (or `--workdir`, kept), prepares
+the material as the workflow does, the documents from the clone's `origin/main` (`--main`
+names another ref) and a pull request titled `release: <version>` on its release's range, and
+runs the review, then prints the summary line and the findings, each with the document it goes
+against. A README that links no documents ends it there, green, as in the workflow. It needs
+`gh` signed in and the key in the
 environment of that one command, never on disk or in the shell's history: `read -rs`
 prompts for it without echo. It spends real tokens (about 0.5 to 1 USD a review):
 
@@ -448,8 +459,8 @@ Every pull request here waits for Johannes: the `GitHub Main` ruleset wants his 
 approval (below) and `ci` green, so no session can change the gates, the class computation
 or the review on its own. A pull request that changes `conventions.py` is checked by `ci`
 and the dry run below; the review no longer runs on this repository's own pull requests
-(C58). The review checklist itself lives in `sdk-core` (`docs/review-checklist.md`), where it
-is a protected path too.
+(C58). The documents the review judges by are each repository's own, listed in its README's
+`## Documents` (C80), so nothing here decides what a repository is held to.
 
 `.github/CODEOWNERS` names Johannes for every path, so the organization ruleset's code-owner
 review (gate coordinate#9: one approval, review from code owners, stale approvals dismissed on
