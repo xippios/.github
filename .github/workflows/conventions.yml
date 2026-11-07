@@ -1,12 +1,22 @@
-# The conventions review of the xippios SDK family (C57, check `conventions`): this repository's
-# scripts/conventions.py has claude-opus-5-5, at effort high on the Messages API, apply the
-# review checklist from sdk-core's main to the pull request and return a verdict. `ready` passes
-# the check; `not ready` fails it, and the findings go to one sticky PR comment; no verdict (an
-# API error, a refusal, the turn cap) fails it with the cause, the turns and the token usage in
-# the job summary. The checklist, conventions, definition of done and ADRs are read from
-# sdk-core's main, never from the pull request; the one exception is an sdk-core pull request
-# that changes them, reviewed against its branch's version of exactly those documents (it is
-# class human, so Johannes reads the change). Without them the review fails closed.
+# The conventions review (C57 as amended by coordinate-core#364, check `conventions`): this
+# repository's scripts/conventions.py has claude-opus-5-5, at effort high on the Messages API,
+# judge a pull request against its repository's own documents, the ones the README links under
+# `## Documents` on the default branch (C80), and return a verdict. `ready` passes the check;
+# `not ready` fails it, and the findings go to one sticky PR comment in the form of
+# docs/style/reviews.md#conventions-check; no verdict (an API error, a refusal, the turn cap)
+# fails it with the cause, the turns and the token usage in the job summary. The documents are
+# read on the default branch, never from the pull request, so a pull request cannot rewrite the
+# rules it is judged by. A document the review cannot read (a private repository's, a missing
+# file) fails the check naming it; a README that links none passes with a notice, and no API
+# call is made.
+#
+# The mode is the caller's variable CONVENTIONS_REVIEW, a repository variable over the
+# organization's by GitHub's precedence: `release` (the default when neither is set) reviews a
+# PR titled `release: <version>` on any branch and passes any other with a notice; `all`
+# reviews every PR; `off` passes every PR with a notice; another value fails naming the three.
+# On a release PR the review judges the range from the last release tag reachable from the
+# base to the head, since the PR's own diff is the CHANGELOG and the bump; without a tag it
+# judges the PR's own diff and says so.
 #
 # The review left the Claude Code action on 2026-10-29 (D101 to D103): the action's usage is
 # billed as Claude Code, which the organization's monthly plan credits do not cover, while
@@ -27,18 +37,18 @@
 #
 # One wiring (C58, 2026-11-03; two until then): called as a job from a repository's gates.yml,
 # which passes ANTHROPIC_API_KEY alone (`on: workflow_call`, check
-# `conventions / conventions`); the caller runs on
-# `pull_request` with the types opened, synchronize, reopened and edited, so
-# `github.event.pull_request` is there and a base change arrives as `edited`.
+# `conventions / conventions`); the caller runs on `pull_request` with the types opened,
+# synchronize, reopened and edited, so `github.event.pull_request` is there, and a change of
+# the title or of the base arrives as `edited`.
 #
 # The gate, in order: a Dependabot pull request (author and actor both `dependabot[bot]`)
 # ends green, reviewed by `ci` only, since Dependabot runs get no Actions secrets. A pull
-# request opened or updated by any other GitHub App (a login ending in `[bot]`) gets no
-# review and fails, as the action's empty `allowed_bots` had it. With the org secret
-# ANTHROPIC_API_KEY the review runs. Without it, a pull request from a fork fails (it never
-# gets the secret, so it is never green unreviewed); one from the repository itself ends
-# green with a notice, or fails once the org variable FAMILY_REVIEW_REQUIRED is "1", which
-# Johannes sets when the secret exists.
+# request the mode does not review ends green with a notice. A pull request opened or updated
+# by any other GitHub App (a login ending in `[bot]`) gets no review and fails, as the
+# action's empty `allowed_bots` had it. With the organization secret ANTHROPIC_API_KEY the
+# review runs; a pull request from a fork never gets the secret and fails, and one from the
+# repository itself with the secret empty fails naming it (coordinate-core#368 shares the
+# secret with every repository).
 #
 # The model judges and runs nothing. Its material is prepared under .review/ before it
 # starts; it reads with three tools the script serves (read_file, list_files, grep) inside
@@ -78,11 +88,14 @@ jobs:
       group: conventions-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
+      # The mode and the title decide first, so a pull request that no mode reviews costs no
+      # checkout, no key and no API call (C57 as amended by coordinate-core#364).
       - name: Gate
         id: gate
         env:
           HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
-          REQUIRED: ${{ vars.FAMILY_REVIEW_REQUIRED }}
+          MODE: ${{ vars.CONVENTIONS_REVIEW }}
+          TITLE: ${{ github.event.pull_request.title }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           ACTOR: ${{ github.actor }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -96,10 +109,34 @@ jobs:
               *) return 1 ;;
             esac
           }
+          # The caller's CONVENTIONS_REVIEW, `release` when neither the repository nor the
+          # organization sets it. The backticks below are Markdown for the summary, not
+          # command substitutions.
+          mode="${MODE:-release}"
+          case "$mode" in
+            release|all|off) ;;
+            *)
+              echo "conventions: CONVENTIONS_REVIEW is \`$mode\`; it is \`release\`, \`all\` or \`off\` (C57)" | tee -a "$GITHUB_STEP_SUMMARY"
+              exit 1
+              ;;
+          esac
+          # A release PR by its title, `release: <version>` (docs/style/pulls.md), on any branch.
+          release=false
+          if printf '%s\n' "$TITLE" | grep -Eq '^release: v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.+-]*)?$'; then
+            release=true
+          fi
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
           if [ "$AUTHOR" = "dependabot[bot]" ] && [ "$ACTOR" = "dependabot[bot]" ]; then
-            # The backticks are Markdown for the summary, not a command substitution.
             # shellcheck disable=SC2016
             echo 'conventions: Dependabot PR, reviewed by `ci` only' | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          elif [ "$mode" = "off" ]; then
+            echo "conventions: CONVENTIONS_REVIEW is off; the review is switched off for this repository" | tee -a "$GITHUB_STEP_SUMMARY"
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          elif [ "$mode" = "release" ] && [ "$release" != "true" ]; then
+            # shellcheck disable=SC2016
+            echo 'conventions: not a release PR; with CONVENTIONS_REVIEW release the review runs on a PR titled `release: <version>`' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           elif app "$AUTHOR" || app "$ACTOR"; then
             echo "conventions: a pull request opened or updated by a GitHub App gets no review" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -109,31 +146,19 @@ jobs:
           elif [ "$HEAD_REPO" != "$REPO" ]; then
             echo "conventions: a pull request from a fork gets no secrets; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
-          elif [ "$REQUIRED" = "1" ]; then
-            echo "conventions: FAMILY_REVIEW_REQUIRED is 1 but ANTHROPIC_API_KEY is empty; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
           else
-            echo "conventions: no ANTHROPIC_API_KEY org secret; review skipped (required by no ruleset until it exists)" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "conventions: ANTHROPIC_API_KEY is empty; the review cannot run. Share the organization secret with this repository (G4)." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
           fi
 
+      # The full history brings every branch and tag: the default branch, where the README
+      # and its documents are read, and the release tags, where a release's range starts.
       - name: Check out the pull request head with full history
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
-          persist-credentials: false
-
-      # Into a directory the pull request cannot shadow: actions/checkout empties a target
-      # that is not already a clone of the repository it checks out.
-      - name: Check out the family documents from main of xippios/sdk-core
-        if: steps.gate.outputs.run == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: xippios/sdk-core
-          ref: main
-          path: .sdk-core-main
           persist-credentials: false
 
       # The review script, from the commit that defines this job (see the header); the
@@ -159,9 +184,14 @@ jobs:
 
       # Everything the review judges, prepared here because the review runs no command.
       # .review/ is emptied first, so nothing the pull request carries there survives. The
-      # family documents must be there, from sdk-core's main or, for an sdk-core pull
-      # request that changes them, its branch's version of exactly those; else it fails.
+      # documents are the ones the README links under `## Documents` on the default branch,
+      # read there and never from the pull request (C80): the repository's own from that
+      # branch, another repository's from GitHub with the workflow's token, which reads a
+      # public repository and fails on a private one, naming the document. A README that
+      # links none ends the job green here, with a notice and `review=false`: no API call.
+      # On a release PR (the gate's `release`) the range runs from the last release tag.
       - name: Prepare the review material
+        id: prepare
         if: steps.gate.outputs.run == 'true'
         working-directory: ${{ runner.temp }}
         env:
@@ -170,22 +200,28 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MAIN: origin/${{ github.event.repository.default_branch }}
+          RELEASE: ${{ steps.gate.outputs.release }}
         run: |
           if [ -L "$GITHUB_WORKSPACE/.sdk-gates" ]; then
             echo "conventions: .sdk-gates is a link; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
+          set --
+          if [ "$RELEASE" = "true" ]; then
+            set -- --release
+          fi
           uv run --no-project --no-config --exclude-newer 2026-10-29T00:00:00Z \
             --with anthropic==2.3.0 \
             python "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" prepare \
             --repo "$REPO" --pr "$PR" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
-            --workspace "$GITHUB_WORKSPACE"
+            --workspace "$GITHUB_WORKSPACE" --main "$MAIN" "$@"
 
       # The key is in this step's environment alone. The step fails on no verdict, and the
       # Verdict step runs anyway: it reads the verdict file and decides the check.
       - name: Review
         id: review
-        if: steps.gate.outputs.run == 'true'
+        if: steps.gate.outputs.run == 'true' && steps.prepare.outputs.review == 'true'
         continue-on-error: true
         working-directory: ${{ runner.temp }}
         env:
@@ -195,14 +231,16 @@ jobs:
             --with anthropic==2.3.0 \
             python "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" review \
             --workspace "$GITHUB_WORKSPACE" --review "$GITHUB_WORKSPACE/.review" \
-            --docs "$GITHUB_WORKSPACE/.sdk-core-main" --out "$RUNNER_TEMP/verdict.json"
+            --out "$RUNNER_TEMP/verdict.json"
 
       # The verdict file is the script's; no file, or one without a verdict (the review
       # failed or stopped before its verdict), is no verdict and fails, with the script's
-      # summary line. Anything that looks like a key is redacted before the summary and the
-      # comment.
+      # summary line. The comment follows docs/style/reviews.md#conventions-check: the lead
+      # with the count and the head's commit, what was judged, then the findings, each with
+      # the document and section it goes against. Anything that looks like a key is redacted
+      # before the summary and the comment.
       - name: Verdict
-        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' }}
+        if: ${{ !cancelled() && steps.gate.outputs.run == 'true' && steps.prepare.outputs.review == 'true' }}
         env:
           RESULT_FILE: ${{ runner.temp }}/verdict.json
           GH_TOKEN: ${{ github.token }}
@@ -217,11 +255,14 @@ jobs:
           import subprocess
           import sys
 
-          MARKER = "<!-- conventions -->"
+          MARKER = "<!-- style: reviews/conventions -->"
+          # The marker of the comments before coordinate-core 0.6.4: still the review's.
+          OLD_MARKER = "<!-- conventions -->"
           # An Anthropic key, a GitHub token of any kind.
           KEY = re.compile(r"sk-ant-[A-Za-z0-9_-]+|gh[opsur]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+")
           PR = os.environ["PR"]
           REPO = os.environ["REPO"]
+          COMMIT = f"https://github.com/{REPO}/commit/{os.environ['HEAD_SHA']}"
 
 
           def summary(text):
@@ -231,6 +272,14 @@ jobs:
 
           def one_line(value):
               return " ".join(str(value).split())
+
+
+          def plain(value):
+              return one_line(value).replace("`", "'")
+
+
+          def count(number, noun="finding"):
+              return f"{number} {noun}{'' if number == 1 else 's'}"
 
 
           def gh(*args, body=None):
@@ -261,31 +310,55 @@ jobs:
               print(text)
               sys.exit(1)
           findings = [f for f in result.get("findings") or [] if isinstance(f, dict)]
-          blocking = any(f.get("blocking") for f in findings)
+          blocking = sum(1 for f in findings if f.get("blocking"))
           verdict = "ready" if result.get("verdict") == "ready" and not blocking else "not ready"
-          lines = [MARKER, f"## conventions: `{verdict}`", ""]
-          lines += [f"Head `{os.environ['HEAD_SHA'][:12]}`.", ""]
-          for finding in findings:
-              where = one_line(finding.get("file") or "the pull request").replace("`", "'")
+          if verdict != "ready":
+              lead = f"**Blocked.** {count(len(findings))}, {blocking} blocking, at {COMMIT}."
+          elif findings:
+              lead = f"**Findings.** {count(len(findings))}, none blocking, at {COMMIT}."
+          else:
+              lead = f"**Approved.** No findings at {COMMIT}."
+          judged = result.get("range") if isinstance(result.get("range"), dict) else {}
+          documents = result.get("documents") if isinstance(result.get("documents"), list) else None
+          if judged.get("release") and judged.get("tag"):
+              what = f"the release's range from `{plain(judged['tag'])}` to the head"
+          elif judged.get("release"):
+              what = "the pull request's own diff, since no release tag is reachable from the base"
+          else:
+              what = "the pull request's own diff"
+          against = ""
+          if documents is not None:
+              against = f", against {count(len(documents), 'document')} of `README.md` on `main`"
+          lines = [MARKER, lead, "", f"Judged: {what}{against}."]
+          if findings:
+              lines.append("")
+          for number, finding in enumerate(findings, 1):
+              document = plain(finding.get("document") or "")
+              where = plain(finding.get("file") or "")
               line = finding.get("line")
-              if isinstance(line, int) and not isinstance(line, bool) and line > 0:
+              if where and isinstance(line, int) and not isinstance(line, bool) and line > 0:
                   where += f":{line}"
-              kind = "blocking" if finding.get("blocking") else "non-blocking"
-              lines.append(f"- **{kind}** `{where}`: {one_line(finding.get('text', ''))}")
-          if not findings:
-              lines.append("No findings.")
+              text = one_line(finding.get("text", ""))
+              blocks = "yes" if finding.get("blocking") else "no"
+              if document:
+                  place = f" `{where}`." if where else ""
+                  lines.append(f"{number}. **{document}** {text}{place} Blocks: {blocks}.")
+              elif where:
+                  lines.append(f"{number}. **`{where}`** {text} Blocks: {blocks}.")
+              else:
+                  lines.append(f"{number}. **the pull request** {text} Blocks: {blocks}.")
           body = KEY.sub("[redacted]", "\n".join(lines) + "\n")
           summary(body)
           print(body)
 
           # One sticky comment. The last comment this token wrote is edited when it is the
-          # review's (by its marker), or created when there is none and the verdict is not
-          # ready; another workflow's comment is never overwritten. `ready` only updates an
-          # earlier verdict.
+          # review's (by its marker, the old form's too), or created when there is none and
+          # the verdict is not ready; another workflow's comment is never overwritten.
+          # `ready` only updates an earlier verdict.
           last = gh("pr", "view", PR, "--json", "comments",
                     "--jq", '[.comments[] | select(.viewerDidAuthor)] | last | .body // ""')
           known = last.returncode == 0
-          ours = known and last.stdout.startswith(MARKER)
+          ours = known and (last.stdout.startswith(MARKER) or last.stdout.startswith(OLD_MARKER))
           none = known and not last.stdout.strip()
           posted = None
           if ours or (none and verdict != "ready"):
