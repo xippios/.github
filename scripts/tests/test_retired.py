@@ -49,5 +49,6 @@ def test_the_readme_says_who_writes_the_forms() -> None:
     assert "forms.py" not in README
     section = README.split("\n## The forms\n", 1)[1].split("\n## ", 1)[0]
     assert "adoption run" in section
-    assert "coordinate-core#371" in section
+    assert "https://github.com/xippios/coordinate-core/issues/371" in section
+    assert "https://github.com/xippios/.github/issues/33" in section
     assert "`config.yml` stays by hand" in section
