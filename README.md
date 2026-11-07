@@ -32,11 +32,12 @@ until then those gate checks fail at the call, and the sdk family's ruleset, whi
 The issue forms under `.github/ISSUE_TEMPLATE/` and `.github/pull_request_template.md` are
 written by the coordinate workspace's adoption run from `docs/style/issues.md` and `pulls.md` of
 the coordinate-core release it adopts, from 0.6.4 on, and arrive as that run's pull request (C73,
-C74, coordinate-core#371). A form has one field per section of its template, in the same order and
-with the same names. It carries its issue type and no title prefix, and it has no field for who
-filed, since the account and the `by:` label say that (C62). Each file's header names the release
-it was written from: a form changes in the core's style and its next release, never here. The
-generator this repository kept until then left with .github#33. `config.yml` stays by hand.
+C74, https://github.com/xippios/coordinate-core/issues/371). A form has one field per section of
+its template, in the same order and with the same names. It carries its issue type and no title
+prefix, and it has no field for who filed, since the account and the `by:` label say that (C62).
+Each file's header names the release it was written from: a form changes in the core's style and
+its next release, never here. The generator this repository kept until then left with
+https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
 
 ## The workflows
 
