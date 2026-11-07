@@ -1,12 +1,12 @@
 """Tests for conventions.py, offline: a fake Messages client, real temporary git repositories.
 
 The fake client returns the SDK's own ``Message`` objects and raises its own error classes; no
-test needs a key or the network. ``gh`` is a fake on PATH that writes fixed JSON.
+test needs a key or the network. ``gh`` is a fake on PATH that writes fixed JSON and serves a
+document of another repository as ``gh api`` would.
 """
 
 import json
 import os
-import shutil
 import signal
 import subprocess
 import time
@@ -61,8 +61,30 @@ def verdict(value="ready", findings=()):
     return call("toolu_v", "submit_verdict", {"verdict": value, "findings": list(findings)})
 
 
-def finding(file="src/pkg/mod.py", line=2, blocking=False, text="A finding."):
-    return {"file": file, "line": line, "blocking": blocking, "text": text}
+def finding(
+    file="src/pkg/mod.py",
+    line=2,
+    blocking=False,
+    text="A finding.",
+    document="sdk-core: docs/conventions.md#tests",
+):
+    return {"document": document, "file": file, "line": line, "blocking": blocking, "text": text}
+
+
+# The documents of the prepared workspace, as prepare writes them: the README's items on main.
+DOCUMENTS = [
+    ("sdk-usda-psd: docs/conventions.md", "main", "1-conventions.md"),
+    (
+        "sdk-core: docs/conventions.md",
+        "https://github.com/xippios/sdk-core/blob/main/docs/conventions.md",
+        "2-conventions.md",
+    ),
+    (
+        "sdk-core: docs/definition-of-done.md",
+        "https://github.com/xippios/sdk-core/blob/main/docs/definition-of-done.md",
+        "3-definition-of-done.md",
+    ),
+]
 
 
 class MidStream:
@@ -121,19 +143,28 @@ def status_error(cls, status, text):
 
 @pytest.fixture
 def workspace(tmp_path: Path) -> Path:
-    """A prepared workspace: .review with its meta.json, .sdk-core-main, a source file."""
+    """A prepared workspace: .review with its meta.json and its documents, a source file."""
     ws = tmp_path / "ws"
     review = ws / ".review"
-    review.mkdir(parents=True)
+    (review / "documents").mkdir(parents=True)
     (review / "diff.patch").write_text(DIFF)
     (review / "log.txt").write_text(f"commit {HEAD}\n")
-    meta = {"repo": REPO, "pr": 11, "base": BASE, "head": HEAD}
+    meta = {
+        "repo": REPO,
+        "pr": 11,
+        "base": BASE,
+        "head": HEAD,
+        "main": "origin/main",
+        "release": False,
+        "since": BASE,
+        "tag": None,
+    }
     (review / "meta.json").write_text(json.dumps(meta))
-    core = ws / ".sdk-core-main"
-    (core / "docs" / "adr").mkdir(parents=True)
-    for doc in fr.DOCUMENTS:
-        (core / doc).write_text(f"# {doc}\n")
-    (core / "docs" / "adr" / "0001-layering.md").write_text("# ADR 1\n")
+    listed = []
+    for label, source, name in DOCUMENTS:
+        (review / "documents" / name).write_text(f"# {label}\n")
+        listed.append({"label": label, "source": source, "file": f"documents/{name}"})
+    (review / "documents.json").write_text(json.dumps(listed))
     source = ws / "src" / "pkg"
     source.mkdir(parents=True)
     (source / "mod.py").write_text("import os\nVALUE = 1\n")
@@ -162,8 +193,6 @@ def run_review(workspace: Path, tmp_path: Path, *extra: str) -> tuple[int, dict]
             str(workspace),
             "--review",
             str(workspace / ".review"),
-            "--docs",
-            str(workspace / ".sdk-core-main"),
             "--out",
             str(out),
             *extra,
@@ -215,6 +244,8 @@ def test_two_tool_calls_then_the_verdict(
     assert result["effort"] == "high"
     assert result["cost_estimate_usd"] == pytest.approx(0.0074, abs=1e-4)
     assert result["summary"] == line
+    assert result["range"] == {"release": False, "since": BASE, "tag": None}
+    assert result["documents"] == [label for label, _, _ in DOCUMENTS]
     captured = capsys.readouterr()
     assert captured.out == line + "\n"
     assert summary.read_text() == line + "\n"
@@ -251,7 +282,10 @@ def test_the_request_caches_the_prefix_and_forces_nothing(
     assert "the action" not in system[0]["text"]
     assert "at most 120 turns" in system[0]["text"]
     labels = [block["text"].split("\n", 1)[0] for block in system[1:]]
-    assert labels == [f"The file `.sdk-core-main/{doc}`:" for doc in fr.DOCUMENTS]
+    assert labels == [
+        f"The document `{label}`, read from {source}:" for label, source, _ in DOCUMENTS
+    ]
+    assert system[1]["text"].endswith("# sdk-usda-psd: docs/conventions.md\n")
     assert request["model"] == "claude-opus-5-5"
     assert request["max_tokens"] == 64000
     assert request["output_config"] == {"effort": "high"}
@@ -265,11 +299,12 @@ def test_the_request_caches_the_prefix_and_forces_nothing(
     first = request["messages"][0]
     assert first["role"] == "user"
     assert "`.review/`" in first["content"]
-    assert "`.sdk-core-main/`" in first["content"]
+    assert "the 3 documents under `.review/documents/`" in first["content"]
+    assert "the pull request's own" in first["content"]
 
 
 def test_the_system_prompt_names_no_pull_request(workspace: Path, tmp_path: Path, api) -> None:
-    """The coordinates are in the first message: every pull request shares the prefix."""
+    """The coordinates are in the first message: one repository's pull requests share the prefix."""
     client = api(message([verdict()]))
     run_review(workspace, tmp_path)
     request = client.messages.requests[0]
@@ -279,10 +314,31 @@ def test_the_system_prompt_names_no_pull_request(workspace: Path, tmp_path: Path
     first = request["messages"][0]["content"]
     assert first.startswith(f"Review pull request {REPO}#11: base {BASE}, head {HEAD}.")
 
-    other = fr.load_material(workspace, workspace / ".review", workspace / ".sdk-core-main")
+    other = fr.load_material(workspace, workspace / ".review")
     other.repo, other.pr, other.base, other.head = "xippios/sdk-other", 3, HEAD, BASE
     assert fr.system_prompt(other, fr.MAX_TURNS) == request["system"]
     assert fr.first_message(other)["content"] != first
+
+
+def test_a_release_pr_is_named_with_its_range(workspace: Path) -> None:
+    """The system prompt stays the same; the first message says what range is judged."""
+    meta_file = workspace / ".review" / "meta.json"
+    meta = json.loads(meta_file.read_text())
+    plain = fr.system_prompt(fr.load_material(workspace, workspace / ".review"), fr.MAX_TURNS)
+
+    meta.update(release=True, since="a" * 40, tag="v0.6.3")
+    meta_file.write_text(json.dumps(meta))
+    material = fr.load_material(workspace, workspace / ".review")
+    text = fr.first_message(material)["content"]
+    assert text.startswith(f"Review the release pull request {REPO}#11: base {BASE}, head {HEAD}.")
+    assert f"the release's, from v0.6.3 ({'a' * 40}) to the head" in text
+    assert fr.system_prompt(material, fr.MAX_TURNS) == plain
+
+    meta.update(since=BASE, tag=None)
+    meta_file.write_text(json.dumps(meta))
+    text = fr.first_message(fr.load_material(workspace, workspace / ".review"))["content"]
+    assert text.startswith(f"Review the release pull request {REPO}#11:")
+    assert "no release tag is reachable from the base" in text
 
 
 def test_options_reach_the_request(workspace: Path, tmp_path: Path, api) -> None:
@@ -419,6 +475,26 @@ def test_an_invalid_verdict_is_answered_as_an_error(workspace: Path, tmp_path: P
     assert result["tool_calls"] == {"submit_verdict": 2}
 
 
+def test_a_finding_without_its_document_is_answered_as_an_error(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    old = {key: value for key, value in finding().items() if key != "document"}
+    bad = call("toolu_bad", "submit_verdict", {"verdict": "ready", "findings": [old]})
+    client = api(message([bad]), message([verdict()]))
+    code, _ = run_review(workspace, tmp_path)
+    assert code == 0
+    answer = client.messages.requests[1]["messages"][-1]["content"][0]
+    assert answer["is_error"] is True
+    assert (
+        "each finding must have exactly document, file, line, blocking and text"
+        in (answer["content"])
+    )
+    schema = next(tool for tool in fr.TOOLS if tool["name"] == "submit_verdict")["input_schema"]
+    item = schema["properties"]["findings"]["items"]
+    assert list(item["properties"]) == ["document", "file", "line", "blocking", "text"]
+    assert item["required"] == ["document", "file", "line", "blocking", "text"]
+
+
 def test_a_blocking_finding_makes_it_not_ready(workspace: Path, tmp_path: Path, api) -> None:
     api(message([verdict("ready", [finding(blocking=True)])]))
     code, result = run_review(workspace, tmp_path)
@@ -441,12 +517,17 @@ def test_no_key_is_no_verdict_and_no_client(
 
 def test_missing_material_is_no_verdict(workspace: Path, tmp_path: Path, api) -> None:
     api()
-    (workspace / ".sdk-core-main" / "docs" / "conventions.md").unlink()
+    (workspace / ".review" / "documents" / "2-conventions.md").unlink()
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert (
-        result["reason"] == ".sdk-core-main/docs/conventions.md is missing; the review cannot run"
+    assert result["reason"] == (
+        ".review/documents/2-conventions.md (sdk-core: docs/conventions.md) is missing; "
+        "the review cannot run"
     )
+    (workspace / ".review" / "documents.json").unlink()
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert result["reason"] == ".review/documents.json is missing or unreadable"
 
 
 CREDIT = (
@@ -556,7 +637,11 @@ def test_a_key_in_a_finding_is_redacted(
 ) -> None:
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    leaky = finding(file=f"conf/{FAKE_TOKEN}.txt", text=f"The key {FAKE_KEY} is committed.")
+    leaky = finding(
+        file=f"conf/{FAKE_TOKEN}.txt",
+        text=f"The key {FAKE_KEY} is committed.",
+        document=f"docs/{FAKE_TOKEN}.md#keys",
+    )
     api(message([verdict("not ready", [leaky])]))
     code, result = run_review(workspace, tmp_path)
     assert code == 1
@@ -565,6 +650,7 @@ def test_a_key_in_a_finding_is_redacted(
     assert FAKE_TOKEN not in written
     assert result["findings"][0]["text"] == "The key [redacted] is committed."
     assert result["findings"][0]["file"] == "conf/[redacted].txt"
+    assert result["findings"][0]["document"] == "docs/[redacted].md#keys"
     out = capsys.readouterr().out
     assert FAKE_KEY not in out + summary.read_text()
 
@@ -875,43 +961,91 @@ def commit(repo: Path, files: dict[str, str | None], message: str) -> str:
     return git(repo, "rev-parse", "HEAD")
 
 
+OTHER_URL = "https://github.com/xippios/sdk-core/blob/main/docs/conventions.md"
+# The README on main: its `## Documents` names one document of the repository, one of another
+# repository and a section of itself (docs/style/repository.md, C80).
+README = (
+    "# sdk-usda-psd\n\nA source.\n\n## Documents\n\n"
+    "- sdk-usda-psd: [docs/conventions.md](docs/conventions.md) — the conventions.\n"
+    f"- sdk-core: [docs/conventions.md]({OTHER_URL}) — the family's.\n"
+    "- sdk-usda-psd: [Checks](#checks) — this README's section.\n"
+    "\n## Checks\n\nci.\n"
+)
+PLANTED = "- sdk-usda-psd: [docs/new.md](docs/new.md) — planted by the pull request.\n\n## Checks"
 BASE_FILES = {
+    "README.md": README,
     "src/pkg/mod.py": "VALUE = 1\n",
-    "docs/conventions.md": "# conventions, base\n",
-    "docs/adr/0001-layering.md": "# ADR 1, base\n",
+    "docs/conventions.md": "# conventions, main\n",
 }
+# The pull request rewrites the README's list and a document: neither is read.
 HEAD_CHANGES = {
+    "README.md": README.replace("## Checks", PLANTED),
     "src/pkg/mod.py": "VALUE = 2\n",
     "docs/conventions.md": "# conventions, the branch\n",
-    "docs/adr/0002-new.md": "# ADR 2, the branch\n",
+    "docs/new.md": "# planted by the pull request\n",
 }
+DOCUMENT = "# conventions of sdk-core, main\n"
+LABELS = [
+    "sdk-usda-psd: docs/conventions.md",
+    "sdk-core: docs/conventions.md",
+    "sdk-usda-psd: README.md",
+]
 
 
-def make_checkout(root: Path, head_changes: dict[str, str | None]) -> tuple[Path, str, str]:
-    """A repository at its head, with sdk-core's main beside it in .sdk-core-main."""
+def make_checkout(
+    root: Path,
+    head_changes: dict[str, str | None],
+    *,
+    base_files: dict[str, str] = BASE_FILES,
+    tag: str | None = None,
+) -> tuple[Path, str, str]:
+    """A repository checked out at a pull request's head, its main at the base, ``tag`` on it."""
     ws = root / "ws"
     ws.mkdir()
     git(ws, "init", "-q", "-b", "main")
-    base = commit(ws, BASE_FILES, "base")
+    base = commit(ws, base_files, "base")
+    if tag:
+        git(ws, "tag", tag)
+    git(ws, "checkout", "-q", "-b", "pr")
     head = commit(ws, head_changes, "feat: the change\n\nWith a body.")
-    core = ws / ".sdk-core-main"
-    (core / "docs" / "adr").mkdir(parents=True)
-    for doc in fr.DOCUMENTS:
-        (core / doc).write_text(f"# {doc}, main\n")
+    git(ws, "checkout", "-q", "--detach", head)
     return ws, base, head
+
+
+def make_release_checkout(root: Path, *, tag: str | None) -> tuple[Path, str, str, str]:
+    """A release pull request: ``tag`` on the first commit, a change shipped since it on main,
+    and the head with the CHANGELOG on a branch. Returns the checkout, the first commit, the base
+    and the head."""
+    ws = root / "ws"
+    ws.mkdir()
+    git(ws, "init", "-q", "-b", "main")
+    first = commit(ws, BASE_FILES, "base")
+    if tag:
+        git(ws, "tag", tag)
+    base = commit(ws, {"src/pkg/mod.py": "VALUE = 2\n"}, "feat: shipped since the tag")
+    git(ws, "checkout", "-q", "-b", "release")
+    head = commit(ws, {"CHANGELOG.md": "## [0.2.0]\n\n- The change.\n"}, "release: 0.2.0")
+    git(ws, "checkout", "-q", "--detach", head)
+    return ws, first, base, head
 
 
 PR_JSON = '{"title": "feat: the change", "body": "Body.", "author": {"login": "johan"}}\n'
 CHECKS_JSON = '[{"name": "ci", "state": "SUCCESS"}]\n'
+API_CALL = (
+    "api repos/xippios/sdk-core/contents/docs/conventions.md?ref=main "
+    "-H Accept: application/vnd.github.raw+json"
+)
 
 
 @pytest.fixture
 def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A gh on PATH: `pr view` prints PR_JSON (or the SHAs), `pr checks` CHECKS_JSON or 8."""
+    """A gh on PATH: `pr view` prints PR_JSON (or the SHAs and the title), `pr checks`
+    CHECKS_JSON or 8, `api repos/…/contents/…` DOCUMENT or a 404."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "pr.json").write_text(PR_JSON)
     (bin_dir / "checks.json").write_text(CHECKS_JSON)
+    (bin_dir / "document.md").write_text(DOCUMENT)
     gh = bin_dir / "gh"
     gh.write_text(
         "#!/bin/sh\n"
@@ -921,6 +1055,8 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         '  "pr view "*baseRefOid*) cat "$here/shas.json" ;;\n'
         '  "pr view "*) cat "$here/pr.json" ;;\n'
         '  "pr checks "*) [ -f "$here/checks-fail" ] && exit 8; cat "$here/checks.json" ;;\n'
+        '  "api repos/"*) [ -f "$here/api-fail" ] && { echo "gh: Not Found (HTTP 404)" >&2; '
+        'exit 1; }; cat "$here/document.md" ;;\n'
         "  *) exit 1 ;;\n"
         "esac\n"
     )
@@ -929,7 +1065,16 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return bin_dir
 
 
-def prepare(repo: str, ws: Path, base: str, head: str) -> int:
+@pytest.fixture
+def actions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
+    """The step summary and the step outputs, as Actions sets them."""
+    files = {"summary": tmp_path / "summary.md", "output": tmp_path / "output.txt"}
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(files["summary"]))
+    monkeypatch.setenv("GITHUB_OUTPUT", str(files["output"]))
+    return files
+
+
+def prepare(repo: str, ws: Path, base: str, head: str, *extra: str) -> int:
     return fr.main(
         [
             "prepare",
@@ -943,16 +1088,17 @@ def prepare(repo: str, ws: Path, base: str, head: str) -> int:
             head,
             "--workspace",
             str(ws),
+            "--main",
+            "main",
+            *extra,
         ]
     )
 
 
 def test_prepare_writes_the_review_material(
-    tmp_path: Path, fake_gh: Path, monkeypatch: pytest.MonkeyPatch, capsys
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys
 ) -> None:
-    summary = tmp_path / "summary.md"
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES, tag="v0.0.1")
     (ws / ".review").mkdir()
     (ws / ".review" / "planted.txt").write_text("from the pull request\n")
 
@@ -961,20 +1107,32 @@ def test_prepare_writes_the_review_material(
     assert sorted(p.name for p in review.iterdir()) == [
         "checks.json",
         "diff.patch",
+        "documents",
+        "documents.json",
         "log.txt",
         "meta.json",
         "pr.json",
     ]
     diff = (review / "diff.patch").read_text()
     assert "-VALUE = 1\n+VALUE = 2" in diff
-    assert "docs/adr/0002-new.md" in diff
+    assert "docs/new.md" in diff
     log = (review / "log.txt").read_text()
     assert log.startswith(f"commit {head}\nAuthor: test <test@example.invalid>\nDate:   ")
     assert "\n\nfeat: the change\n\nWith a body.\n" in log
     assert (review / "pr.json").read_text() == PR_JSON
     assert (review / "checks.json").read_text() == CHECKS_JSON
+    # Not a release PR: the tag on the base plays no part.
     meta = json.loads((review / "meta.json").read_text())
-    assert meta == {"repo": REPO, "pr": 7, "base": base, "head": head}
+    assert meta == {
+        "repo": REPO,
+        "pr": 7,
+        "base": base,
+        "head": head,
+        "main": "main",
+        "release": False,
+        "since": base,
+        "tag": None,
+    }
     calls = (fake_gh / "calls").read_text().splitlines()
     assert calls == [
         f"pr view 7 --repo {REPO} --json title,body,author,comments,files",
@@ -982,15 +1140,30 @@ def test_prepare_writes_the_review_material(
             f"pr checks 7 --repo {REPO} --json "
             "name,state,bucket,workflow,description,startedAt,completedAt,link"
         ),
+        API_CALL,
     ]
-    # Not sdk-core: the family documents stay main's, whatever the pull request changes.
-    core = ws / ".sdk-core-main" / "docs"
-    assert (core / "conventions.md").read_text() == "# docs/conventions.md, main\n"
-    assert not (core / "adr" / "0002-new.md").exists()
+    # The documents the README on main links, in its order: the repository's own from main, the
+    # other repository's by its URL, an anchor as the README itself.
+    documents = json.loads((review / "documents.json").read_text())
+    assert documents == [
+        {"label": LABELS[0], "source": "main", "file": "documents/1-conventions.md"},
+        {"label": LABELS[1], "source": OTHER_URL, "file": "documents/2-conventions.md"},
+        {"label": LABELS[2], "source": "main", "file": "documents/3-README.md"},
+    ]
+    assert (review / "documents" / "1-conventions.md").read_text() == "# conventions, main\n"
+    assert (review / "documents" / "2-conventions.md").read_text() == DOCUMENT
+    assert (review / "documents" / "3-README.md").read_text() == README
+    assert sorted(p.name for p in (review / "documents").iterdir()) == [
+        "1-conventions.md",
+        "2-conventions.md",
+        "3-README.md",
+    ]
     out = capsys.readouterr().out
     assert "conventions: .review/diff.patch " in out
-    assert "the pull request's branch" not in out
-    assert not summary.exists()
+    assert f"conventions: document {LABELS[0]}, read from main" in out
+    assert f"conventions: document {LABELS[1]}, read from {OTHER_URL}" in out
+    assert actions["summary"].read_text() == "conventions: 3 documents of README.md on main\n"
+    assert actions["output"].read_text() == "review=true\n"
 
 
 def test_prepare_falls_back_when_the_checks_fail(tmp_path: Path, fake_gh: Path) -> None:
@@ -1000,50 +1173,152 @@ def test_prepare_falls_back_when_the_checks_fail(tmp_path: Path, fake_gh: Path) 
     assert (ws / ".review" / "checks.json").read_text() == fr.CHECKS_FALLBACK
 
 
-def test_an_sdk_core_pull_request_reads_its_changed_documents(
-    tmp_path: Path, fake_gh: Path, monkeypatch: pytest.MonkeyPatch, capsys
+def test_a_readme_without_documents_passes_with_a_notice(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys
 ) -> None:
-    summary = tmp_path / "summary.md"
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    """The head's README links documents; main's has no section, and main's decides."""
+    files = {**BASE_FILES, "README.md": "# sdk-usda-psd\n\nNo documents.\n"}
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES, base_files=files)
+    assert prepare(REPO, ws, base, head) == 0
+    notice = (
+        "conventions: README.md on main links no documents under ## Documents; nothing to judge"
+    )
+    assert actions["summary"].read_text() == notice + "\n"
+    assert actions["output"].read_text() == "review=false\n"
+    assert notice in capsys.readouterr().out
+    assert json.loads((ws / ".review" / "documents.json").read_text()) == []
+    assert not (ws / ".review" / "documents").exists()
+    assert API_CALL not in (fake_gh / "calls").read_text().splitlines()
+
+
+def test_a_repository_without_a_readme_passes_with_a_notice(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path]
+) -> None:
+    files = {key: value for key, value in BASE_FILES.items() if key != "README.md"}
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES, base_files=files)
+    assert prepare(REPO, ws, base, head) == 0
+    assert actions["summary"].read_text() == (
+        "conventions: no README.md on main; it links no documents, nothing to judge\n"
+    )
+    assert actions["output"].read_text() == "review=false\n"
+
+
+def test_a_document_of_a_private_repository_fails_naming_it(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys
+) -> None:
+    (fake_gh / "api-fail").write_text("")
     ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
-    assert prepare("xippios/sdk-core", ws, base, head) == 0
-    core = ws / ".sdk-core-main" / "docs"
-    assert (core / "conventions.md").read_text() == "# conventions, the branch\n"
-    assert (core / "adr" / "0002-new.md").read_text() == "# ADR 2, the branch\n"
-    # Unchanged by the pull request: main's version stays.
-    assert (core / "review-checklist.md").read_text() == "# docs/review-checklist.md, main\n"
-    notices = [
-        "conventions: docs/adr/0002-new.md read from the pull request's branch",
-        "conventions: docs/conventions.md read from the pull request's branch",
-    ]
-    out = capsys.readouterr().out
-    assert [line for line in out.splitlines() if "branch" in line] == notices
-    assert summary.read_text() == "".join(f"{line}\n" for line in notices)
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with the workflow's token: "
+        "a private repository or a missing file; the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert not actions["output"].exists()
 
 
-def test_an_sdk_core_pull_request_that_deletes_a_document_cannot_run(
-    tmp_path: Path, fake_gh: Path, capsys
-) -> None:
-    ws, base, head = make_checkout(tmp_path, {"docs/conventions.md": None})
-    assert prepare("xippios/sdk-core", ws, base, head) == 2
-    assert not (ws / ".sdk-core-main" / "docs" / "conventions.md").exists()
-    out = capsys.readouterr().out
-    assert "conventions: docs/conventions.md deleted on the pull request's branch" in out
+def test_a_document_missing_on_main_fails_naming_it(tmp_path: Path, fake_gh: Path, capsys) -> None:
+    gone = "- sdk-usda-psd: [docs/missing.md](docs/missing.md) — gone.\n\n## Checks"
+    files = {**BASE_FILES, "README.md": README.replace("## Checks", gone)}
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES, base_files=files)
+    assert prepare(REPO, ws, base, head) == 2
     assert (
-        "conventions: .sdk-core-main/docs/conventions.md is missing; the review cannot run" in out
+        "conventions: sdk-usda-psd: docs/missing.md is not on main; the review cannot run"
+        in capsys.readouterr().out
     )
 
 
-@pytest.mark.parametrize("kind", ["missing", "link"])
-def test_prepare_needs_sdk_core_main(tmp_path: Path, fake_gh: Path, capsys, kind: str) -> None:
-    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
-    core = ws / ".sdk-core-main"
-    moved = core.rename(tmp_path / "elsewhere")
-    if kind == "link":
-        core.symlink_to(moved)
+@pytest.mark.parametrize(
+    ("target", "line"),
+    [
+        (
+            "https://laravel.com/docs/13.x",
+            "https://laravel.com/docs/13.x is no file of a GitHub repository",
+        ),
+        (
+            "https://github.com/xippios/sdk-core/tree/main/docs/adr",
+            (
+                "sdk-core: docs/adr (https://github.com/xippios/sdk-core/tree/main/docs/adr) is a "
+                "directory, not a file"
+            ),
+        ),
+        ("docs", "sdk-usda-psd: docs is a directory, not a file"),
+    ],
+)
+def test_a_link_the_review_cannot_read_fails_naming_it(
+    tmp_path: Path, fake_gh: Path, capsys, target: str, line: str
+) -> None:
+    readme = f"# sdk-usda-psd\n\n## Documents\n\n- x: [a]({target}) — a.\n"
+    files = {**BASE_FILES, "README.md": readme}
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES, base_files=files)
     assert prepare(REPO, ws, base, head) == 2
-    out = capsys.readouterr().out
-    assert "conventions: .sdk-core-main is missing or a link; the review cannot run" in out
+    assert f"conventions: {line}; the review cannot run" in capsys.readouterr().out
+
+
+def test_a_document_of_the_repository_by_its_url_comes_from_main(
+    tmp_path: Path, fake_gh: Path
+) -> None:
+    """A URL of the repository itself, as the README's items spell it, is read like a path."""
+    own = "https://github.com/xippios/sdk-usda-psd/blob/main/docs/conventions.md#tests"
+    readme = (
+        f"# sdk-usda-psd\n\n## Documents\n\n- sdk-usda-psd: [docs/conventions.md]({own}) — ours.\n"
+    )
+    files = {**BASE_FILES, "README.md": readme}
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES, base_files=files)
+    assert prepare(REPO, ws, base, head) == 0
+    documents = json.loads((ws / ".review" / "documents.json").read_text())
+    assert documents == [
+        {"label": LABELS[0], "source": "main", "file": "documents/1-conventions.md"}
+    ]
+    assert (
+        ws / ".review" / "documents" / "1-conventions.md"
+    ).read_text() == "# conventions, main\n"
+    assert "api " not in (fake_gh / "calls").read_text()
+
+
+def test_a_release_pr_judges_the_range_from_the_last_tag(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path]
+) -> None:
+    ws, first, base, head = make_release_checkout(tmp_path, tag="v0.1.0")
+    assert prepare(REPO, ws, base, head, "--release") == 0
+    review = ws / ".review"
+    diff = (review / "diff.patch").read_text()
+    # What shipped since the tag is in the range, though not in the pull request's own diff.
+    assert "-VALUE = 1\n+VALUE = 2" in diff
+    assert "CHANGELOG.md" in diff
+    log = (review / "log.txt").read_text()
+    assert "feat: shipped since the tag" in log
+    assert "release: 0.2.0" in log
+    meta = json.loads((review / "meta.json").read_text())
+    assert meta["release"] is True
+    assert meta["tag"] == "v0.1.0"
+    assert meta["since"] == first
+    assert meta["base"] == base
+    assert actions["summary"].read_text().splitlines()[0] == (
+        "conventions: a release PR: the review judges the range from v0.1.0 to the head"
+    )
+    assert actions["output"].read_text() == "review=true\n"
+
+
+def test_a_release_pr_without_a_tag_judges_its_own_diff(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path]
+) -> None:
+    ws, _first, base, head = make_release_checkout(tmp_path, tag=None)
+    assert prepare(REPO, ws, base, head, "--release") == 0
+    review = ws / ".review"
+    diff = (review / "diff.patch").read_text()
+    assert "VALUE = 2" not in diff
+    assert "CHANGELOG.md" in diff
+    assert "feat: shipped since the tag" not in (review / "log.txt").read_text()
+    meta = json.loads((review / "meta.json").read_text())
+    assert meta["release"] is True
+    assert meta["tag"] is None
+    assert meta["since"] == base
+    assert actions["summary"].read_text().splitlines()[0] == (
+        "conventions: a release PR without a release tag reachable from the base; the review "
+        "judges the PR's own diff"
+    )
 
 
 def test_prepare_needs_full_shas_without_workdir(tmp_path: Path, fake_gh: Path, capsys) -> None:
@@ -1052,33 +1327,83 @@ def test_prepare_needs_full_shas_without_workdir(tmp_path: Path, fake_gh: Path, 
     assert "base and head must be full commit SHAs" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("title", "release"),
+    [
+        ("release: 0.6.4", True),
+        ("release: 0.6.4-rc.1", True),
+        ("release: v0.6.4", True),
+        ("Release: 0.6.4", False),
+        ("release 0.6.4", False),
+        ("release: 0.6.4 and more", False),
+        ("chore: release 0.6.4", False),
+        ("feat: the change", False),
+    ],
+)
+def test_a_release_pr_is_known_by_its_title(title: str, release: bool) -> None:
+    assert fr.is_release_title(title) is release
+
+
 def test_dry_run_prepares_and_reviews(
     tmp_path: Path, fake_gh: Path, api, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     source, base, head = make_checkout(tmp_path, HEAD_CHANGES)
-    (fake_gh / "shas.json").write_text(json.dumps({"baseRefOid": base, "headRefOid": head}))
+    facts = {"baseRefOid": base, "headRefOid": head, "title": "feat: the change"}
+    (fake_gh / "shas.json").write_text(json.dumps(facts))
 
     def clone(repo: str, pr: int, sha: str, workdir: Path) -> None:
         git(tmp_path, "clone", "-q", str(source), str(workdir))
         git(workdir, "checkout", "-q", "--detach", sha)
-        shutil.copytree(source / ".sdk-core-main", workdir / ".sdk-core-main")
 
     monkeypatch.setattr(fr, "clone_pull_request", clone)
     leaky = finding(text=f"Key {FAKE_KEY} here.", blocking=True)
     client = api(
         message([call("toolu_1", "read_file", {"path": ".review/diff.patch"})]),
-        message([verdict("not ready", [leaky, finding(file="", line=None)])]),
+        message([verdict("not ready", [leaky, finding(file="", line=None, document="")])]),
     )
     out_file = tmp_path / "dry.json"
     code = fr.main(["dry-run", "--repo", REPO, "--pr", "7", "--out", str(out_file)])
     assert code == 1
     out = capsys.readouterr().out.splitlines()
     assert out[-3].startswith("conventions: verdict=not ready findings=2 blocking=1 turns=2 ")
-    assert out[-2] == "src/pkg/mod.py:2 [blocking] Key [redacted] here."
+    assert (
+        out[-2]
+        == "src/pkg/mod.py:2 [blocking] sdk-core: docs/conventions.md#tests: Key [redacted] here."
+    )
     assert out[-1] == "the pull request [non-blocking] A finding."
     answer = client.messages.requests[1]["messages"][-1]["content"][0]["content"]
     assert "+VALUE = 2" in answer
-    assert json.loads(out_file.read_text())["verdict"] == "not ready"
+    result = json.loads(out_file.read_text())
+    assert result["verdict"] == "not ready"
+    assert result["documents"] == LABELS
+    assert result["range"] == {"release": False, "since": base, "tag": None}
+    # The documents came from the clone's origin/main, not from the head.
+    labels = [
+        block["text"].split("\n", 1)[0] for block in client.messages.requests[0]["system"][1:]
+    ]
+    assert labels[0] == f"The document `{LABELS[0]}`, read from origin/main:"
+    assert client.messages.requests[0]["system"][1]["text"].endswith("# conventions, main\n")
+
+
+def test_dry_run_judges_a_release_pr_by_its_title(
+    tmp_path: Path, fake_gh: Path, api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, _first, base, head = make_release_checkout(tmp_path, tag="v0.1.0")
+    facts = {"baseRefOid": base, "headRefOid": head, "title": "release: 0.2.0"}
+    (fake_gh / "shas.json").write_text(json.dumps(facts))
+
+    def clone(repo: str, pr: int, sha: str, workdir: Path) -> None:
+        git(tmp_path, "clone", "-q", str(source), str(workdir))
+        git(workdir, "checkout", "-q", "--detach", sha)
+
+    monkeypatch.setattr(fr, "clone_pull_request", clone)
+    client = api(message([verdict()]))
+    out_file = tmp_path / "dry.json"
+    assert fr.main(["dry-run", "--repo", REPO, "--pr", "7", "--out", str(out_file)]) == 0
+    first = client.messages.requests[0]["messages"][0]["content"]
+    assert first.startswith(f"Review the release pull request {REPO}#7:")
+    assert "from v0.1.0 (" in first
+    assert json.loads(out_file.read_text())["range"]["tag"] == "v0.1.0"
 
 
 def test_dry_run_without_a_key_clones_nothing(
