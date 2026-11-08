@@ -12,7 +12,9 @@ xippios SDK family call `merge-class` and `conventions`, the merge gate with the
 behind it and the same review, until the sdk migration moves the family to the coordinate
 gates (coordinate-core plan §11.7). The conventions review keeps its place beside the reviewer
 for good (C57). GitHub decides what merges: the required checks pass, the required approvals
-are there, and auto-merge merges.
+are there, and auto-merge merges. The sites of the web workspace call `site-tests.yml`, which
+runs a site's suite through the host xippios-web, from web-template 0.1.0
+(https://github.com/xippios/.github/issues/30).
 
 Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
 `.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
@@ -154,16 +156,56 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     paths, counts, the verdict and redacted error text, never a file's content, a tool
     result or the prompt, and the verdict step redacts anything that looks like a key or a
     GitHub token from the summary and the comment.
+- **`.github/workflows/site-tests.yml`** (https://github.com/xippios/.github/issues/30 as
+  amended by https://github.com/xippios/.github/issues/37) runs a site's suite through the host
+  xippios-web, the only test harness of the web platform
+  (https://github.com/xippios/coordinate-web/issues/21). The `ci.yml` that web-template renders
+  into a site calls it as the job `tests`, check `tests / tests`, with the site's key and the
+  organization secret `WEB_READ_TOKEN`, which reads xippios-web and the sites it requires:
+
+  ```yaml
+  tests:
+    uses: xippios/.github/.github/workflows/site-tests.yml@main
+    with:
+      site: didaskalu
+    secrets:
+      WEB_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}
+  ```
+
+  - **The site at its commit**: the job checks the site out at the commit of the caller's event
+    and the host at `main`. It names that commit the branch `site-tests` of the site's checkout,
+    since a Composer `vcs` repository reads a local clone's branches, and requires
+    `xippios/web-<site>:dev-site-tests` into the host through such a repository, with
+    `--update-with-dependencies`. The host's other packages stay as its lock has them.
+  - **The suite**: the job copies `.env.example` to `.env` where the host has none, generates a
+    key and runs `php artisan test --testsuite=<site>`. Where the site has `tests/Browser`, it
+    also runs `php artisan dusk --testsuite=<site>` against the host served by
+    `php artisan serve` at `APP_URL` `http://127.0.0.1:8000`, Laravel's recipe for Dusk on
+    GitHub Actions. The suites are the host's, one per site in its `phpunit.xml` and
+    `phpunit.dusk.xml`, from xippios-web 0.1.0.
+  - **The checks before**: an empty secret fails the check and names it. A pull request from a
+    fork never gets the secret, so it fails there. A key that web-template's `copier.yml` would
+    refuse fails, and so does a site whose `composer.json` names another package than
+    `xippios/web-<site>`.
+  - **The token** reaches two steps only: the host's checkout, which keeps no credential, and
+    Composer's resolution, which runs with `--no-scripts` and `--no-plugins` and gets the token
+    in `COMPOSER_AUTH`, never on disk. The skipped scripts, package discovery among them, the
+    plugins the host allows, the suite and Dusk run after it, without the token.
+
+  PHP 8.4 and Composer 2.11.1 come from setup-php. Permissions: `contents: read`. The job times
+  out after 20 minutes.
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
   family's version, 0.17.1), the scripts' tests on a pinned pytest (with the review's
   `anthropic` 2.3.0 and `spelling.yml`'s codespell; a fake client, no key, no network), and
   actionlint with the runner's shellcheck. It calls `spelling.yml` over `README.md`, `.github`
   and `scripts` as the job `spelling`, and `ci` fails when that job did not pass, so the
-  ruleset's one required check covers both.
+  ruleset's one required check covers both. The one test of `site-tests.yml` that requires a
+  site with the real Composer uses the runner's PHP and Composer, and is skipped elsewhere
+  without them.
 
-Every action in the gate workflows is pinned to a commit SHA with its version in a
-comment, `setup-uv` installs a pinned uv, the review runs a pinned `anthropic`, and the
-spelling check a pinned codespell.
+Every action in the workflows is pinned to a commit SHA with its version in a comment.
+`setup-uv` installs a pinned uv and `setup-php` a pinned Composer, the review runs a pinned
+`anthropic`, and the spelling check a pinned codespell.
 
 ## Merge classes
 
