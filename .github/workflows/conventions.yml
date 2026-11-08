@@ -368,8 +368,14 @@ jobs:
                           "--body-file", "-", body=body)
           else:
               posted = gh("pr", "comment", PR, "--body-file", "-", body=body)
+          # A failed post leaves the pull request without the verdict while the check still
+          # follows it, so the run says why: a line in the summary and a warning annotation,
+          # redacted as the comment is (.github#40).
           if posted.returncode != 0:
-              print(f"conventions: posting the PR comment failed: {posted.stderr.strip()}",
-                    file=sys.stderr)
+              reason = KEY.sub("[redacted]", one_line(posted.stderr))
+              reason = reason or f"gh exited {posted.returncode}"
+              line = f"conventions: posting the PR comment failed: {reason}"
+              summary(f"\n{line}\n")
+              print("::warning::" + line.replace("%", "%25"))
           sys.exit(0 if verdict == "ready" else 1)
           PY
