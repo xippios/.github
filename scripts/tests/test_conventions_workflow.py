@@ -230,11 +230,17 @@ def test_the_readme_describes_the_review_by_mode() -> None:
 
 
 def verdict_step(
-    tmp_path: Path, result: dict | None, *, last_comment: str = "", view_fails: bool = False
+    tmp_path: Path,
+    result: dict | None,
+    *,
+    last_comment: str = "",
+    view_fails: bool = False,
+    comment_fails: bool = False,
 ) -> tuple[int, str, list[str], str | None]:
     """Run the Verdict step on ``result``: the exit code, the summary, gh's calls and the
-    comment it posted, if any. ``last_comment`` is the body of the last comment the token
-    wrote on the pull request, empty when it wrote none; ``view_fails`` makes reading it fail."""
+    comment it posted, if any; the step's stdout is left in ``stdout.txt``. ``last_comment``
+    is the body of the last comment the token wrote on the pull request, empty when it wrote
+    none; ``view_fails`` makes reading it fail, ``comment_fails`` posting the comment."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     (bin_dir / "last.txt").write_text(last_comment)
@@ -242,13 +248,16 @@ def verdict_step(
     (bin_dir / "comment.md").unlink(missing_ok=True)
     gh = bin_dir / "gh"
     view = "exit 1" if view_fails else 'cat "$here/last.txt"'
+    post = 'cat > "$here/comment.md"'
+    if comment_fails:
+        post = "echo 'HTTP 403: Resource not accessible by integration (ghs_abc123)' >&2; exit 1"
     gh.write_text(
         "#!/bin/sh\n"
         'here=$(dirname "$0")\n'
         'printf "%s\\n" "$*" >> "$here/calls"\n'
         'case "$1 $2" in\n'
         f'  "pr view") {view} ;;\n'
-        '  "pr comment") cat > "$here/comment.md" ;;\n'
+        f'  "pr comment") {post} ;;\n'
         "  *) exit 1 ;;\n"
         "esac\n"
     )
@@ -275,6 +284,7 @@ def verdict_step(
         text=True,
         check=False,
     )
+    (tmp_path / "stdout.txt").write_text(done.stdout)
     calls = (bin_dir / "calls").read_text().splitlines() if (bin_dir / "calls").exists() else []
     comment = (bin_dir / "comment.md").read_text() if (bin_dir / "comment.md").exists() else None
     return done.returncode, summary.read_text() + done.stderr, calls, comment
@@ -403,6 +413,25 @@ def test_findings_that_do_not_block_pass_and_update_an_earlier_comment(tmp_path:
     )
     assert comment is not None
     assert calls == [VIEW, EDIT]
+
+
+@pytest.mark.parametrize("verdict", ["ready", "not ready"])
+def test_a_failed_post_is_in_the_summary_and_a_warning(tmp_path: Path, verdict: str) -> None:
+    # The verdict still decides the check, and the run says why the PR has no comment.
+    findings = [] if verdict == "ready" else [finding("", "A stray print.", blocking=True)]
+    code, summary, calls, comment = verdict_step(
+        tmp_path, result(verdict, findings), comment_fails=True
+    )
+    assert code == (0 if verdict == "ready" else 1)
+    assert comment is None
+    assert calls == [VIEW, EDIT]
+    line = (
+        "conventions: posting the PR comment failed: HTTP 403: Resource not accessible by "
+        "integration ([redacted])"
+    )
+    assert summary.endswith(f"\n{line}\n")
+    assert f"::warning::{line}\n" in (tmp_path / "stdout.txt").read_text()
+    assert "ghs_abc123" not in summary + (tmp_path / "stdout.txt").read_text()
 
 
 def test_no_verdict_fails_with_the_scripts_line(tmp_path: Path) -> None:
