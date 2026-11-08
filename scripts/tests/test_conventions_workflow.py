@@ -2,7 +2,8 @@
 coordinate-core#364, .github#32). The step `Gate` of conventions.yml decides from the caller's
 `CONVENTIONS_REVIEW` variable and the pull request's title whether the review runs, before any
 checkout or API call; the step `Verdict` writes the check's comment in the style of
-docs/style/reviews.md. The tests run the steps' own scripts."""
+docs/style/reviews.md on every run that reviewed the pull request, `ready` included
+(.github#36). The tests run the steps' own scripts."""
 
 import json
 import os
@@ -19,6 +20,12 @@ REPO = "xippios/sdk-usda-psd"
 SHA = "c" * 40
 COMMIT = f"https://github.com/{REPO}/commit/{SHA}"
 MARKER = "<!-- style: reviews/conventions -->"
+VIEW = (
+    "pr view 11 --json comments --jq [.comments[] | select(.viewerDidAuthor)] | last "
+    f'| .body // "" --repo {REPO}'
+)
+EDIT = f"pr comment 11 --edit-last --create-if-none --body-file - --repo {REPO}"
+CREATE = f"pr comment 11 --body-file - --repo {REPO}"
 
 
 def step(name: str) -> str:
@@ -160,6 +167,28 @@ def test_dependabot_passes_and_another_app_fails(tmp_path: Path) -> None:
     assert outputs["run"] == "false"
 
 
+@pytest.mark.parametrize(
+    "case",
+    [
+        {"mode": "off", "title": "release: 0.6.4"},
+        {"mode": "release", "title": "feat: a change"},
+        {"mode": "all", "author": "dependabot[bot]", "actor": "dependabot[bot]"},
+        {"mode": "all", "author": "some-app[bot]"},
+        {"mode": "all", "key": False, "fork": True},
+        {"mode": "all", "key": False},
+    ],
+)
+def test_a_run_that_reviews_nothing_posts_no_comment(tmp_path: Path, case: dict) -> None:
+    _code, _out, outputs = gate(tmp_path, **case)
+    assert outputs.get("run") != "true"
+    # The Verdict step, the only one that posts, runs on a reviewed pull request alone: the
+    # gate's `run` and, for a README that links no documents, the material's `review`.
+    condition = step_block("Verdict").split("\n", 1)[0]
+    assert condition.strip().startswith("if: ")
+    assert "steps.gate.outputs.run == 'true'" in condition
+    assert "steps.prepare.outputs.review == 'true'" in condition
+
+
 def test_the_gate_reads_the_callers_variable_and_the_title() -> None:
     block = step_block("Gate").split("run: |", 1)[0]
     assert "MODE: ${{ vars.CONVENTIONS_REVIEW }}" in block
@@ -201,20 +230,24 @@ def test_the_readme_describes_the_review_by_mode() -> None:
 
 
 def verdict_step(
-    tmp_path: Path, result: dict | None, *, last_comment: str = ""
+    tmp_path: Path, result: dict | None, *, last_comment: str = "", view_fails: bool = False
 ) -> tuple[int, str, list[str], str | None]:
     """Run the Verdict step on ``result``: the exit code, the summary, gh's calls and the
-    comment it posted, if any."""
+    comment it posted, if any. ``last_comment`` is the body of the last comment the token
+    wrote on the pull request, empty when it wrote none; ``view_fails`` makes reading it fail."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     (bin_dir / "last.txt").write_text(last_comment)
+    (bin_dir / "calls").unlink(missing_ok=True)
+    (bin_dir / "comment.md").unlink(missing_ok=True)
     gh = bin_dir / "gh"
+    view = "exit 1" if view_fails else 'cat "$here/last.txt"'
     gh.write_text(
         "#!/bin/sh\n"
         'here=$(dirname "$0")\n'
         'printf "%s\\n" "$*" >> "$here/calls"\n'
         'case "$1 $2" in\n'
-        '  "pr view") cat "$here/last.txt" ;;\n'
+        f'  "pr view") {view} ;;\n'
         '  "pr comment") cat > "$here/comment.md" ;;\n'
         "  *) exit 1 ;;\n"
         "esac\n"
@@ -288,20 +321,67 @@ def test_a_blocked_verdict_fails_and_posts_the_findings_in_the_style(tmp_path: P
     assert calls[-1].startswith("pr comment 11 --edit-last --create-if-none --body-file -")
 
 
-def test_an_approval_without_findings_passes_and_posts_nothing_new(tmp_path: Path) -> None:
+def test_an_approval_without_findings_passes_and_creates_the_comment(tmp_path: Path) -> None:
     code, summary, calls, comment = verdict_step(tmp_path, result("ready", []))
     assert code == 0
     assert summary == (
         f"{MARKER}\n**Approved.** No findings at {COMMIT}.\n\n"
         "Judged: the pull request's own diff, against 2 documents of `README.md` on `main`.\n"
     )
-    assert comment is None
-    assert calls == [
-        (
-            "pr view 11 --json comments --jq [.comments[] | select(.viewerDidAuthor)] | last "
-            f'| .body // "" --repo {REPO}'
-        )
+    assert comment == summary
+    assert calls == [VIEW, EDIT]
+
+
+def test_findings_that_do_not_block_create_the_comment_when_there_is_none(
+    tmp_path: Path,
+) -> None:
+    # The release PR coordinate-core#441: `ready` with six findings, and no comment before.
+    findings = [
+        finding("coordinate-core: docs/style/pulls.md#pr", "A bullet names no file."),
+        finding("", "The body cites a commit by a short hash.", file="", line=None),
     ]
+    code, summary, calls, comment = verdict_step(tmp_path, result("ready", findings, release=True))
+    assert code == 0
+    assert summary.startswith(
+        f"{MARKER}\n**Findings.** 2 findings, none blocking, at {COMMIT}.\n\n"
+        "Judged: the release's range from `v0.6.3` to the head"
+    )
+    assert comment == summary
+    assert calls == [VIEW, EDIT]
+
+
+def test_an_approval_edits_the_earlier_comment_in_place(tmp_path: Path) -> None:
+    earlier = f"{MARKER}\n**Blocked.** 1 finding, 1 blocking, at {COMMIT}.\n"
+    code, summary, calls, comment = verdict_step(
+        tmp_path, result("ready", []), last_comment=earlier
+    )
+    assert code == 0
+    assert summary.startswith(f"{MARKER}\n**Approved.** No findings at {COMMIT}.\n")
+    assert comment == summary
+    assert calls == [VIEW, EDIT]
+
+
+@pytest.mark.parametrize("verdict", ["ready", "not ready"])
+def test_another_workflows_comment_is_never_overwritten(tmp_path: Path, verdict: str) -> None:
+    findings = [] if verdict == "ready" else [finding("", "A stray print.", blocking=True)]
+    code, summary, calls, comment = verdict_step(
+        tmp_path, result(verdict, findings), last_comment="<!-- another workflow -->\nhello\n"
+    )
+    assert code == (0 if verdict == "ready" else 1)
+    assert comment == summary
+    assert calls == [VIEW, CREATE]
+
+
+@pytest.mark.parametrize("verdict", ["ready", "not ready"])
+def test_unread_comments_get_a_new_comment(tmp_path: Path, verdict: str) -> None:
+    # When the token's comments cannot be read, `--edit-last` could edit another workflow's.
+    findings = [] if verdict == "ready" else [finding("", "A stray print.", blocking=True)]
+    code, summary, calls, comment = verdict_step(
+        tmp_path, result(verdict, findings), view_fails=True
+    )
+    assert code == (0 if verdict == "ready" else 1)
+    assert comment == summary
+    assert calls == [VIEW, CREATE]
 
 
 def test_findings_that_do_not_block_pass_and_update_an_earlier_comment(tmp_path: Path) -> None:
@@ -315,14 +395,14 @@ def test_findings_that_do_not_block_pass_and_update_an_earlier_comment(tmp_path:
     assert code == 0
     assert summary.startswith(f"{MARKER}\n**Findings.** 1 finding, none blocking, at {COMMIT}.\n")
     assert comment == summary
-    assert calls[-1].startswith("pr comment 11 --edit-last --create-if-none --body-file -")
+    assert calls == [VIEW, EDIT]
     # The comment of the earlier form is the review's too.
     old = "<!-- conventions -->\n## conventions: `not ready`\n"
     _code, _summary, calls, comment = verdict_step(
         tmp_path, result("ready", findings), last_comment=old
     )
     assert comment is not None
-    assert calls[-1].startswith("pr comment 11 --edit-last --create-if-none --body-file -")
+    assert calls == [VIEW, EDIT]
 
 
 def test_no_verdict_fails_with_the_scripts_line(tmp_path: Path) -> None:
