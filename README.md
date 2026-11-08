@@ -79,15 +79,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   `scripts/conventions.py`, which has `claude-opus-5-5`, at effort `high`, review the pull
   request on the Messages API (the SDK `anthropic`, pinned to 2.3.0), each turn streamed with
   `max_tokens` 64,000, since thinking counts against it. The verdict, `ready` or `not ready`,
-  comes back with its findings through a `submit_verdict` tool. `ready` passes; `not ready`
-  fails the check and puts the findings in one sticky PR comment, in the form of
-  `docs/style/reviews.md#conventions-check` of a coordinate root: the lead with the count and
-  the head's commit, what was judged, then the findings, each with the document and the section
-  it goes against. A later verdict updates the comment. No verdict (an API error, a refusal, a
-  `max_tokens` stop, the turn cap of 120, a missing key) fails the check, and the job summary
-  carries the script's line with the cause (the SDK's error class and its redacted message, a
-  refusal's category), the turns, the tool calls, the token usage and a cost estimate at list
-  prices. Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
+  comes back with its findings through a `submit_verdict` tool. `ready` passes and `not ready`
+  fails the check, and every verdict, `ready` included, goes to one sticky PR comment, created
+  when the workflow token wrote none and edited in place on the next run, never over another
+  workflow's comment, in the form of `docs/style/reviews.md#conventions-check` of a coordinate
+  root: the lead with the count and the head's commit, what was judged, then the findings, each
+  with the document and the section it goes against. A run that reviews nothing posts none, and
+  a post that fails leaves its reason in the job summary and a warning annotation. No verdict (an
+  API error, a refusal, a `max_tokens` stop, the turn cap of 120, a missing key) fails the check,
+  and the job summary carries the script's line with the cause (the SDK's error class and its
+  redacted message, a refusal's category), the turns, the tool calls, the token usage and a cost
+  estimate at list prices. Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
   - **The mode**: the caller's variable `CONVENTIONS_REVIEW`, read from the calling repository,
     where a repository variable overrides the organization's by GitHub's precedence. `release`,
     the default when neither is set, reviews a pull request titled `release: <version>`
