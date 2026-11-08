@@ -33,3 +33,10 @@ def test_ci_describes_this_repository() -> None:
     # the proof job fails on a protected path, not on every pull request (the sdk-gates rule)
     assert "is human (rule 3)" not in CI
     assert "`GitHub Main`" in CI
+
+
+def test_the_readme_says_every_verdict_posts_the_conventions_comment() -> None:
+    """Every verdict, `ready` included, goes to the one sticky comment (#36, #39)."""
+    flat = " ".join(README.split())
+    assert "every verdict, `ready` included, goes to one sticky PR comment" in flat
+    assert "`not ready` fails the check and puts the findings in one sticky PR comment" not in flat
