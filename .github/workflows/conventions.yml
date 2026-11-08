@@ -1,14 +1,15 @@
 # The conventions review (C57 as amended by coordinate-core#364, check `conventions`): this
 # repository's scripts/conventions.py has claude-opus-5-5, at effort high on the Messages API,
 # judge a pull request against its repository's own documents, the ones the README links under
-# `## Documents` on the default branch (C80), and return a verdict. `ready` passes the check;
-# `not ready` fails it, and the findings go to one sticky PR comment in the form of
-# docs/style/reviews.md#conventions-check; no verdict (an API error, a refusal, the turn cap)
-# fails it with the cause, the turns and the token usage in the job summary. The documents are
-# read on the default branch, never from the pull request, so a pull request cannot rewrite the
-# rules it is judged by. A document the review cannot read (a private repository's, a missing
-# file) fails the check naming it; a README that links none passes with a notice, and no API
-# call is made.
+# `## Documents` on the default branch (C80), and return a verdict. `ready` passes the check
+# and `not ready` fails it; either verdict, with its findings, goes to one sticky PR comment in
+# the form of docs/style/reviews.md#conventions-check, created on the first run that reviews
+# the pull request and edited in place after (.github#36); no verdict (an API error, a refusal,
+# the turn cap) fails it with the cause, the turns and the token usage in the job summary and
+# posts no comment. The documents are read on the default branch, never from the pull request,
+# so a pull request cannot rewrite the rules it is judged by. A document the review cannot read
+# (a private repository's, a missing file) fails the check naming it; a README that links none
+# passes with a notice, and no API call is made.
 #
 # The mode is the caller's variable CONVENTIONS_REVIEW, a repository variable over the
 # organization's by GitHub's precedence: `release` (the default when neither is set) reviews a
@@ -235,10 +236,10 @@ jobs:
 
       # The verdict file is the script's; no file, or one without a verdict (the review
       # failed or stopped before its verdict), is no verdict and fails, with the script's
-      # summary line. The comment follows docs/style/reviews.md#conventions-check: the lead
-      # with the count and the head's commit, what was judged, then the findings, each with
-      # the document and section it goes against. Anything that looks like a key is redacted
-      # before the summary and the comment.
+      # summary line. A verdict, `ready` included, is posted as the comment, which follows
+      # docs/style/reviews.md#conventions-check: the lead with the count and the head's commit,
+      # what was judged, then the findings, each with the document and section it goes against.
+      # Anything that looks like a key is redacted before the summary and the comment.
       - name: Verdict
         if: ${{ !cancelled() && steps.gate.outputs.run == 'true' && steps.prepare.outputs.review == 'true' }}
         env:
@@ -351,23 +352,30 @@ jobs:
           summary(body)
           print(body)
 
-          # One sticky comment. The last comment this token wrote is edited when it is the
-          # review's (by its marker, the old form's too), or created when there is none and
-          # the verdict is not ready; another workflow's comment is never overwritten.
-          # `ready` only updates an earlier verdict.
+          # One sticky comment on every run that reviewed the pull request, `ready` included,
+          # since the reviewer cites the verdict there (C57 as amended by coordinate-core#364,
+          # .github#36). The last comment this token wrote is edited when it is the review's (by
+          # its marker, the old form's too), and the comment is created when the token wrote
+          # none. After another workflow's comment, or when the comments could not be read, a
+          # new comment is posted, so another workflow's comment is never overwritten.
           last = gh("pr", "view", PR, "--json", "comments",
                     "--jq", '[.comments[] | select(.viewerDidAuthor)] | last | .body // ""')
           known = last.returncode == 0
           ours = known and (last.stdout.startswith(MARKER) or last.stdout.startswith(OLD_MARKER))
           none = known and not last.stdout.strip()
-          posted = None
-          if ours or (none and verdict != "ready"):
+          if ours or none:
               posted = gh("pr", "comment", PR, "--edit-last", "--create-if-none",
                           "--body-file", "-", body=body)
-          elif verdict != "ready":
+          else:
               posted = gh("pr", "comment", PR, "--body-file", "-", body=body)
-          if posted is not None and posted.returncode != 0:
-              print(f"conventions: posting the PR comment failed: {posted.stderr.strip()}",
-                    file=sys.stderr)
+          # A failed post leaves the pull request without the verdict while the check still
+          # follows it, so the run says why: a line in the summary and a warning annotation,
+          # redacted as the comment is (.github#40).
+          if posted.returncode != 0:
+              reason = KEY.sub("[redacted]", one_line(posted.stderr))
+              reason = reason or f"gh exited {posted.returncode}"
+              line = f"conventions: posting the PR comment failed: {reason}"
+              summary(f"\n{line}\n")
+              print("::warning::" + line.replace("%", "%25"))
           sys.exit(0 if verdict == "ready" else 1)
           PY
