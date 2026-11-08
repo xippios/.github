@@ -180,16 +180,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   - **The suite**: the job copies `.env.example` to `.env` where the host has none, generates a
     key and runs `php artisan test --testsuite=<site>`. Where the site has `tests/Browser`, it
     also runs `php artisan dusk --testsuite=<site>` against the host served by
-    `php artisan serve`, Laravel's recipe for Dusk on GitHub Actions. The suites are the host's,
-    one per site in its `phpunit.xml` and `phpunit.dusk.xml`, from xippios-web 0.1.0.
+    `php artisan serve` at `APP_URL` `http://127.0.0.1:8000`, Laravel's recipe for Dusk on
+    GitHub Actions. The suites are the host's, one per site in its `phpunit.xml` and
+    `phpunit.dusk.xml`, from xippios-web 0.1.0.
   - **The checks before**: an empty secret fails the check and names it. A pull request from a
     fork never gets the secret, so it fails there. A key that web-template's `copier.yml` would
     refuse fails, and so does a site whose `composer.json` names another package than
     `xippios/web-<site>`.
   - **The token** reaches two steps only: the host's checkout, which keeps no credential, and
-    Composer's resolution, which runs with `--no-scripts` and gets the token in `COMPOSER_AUTH`,
-    never on disk. The skipped scripts, package discovery among them, the suite and Dusk run the
-    pull request's code without it.
+    Composer's resolution, which runs with `--no-scripts` and `--no-plugins` and gets the token
+    in `COMPOSER_AUTH`, never on disk. The skipped scripts, package discovery among them, the
+    plugins the host allows, the suite and Dusk run after it, without the token.
 
   PHP 8.4 and Composer 2.11.1 come from setup-php. Permissions: `contents: read`. The job times
   out after 20 minutes.

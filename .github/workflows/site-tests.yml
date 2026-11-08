@@ -15,7 +15,8 @@
 # `tests/Browser`.
 #
 # The token reaches the host's checkout, which keeps no credential, and Composer's resolution, which
-# runs no script. The scripts, the suite and Dusk run the pull request's code, without the token.
+# runs no script and no plugin. The scripts, the plugins, the suite and Dusk run after it, without the
+# token.
 # Actions are pinned to commit SHAs, the version in a comment, and setup-php installs a pinned
 # Composer.
 name: Site tests
@@ -87,16 +88,17 @@ jobs:
           SITE: ${{ inputs.site }}
           WEB_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}
         run: |
-          # The token in Composer's environment alone, never on disk. --no-scripts: the host's scripts
-          # boot the application, which runs the site's code.
+          # The token in Composer's environment alone, never on disk, and no code beside Composer's own:
+          # --no-scripts, since the host's scripts boot the application, which runs the site's code, and
+          # --no-plugins, since a plugin the host allows runs inside Composer.
           export COMPOSER_AUTH="{\"github-oauth\": {\"github.com\": \"$WEB_READ_TOKEN\"}}"
-          composer config repositories.site-tests vcs "$GITHUB_WORKSPACE/site"
-          composer require "xippios/web-$SITE:dev-site-tests" --update-with-dependencies --no-scripts --no-interaction --no-progress
+          composer config --no-plugins repositories.site-tests vcs "$GITHUB_WORKSPACE/site"
+          composer require "xippios/web-$SITE:dev-site-tests" --update-with-dependencies --no-scripts --no-plugins --no-interaction --no-progress
       - name: environment
         working-directory: host
         run: |
-          # What a Laravel host needs to boot: an .env and a key. The scripts the require skipped,
-          # package discovery among them, run here.
+          # What a Laravel host needs to boot: an .env and a key. The scripts and plugins the require
+          # skipped, package discovery among them, run here.
           if [ ! -f .env ]; then
             cp .env.example .env
           fi
@@ -112,6 +114,8 @@ jobs:
         working-directory: host
         env:
           SITE: ${{ inputs.site }}
+          # The address php artisan serve listens on, as Laravel's recipe sets it.
+          APP_URL: http://127.0.0.1:8000
         run: |
           if [ ! -d "$GITHUB_WORKSPACE/site/tests/Browser" ]; then
             echo "::notice::site-tests: the site has no tests/Browser, so Dusk does not run"
