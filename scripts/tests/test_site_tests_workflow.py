@@ -38,6 +38,32 @@ if "{name}" == "composer" and sys.argv[1:2] == ["require"]:
         auth.write(os.environ.get("COMPOSER_AUTH", ""))
 """
 
+PLUGIN = """\
+<?php
+
+namespace Probe;
+
+use Composer\\Composer;
+use Composer\\IO\\IOInterface;
+use Composer\\Plugin\\PluginInterface;
+
+class Plugin implements PluginInterface
+{
+    public function activate(Composer $composer, IOInterface $io)
+    {
+        touch(getcwd() . '/plugin-ran');
+    }
+
+    public function deactivate(Composer $composer, IOInterface $io)
+    {
+    }
+
+    public function uninstall(Composer $composer, IOInterface $io)
+    {
+    }
+}
+"""
+
 
 def step(name: str) -> str:
     """The `run:` script of the step `name` of site-tests.yml."""
@@ -232,13 +258,21 @@ def test_the_site_is_required_through_a_vcs_repository_on_its_checkout(workspace
     code, out = run("require", workspace, workspace / "host", env)
     assert code == 0, out
     assert calls(workspace) == [
-        ["composer", "config", "repositories.site-tests", "vcs", str(workspace / "site")],
+        [
+            "composer",
+            "config",
+            "--no-plugins",
+            "repositories.site-tests",
+            "vcs",
+            str(workspace / "site"),
+        ],
         [
             "composer",
             "require",
             f"xippios/web-{KEY}:dev-site-tests",
             "--update-with-dependencies",
             "--no-scripts",
+            "--no-plugins",
             "--no-interaction",
             "--no-progress",
         ],
@@ -293,6 +327,14 @@ def test_dusk_runs_the_suite_of_the_site_with_the_host_served(workspace: Path) -
     ]
 
 
+def test_dusk_names_the_address_the_host_is_served_at() -> None:
+    # Laravel's recipe: `php artisan serve` listens on 127.0.0.1:8000, and APP_URL names it.
+    dusk = next(text for text in steps() if text.startswith("      - name: dusk\n"))
+    env = dusk.split("        env:\n", 1)[1].split("        run: |\n", 1)[0]
+    assert "          APP_URL: http://127.0.0.1:8000\n" in env
+    assert "php artisan serve --no-reload >" in step("dusk")
+
+
 @pytest.mark.skipif(
     not (shutil.which("composer") and shutil.which("php")) and not os.environ.get("GITHUB_ACTIONS"),
     reason="needs Composer and PHP, which the runner of ci has",
@@ -301,11 +343,37 @@ def test_composer_requires_the_checked_out_commit_over_the_hosts_tag(workspace: 
     origin = workspace.parent / "origin"
     site = workspace / "site"
     host = workspace / "host"
+    # A plugin the host allows: it marks each run of Composer that loads it.
+    plugin = workspace.parent / "plugin"
+    (plugin / "src").mkdir(parents=True)
+    git(plugin, "init", "-q", "-b", "main")
+    (plugin / "composer.json").write_text(
+        json.dumps(
+            {
+                "name": "xippios/probe-plugin",
+                "type": "composer-plugin",
+                "require": {"composer-plugin-api": "^2.0"},
+                "autoload": {"psr-4": {"Probe\\": "src/"}},
+                "extra": {"class": "Probe\\Plugin"},
+            },
+            indent=4,
+        )
+        + "\n"
+    )
+    (plugin / "src" / "Plugin.php").write_text(PLUGIN)
+    git(plugin, "add", ".")
+    git(plugin, "commit", "-q", "-m", "the plugin")
+    git(plugin, "tag", "v1.0.0")
     manifest = {
         "name": "xippios/xippios-web",
         "type": "project",
-        "require": {f"xippios/web-{KEY}": "^1.0"},
-        "repositories": [{"type": "vcs", "url": str(origin)}, {"packagist.org": False}],
+        "require": {f"xippios/web-{KEY}": "^1.0", "xippios/probe-plugin": "^1.0"},
+        "repositories": [
+            {"type": "vcs", "url": str(origin)},
+            {"type": "vcs", "url": str(plugin)},
+            {"packagist.org": False},
+        ],
+        "config": {"allow-plugins": {"xippios/probe-plugin": True}},
         "scripts": {"post-autoload-dump": ["@php -r \"touch('scripts-ran');\""]},
     }
     (host / "composer.json").write_text(json.dumps(manifest, indent=4) + "\n")
@@ -322,13 +390,14 @@ def test_composer_requires_the_checked_out_commit_over_the_hosts_tag(workspace: 
     }
     # The host on main: its lock holds the site's tag.
     subprocess.run(
-        ["composer", "update", "--no-scripts", "--no-progress"],
+        ["composer", "update", "--no-scripts", "--no-plugins", "--no-progress"],
         cwd=host,
         env=env,
         check=True,
         capture_output=True,
     )
     assert (host / "vendor" / "xippios" / f"web-{KEY}" / "VERSION").read_text() == "1.0.0\n"
+    assert (host / "vendor" / "xippios" / "probe-plugin").is_dir()
     for name, cwd in (("site", site), ("require", host)):
         done = subprocess.run(
             ["bash", "-e", "-o", "pipefail", "-c", step(name)],
@@ -346,6 +415,7 @@ def test_composer_requires_the_checked_out_commit_over_the_hosts_tag(workspace: 
     assert package["version"] == "dev-site-tests"
     assert package["source"]["reference"] == git(site, "rev-parse", "HEAD")
     assert not (host / "scripts-ran").exists()
+    assert not (host / "plugin-ran").exists()
 
 
 def test_the_readme_names_the_workflow_its_caller_and_the_secret() -> None:
