@@ -1,0 +1,123 @@
+# The tests of a site of the web platform (https://github.com/xippios/.github/issues/30 as amended by
+# https://github.com/xippios/.github/issues/37). The host xippios-web is the only test harness
+# (https://github.com/xippios/coordinate-web/issues/21), so a site's suite runs inside it. A reusable
+# workflow, called as the job `tests` of the `ci.yml` that web-template renders
+# (`uses: xippios/.github/.github/workflows/site-tests.yml@main`, check `tests / tests`). The input
+# `site` is the site's key: it names the package `xippios/web-<site>` and the host's suite. The
+# secret `WEB_READ_TOKEN` is the organization's token that reads xippios-web and the sites it
+# requires.
+#
+# The job checks the site out at the commit of the caller's event and the host at `main`. It names
+# that commit the branch `site-tests` of the site's checkout, since a Composer `vcs` repository reads
+# a local clone's branches, and requires `xippios/web-<site>:dev-site-tests` into the host through
+# such a repository. The host's other packages stay as its lock has them. Then it runs
+# `php artisan test --testsuite=<site>`, and Dusk with the same suite where the site has
+# `tests/Browser`.
+#
+# The token reaches the host's checkout, which keeps no credential, and Composer's resolution, which
+# runs no script. The scripts, the suite and Dusk run the pull request's code, without the token.
+# Actions are pinned to commit SHAs, the version in a comment, and setup-php installs a pinned
+# Composer.
+name: Site tests
+
+on:
+  workflow_call:
+    inputs:
+      site:
+        description: the site's key, which names its package xippios/web-<site> and its suite in the host
+        required: true
+        type: string
+    secrets:
+      WEB_READ_TOKEN:
+        description: the organization's token that reads xippios-web and the sites it requires
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: token
+        env:
+          WEB_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}
+        run: |
+          if [ -z "$WEB_READ_TOKEN" ]; then
+            echo "::error::site-tests: the secret WEB_READ_TOKEN is empty; a pull request from a fork never gets it"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: site
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: xippios/xippios-web
+          ref: main
+          path: host
+          token: ${{ secrets.WEB_READ_TOKEN }}
+          persist-credentials: false
+      - uses: shivammathur/setup-php@eb7c497e18156a6bbabfef1d3a82760b9eda3962 # 2.40.0
+        with:
+          php-version: "8.4"
+          tools: composer:2.11.1
+          coverage: none
+      - name: site
+        working-directory: site
+        env:
+          SITE: ${{ inputs.site }}
+        run: |
+          # The key as web-template's copier.yml validates it.
+          if ! [[ "$SITE" =~ ^[a-z][a-z0-9]*(-[a-z0-9]+)*$ ]]; then
+            echo "::error::site-tests: the input site is no site key: lowercase letters, digits and single hyphens, starting with a letter"
+            exit 1
+          fi
+          if [ "$(composer config name)" != "xippios/web-$SITE" ]; then
+            echo "::error::site-tests: the site's composer.json does not name xippios/web-$SITE"
+            exit 1
+          fi
+          # A pull request's checkout has no branch, and Composer reads a local clone's branches.
+          git branch --force site-tests HEAD
+      - name: require
+        working-directory: host
+        env:
+          SITE: ${{ inputs.site }}
+          WEB_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}
+        run: |
+          # The token in Composer's environment alone, never on disk. --no-scripts: the host's scripts
+          # boot the application, which runs the site's code.
+          export COMPOSER_AUTH="{\"github-oauth\": {\"github.com\": \"$WEB_READ_TOKEN\"}}"
+          composer config repositories.site-tests vcs "$GITHUB_WORKSPACE/site"
+          composer require "xippios/web-$SITE:dev-site-tests" --update-with-dependencies --no-scripts --no-interaction --no-progress
+      - name: environment
+        working-directory: host
+        run: |
+          # What a Laravel host needs to boot: an .env and a key. The scripts the require skipped,
+          # package discovery among them, run here.
+          if [ ! -f .env ]; then
+            cp .env.example .env
+          fi
+          composer dump-autoload --no-interaction
+          php artisan key:generate --no-interaction
+      - name: suite
+        working-directory: host
+        env:
+          SITE: ${{ inputs.site }}
+        run: |
+          php artisan test --testsuite="$SITE"
+      - name: dusk
+        working-directory: host
+        env:
+          SITE: ${{ inputs.site }}
+        run: |
+          if [ ! -d "$GITHUB_WORKSPACE/site/tests/Browser" ]; then
+            echo "::notice::site-tests: the site has no tests/Browser, so Dusk does not run"
+            exit 0
+          fi
+          # Laravel's recipe for Dusk on GitHub Actions: the runner's Chrome, its driver, the host served.
+          php artisan dusk:chrome-driver --detect
+          php artisan serve --no-reload > "$RUNNER_TEMP/serve.log" 2>&1 &
+          php artisan dusk --testsuite="$SITE"
