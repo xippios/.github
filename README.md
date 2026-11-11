@@ -88,8 +88,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   a post that fails leaves its reason in the job summary and a warning annotation. No verdict (an
   API error, a refusal, a `max_tokens` stop, the turn cap of 120, a missing key) fails the check,
   and the job summary carries the script's line with the cause (the SDK's error class and its
-  redacted message, a refusal's category), the turns, the tool calls, the token usage and a cost
-  estimate at list prices. Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
+  redacted message, a refusal's category), the turns, the tool calls and the token usage.
+  Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
   - **The mode**: the caller's variable `CONVENTIONS_REVIEW`, read from the calling repository,
     where a repository variable overrides the organization's by GitHub's precedence. `release`,
     the default when neither is set, reviews a pull request titled `release: <version>`
@@ -110,9 +110,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     tag (`v*`) reachable from the base to the head, since the pull request's own diff is the
     CHANGELOG and the bump. Without a tag it judges the pull request's own diff and says so. Any
     other pull request is judged on its own diff, merge base to head.
-  - **Why the Messages API**: the review ran the Claude Code action until 2026-10-29. Its
-    usage is billed as Claude Code, which the organization's monthly plan credits do not
-    cover, while they cover the Messages API called with an API key (D101 to D103).
+  - **The Messages API**: the review left the Claude Code action for the Messages API, called
+    with an API key, on 2026-10-29 (D101 to D103).
   - **Where the script comes from**: this repository, checked out into `.sdk-gates` at
     `job.workflow_sha`, the commit of the workflow file that defines the job: for a caller,
     the commit its `uses:` resolved to (`@main`). The review no longer runs on this
@@ -341,18 +340,6 @@ branch (the required checks are strict). The branch name is no input. The classi
 reads the pull request as git objects and executes nothing from it; file names and
 answers are escaped in the summary and the report.
 
-## Known limits
-
-- `template/pyproject.toml.jinja` is judged by a text scan, since a Jinja template is not
-  TOML. Its structural replacement, rendering the template at base and head and comparing
-  the protected tables with a TOML parser, is a follow-up.
-- The core pin check accepts only `main` and a full SHA, the two forms no ref created
-  later can take over in uv's reading. A tag or a short commit name read anywhere else
-  (by a human, by a tool) can still be shadowed by a branch created later; the classifier
-  cannot see that, so it rests on the rulesets below: `XIPPIOS SDK Tags` on `v*` of every
-  `sdk-*` repository; a branch ruleset on sdk-core forbidding `v*` and hex-like branch
-  names is not there today, so that part of the net is open.
-
 ## Wiring and check contexts
 
 Both workflows carry `on: workflow_call` alone (C58, 2026-11-03): a repository calls them as
@@ -412,13 +399,6 @@ jobs:
       checks: read
 ```
 
-Caller mode is **not a boundary**: the check contexts come from the caller's own
-`gates.yml` on the pull request's head, and a ruleset cannot tell those jobs from any
-other Actions job of the same name, so a pull request that edits `gates.yml` can replace
-the call with a job that merely passes. Only the required-workflow wiring reads the gate
-from this repository whatever the pull request changes; the choice if the editor does not
-offer it is Johannes's at gate 2.
-
 ## Rulesets
 
 The organization's rulesets by name (gate coordinate#9; `gh api orgs/xippios/rulesets`), as
@@ -427,20 +407,20 @@ far as they touch this repository and the gates:
 - **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
   required, one approving review, review from code owners (`.github/CODEOWNERS` names
   Johannes for every path), stale approvals dismissed on push, `ci` required, merge or
-  squash, no bypass actor. Neither `merge-class` nor `conventions` runs here: both left this repository's own pull
-  requests (C58).
+  squash. Neither `merge-class` nor `conventions` runs here: both left this repository's own
+  pull requests (C58).
 - **`XIPPIOS SDK Main`** (org branch ruleset on `main` of `sdk-*` and `xippios-mcp`):
   pull request required, no approval count, an extra approval for unattributed changes,
   review threads resolved, stale approvals dismissed on push, `ci` required and strict,
-  merge, squash or rebase, no bypass actor. The gate checks `merge-class` and
+  merge, squash or rebase. The gate checks `merge-class` and
   `conventions` run from each repository's `gates.yml` and are not required, so the class is
   informational there until the sdk migration moves the family to the coordinate gates. Until
   then a caller's review job keeps its old id and workflow; the migration renames both, the job
   id to `conventions` as in the caller example above, so the check reads
   `conventions / conventions`.
 - **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of `sdk-*` and `xippios-mcp`):
-  update and deletion restricted, bypass for the organization's admins, so a `v*` tag, once
-  created, is moved or deleted by no session.
+  update and deletion restricted, so a `v*` tag, once created, is moved or deleted by no
+  session.
 - The coordinate and web workspaces have theirs, `Coordinate Main`, `Coordinate Core`,
   `Coordinate Tags`, `XIPPIOS Web Main` and `XIPPIOS Web Tags`, described in
   coordinate-core's `docs/identities/setup.md` §7.
@@ -479,9 +459,8 @@ the material as the workflow does, the documents from the clone's `origin/main` 
 names another ref) and a pull request titled `release: <version>` on its release's range, and
 runs the review, then prints the summary line and the findings, each with the document it goes
 against. A README that links no documents ends it there, green, as in the workflow. It needs
-`gh` signed in and the key in the
-environment of that one command, never on disk or in the shell's history: `read -rs`
-prompts for it without echo. It spends real tokens (about 0.5 to 1 USD a review):
+`gh` signed in and the key in the environment of that one command, never on disk or in the
+shell's history: `read -rs` prompts for it without echo:
 
 ```sh
 read -rs K && ANTHROPIC_API_KEY="$K" uv run --no-project \

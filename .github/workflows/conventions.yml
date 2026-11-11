@@ -19,9 +19,8 @@
 # base to the head, since the PR's own diff is the CHANGELOG and the bump; without a tag it
 # judges the PR's own diff and says so.
 #
-# The review left the Claude Code action on 2026-10-29 (D101 to D103): the action's usage is
-# billed as Claude Code, which the organization's monthly plan credits do not cover, while
-# they cover the Messages API called with an API key.
+# The review left the Claude Code action for the Messages API, called with an API key, on
+# 2026-10-29 (D101 to D103).
 #
 # The script comes from xippios/.github at `job.workflow_sha`, the commit of the workflow
 # file that defines this job (GitHub's contexts reference): for a caller, the .github commit
