@@ -1,4 +1,4 @@
-# Written by coordinate from docs/style/issues.md of coordinate-core v0.6.4 (C73, C74).
+# Written by coordinate from docs/style/issues.md of coordinate-core v0.7.3 (C73, C74).
 # Edit that style and adopt its release; never this file.
 name: Gap
 description: "A gap: what was seen, where, and how. Title: a gap as a fact: `issue new doubles the What heading`."
@@ -9,14 +9,14 @@ body:
     id: what
     attributes:
       label: "What"
-      description: "one or two sentences that state the whole change or gap. Add bullets for the parts when there are several."
+      description: "one or two sentences that state the whole change or gap, then bullets for several parts."
     validations:
       required: true
   - type: textarea
     id: why
     attributes:
       label: "Why"
-      description: "the reason, with its citations. A gap says what was seen, where, and how."
+      description: "the reason, with its citations. A gap says what was seen, where, and how. One for an open package's milestone says first why the product would not ship robust without it, such as a proof it breaks. Any other takes the next patch's `--milestone`, or no milestone while that patch has no package issue (https://github.com/xippios/coordinate-core/issues/624)."
   - type: textarea
     id: proof
     attributes:

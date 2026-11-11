@@ -1,4 +1,4 @@
-# Written by coordinate from docs/style/issues.md of coordinate-core v0.6.4 (C73, C74).
+# Written by coordinate from docs/style/issues.md of coordinate-core v0.7.3 (C73, C74).
 # Edit that style and adopt its release; never this file.
 name: Gate
 description: "A human action, assigned to the human. Title: the human's action in the imperative: `Create the six issue types`."
@@ -8,7 +8,7 @@ body:
     id: what
     attributes:
       label: "What"
-      description: "what the human does, as numbered steps. Each step names the command or the link."
+      description: "what the human does, as numbered steps, each naming the command or the link."
     validations:
       required: true
   - type: textarea
@@ -20,4 +20,4 @@ body:
     id: proof
     attributes:
       label: "Proof"
-      description: "what the session checks to see it done, such as a `doctor` check that turns green."
+      description: "what the session checks to see it done, such as a `doctor` check."
