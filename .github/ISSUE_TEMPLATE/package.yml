@@ -1,7 +1,7 @@
-# Written by coordinate from docs/style/issues.md of coordinate-core v0.6.4 (C73, C74).
+# Written by coordinate from docs/style/issues.md of coordinate-core v0.7.3 (C73, C74).
 # Edit that style and adopt its release; never this file.
 name: Package
-description: "A package with its plan and milestone. Title: `<repository> <version>`."
+description: "A package with its plan and milestone. Title: `<repository> <version>`, a program's `<root> <name>` (C9)."
 type: package
 labels: ["proposed"]
 body:
@@ -9,6 +9,6 @@ body:
     id: what
     attributes:
       label: "What"
-      description: "the package, its plan and its milestone."
+      description: "the package, its plan and its milestone, then a row it adopts, quoted."
     validations:
       required: true
