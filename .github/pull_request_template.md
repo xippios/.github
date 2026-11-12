@@ -1,14 +1,14 @@
 ## What
 
-<!-- one sentence that states the whole change. Then one bullet per part of the change, each naming the command, file or behavior it touches. -->
+<!-- one sentence that states the whole change. Then a bullet per behavior that a reader of the diff needs named, never a list of its files. -->
 
 ## Why
 
-<!-- the plan step or the row, and the decisions it implements, cited. -->
+<!-- the reason and its decisions, cited, where no issue it closes gives them. A step's PR leaves it out. -->
 
 ## Proof
 
-<!-- the test run and what else was checked. Write the tests as one bullet: the command, the count, and the URLs of the red test commit and the green behavior commit. Put long output in `<details>`. -->
+<!-- the tests as one bullet, with the command, the count and the URLs of the red test commit and the green behavior commit, then what else was checked. -->
 
 ## Consumers
 
