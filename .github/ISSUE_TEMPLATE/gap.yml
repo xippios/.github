@@ -1,7 +1,7 @@
-# Written by coordinate from docs/style/issues.md of coordinate-core v0.7.3 (C73, C74).
+# Written by coordinate from docs/style/issues.md of coordinate-core v0.7.4 (C73, C74).
 # Edit that style and adopt its release; never this file.
 name: Gap
-description: "A gap: what was seen, where, and how. Title: a gap as a fact: `issue new doubles the What heading`."
+description: "A gap: what was seen, where, and how. Title: a gap as a fact: `The render drops the watcher's line`."
 type: gap
 labels: ["proposed"]
 body:
