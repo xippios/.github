@@ -548,6 +548,7 @@ def test_a_blocked_verdict_fails_and_posts_the_findings_in_the_style(tmp_path: P
         "3. **`src/pkg/cli.py:7`** A stray print. Blocks: no.\n"
     )
     assert summary == expected
+    assert (tmp_path / "stdout.txt").read_text() == expected + "\n"
     assert comment == expected
     assert calls[-1].startswith("pr comment 11 --edit-last --create-if-none --body-file -")
 
@@ -559,6 +560,7 @@ def test_an_approval_without_findings_passes_and_creates_the_comment(tmp_path: P
         f"{MARKER}\n**Approved.** No findings at {COMMIT}.\n\n"
         "Judged: the pull request's own diff, against 2 documents of `README.md` on `main`.\n"
     )
+    assert (tmp_path / "stdout.txt").read_text() == summary + "\n"
     assert comment == summary
     assert calls == [VIEW, EDIT]
 
