@@ -217,10 +217,13 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     `docs/adr/NNNN-<slug>.md` the script reads, so two records with one number fail the check
     whatever the caller's script checks, each pair named. On a pull request the checkout is its
     merge with the base, so a number the base took since the branch left it counts as taken.
-  - **The failure names the script**: each error annotation says to run
-    `python3 scripts/adr_index.py`, which writes both files from the records, and to commit
-    them; the script's own lines above it say what differs. A record's name reaches an
-    annotation escaped, so no name starts a workflow command.
+  - **The failure names the script**: each error annotation names
+    `python3 scripts/adr_index.py`, which writes both files from the records, to be run and its
+    files committed once what comes first is mended. After a failed `--check` that is any record
+    the script's own lines above the annotation name, such as one whose first line does not
+    read, since the script writes neither file while a record does not read; after a number
+    twice, one of the two records renumbered. A record's name reaches an annotation escaped, so
+    no name starts a workflow command.
 
   Permissions: `contents: read`; the checkout keeps no token. The job times out after 5 minutes.
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the

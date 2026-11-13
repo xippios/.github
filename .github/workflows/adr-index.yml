@@ -62,7 +62,8 @@ jobs:
           fi
           python3 --version
           if ! python3 -I "$script" --check; then
-            echo "::error::adr-index: \`$run --check\` failed, its lines above; run \`$run\`, which writes docs/adr.md and docs/adr.json from docs/adr/, and commit both"
+            # The script writes nothing while a record does not read: what its lines name comes first.
+            echo "::error::adr-index: \`$run --check\` failed; mend first any record its lines above name, then run \`$run\`, which writes docs/adr.md and docs/adr.json from docs/adr/, and commit both"
             status=1
           fi
           exit "$status"
