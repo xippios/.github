@@ -1,0 +1,69 @@
+# The ADR index check of the coordinate workspaces
+# (https://github.com/xippios/coordinate-core/issues/755, .github#46): a repository's `docs/adr.md`
+# and `docs/adr.json` are what its own `scripts/adr_index.py` writes from the records in
+# `docs/adr/`, and no two records take one number.
+# A reusable workflow, called as a job from a repository's gates.yml
+# (`uses: xippios/.github/.github/workflows/adr-index.yml@main`, check `adr-index / adr-index`);
+# it reads the caller's checkout and needs no secret.
+#
+# The job runs the caller's script, never a copy: the caller's template renders it, and its
+# `--check` writes nothing and exits 1 when either file differs from the records or a record does
+# not read. The runner's python3 runs it with -I, as `coordinate` does, since the script needs the
+# standard library alone. The job also reads the records' numbers itself, so a number two records
+# take fails whatever the caller's script checks. On a pull request the checkout is its merge with
+# the base, so a number the base took since the branch left it counts as taken. Each failure names
+# the script to run, and a caller without the script fails, naming it.
+# Actions are pinned to commit SHAs, the version in a comment.
+name: ADR index
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  adr-index:
+    name: adr-index
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: index
+        run: |
+          script=scripts/adr_index.py
+          run="python3 $script"
+          # A record's name is the caller's data: %, CR and LF escaped in an annotation, so no name
+          # starts a workflow command of its own.
+          escape() {
+            local text=${1//%/%25}
+            text=${text//$'\r'/%0D}
+            printf '%s' "${text//$'\n'/%0A}"
+          }
+          status=0
+          # The records by their numbers, named as the script reads them: docs/adr/NNNN-<slug>.md.
+          declare -A taken=()
+          shopt -s nullglob
+          for record in docs/adr/[0-9][0-9][0-9][0-9]-?*.md; do
+            [ -f "$record" ] || continue
+            number=${record:9:4}
+            if [ -n "${taken[$number]:-}" ]; then
+              echo "::error::adr-index: $(escape "ADR-$number is taken by ${taken[$number]} and by $record"); renumber one, then run \`$run\`"
+              status=1
+            else
+              taken[$number]=$record
+            fi
+          done
+          if [ ! -f "$script" ]; then
+            echo "::error::adr-index: the caller has no $script; its template renders it, and \`$run\` writes the index"
+            exit 1
+          fi
+          python3 --version
+          if ! python3 -I "$script" --check; then
+            # The script writes nothing while a record does not read: what its lines name comes first.
+            echo "::error::adr-index: \`$run --check\` failed; mend first any record its lines above name, then run \`$run\`, which writes docs/adr.md and docs/adr.json from docs/adr/, and commit both"
+            status=1
+          fi
+          exit "$status"
