@@ -1,8 +1,10 @@
 """The conventions review runs by mode on any repository's documents (C57 as amended by
-coordinate-core#364, .github#32). The step `Gate` of conventions.yml decides from the caller's
-`CONVENTIONS_REVIEW` variable and the pull request's title whether the review runs, before any
-checkout or API call; the step `Verdict` writes the check's comment in the style of
-docs/style/reviews.md on every run that reviewed the pull request, `ready` included
+coordinate-core#364, .github#32). The job's own `if:` skips a pull request that is no release's
+and that no other mode could review, so the caller's check reports as skipped and passing
+(.github#47). The step `Gate` of conventions.yml then decides from the caller's
+`CONVENTIONS_REVIEW` variable, the pull request's label `release` and its title whether the
+review runs, before any checkout or API call; the step `Verdict` writes the check's comment in
+the style of docs/style/reviews.md on every run that reviewed the pull request, `ready` included
 (.github#36). The tests run the steps' own scripts."""
 
 import json
@@ -10,12 +12,36 @@ import os
 import subprocess
 from pathlib import Path
 
+import conventions as fr
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github" / "workflows" / "conventions.yml").read_text()
 README = (ROOT / "README.md").read_text()
 MODES = ("release", "all", "off")
+# A release PR's title, `<version> Release`, and `release: <version>` until every workspace has
+# adopted coordinate-core 0.7.4 (coordinate-core#805), as the core's `RELEASE_TITLE` reads it.
+RELEASE_TITLES = ["0.7.4 Release", "release: 0.6.4", "release: 0.6.4-rc.1", "release: v0.6.4"]
+OTHER_TITLES = [
+    "feat: a change",
+    "Release: 0.6.4",
+    "release: 0.6.4 and more",
+    "release 0.6.4",
+    "release: notes",
+    "v0.7.4 Release",
+    "0.7.4 release",
+    "0.7.4-rc.1 Release",
+    "0.7.4 Release notes",
+    "Plan the Release",
+]
+# The job's own condition (.github#47), its folded lines joined as YAML folds them.
+CONDITION = (
+    "contains(github.event.pull_request.labels.*.name, 'release') "
+    "|| startsWith(github.event.pull_request.title, 'release: ') "
+    "|| endsWith(github.event.pull_request.title, ' Release') "
+    "|| (vars.CONVENTIONS_REVIEW != '' && vars.CONVENTIONS_REVIEW != 'release' "
+    "&& vars.CONVENTIONS_REVIEW != 'off')"
+)
 REPO = "xippios/sdk-usda-psd"
 SHA = "c" * 40
 COMMIT = f"https://github.com/{REPO}/commit/{SHA}"
@@ -49,11 +75,18 @@ def step_block(name: str) -> str:
 # --- the gate ----------------------------------------------------------------------------
 
 
+def labeled(labels: tuple[str, ...]) -> bool:
+    """`contains(github.event.pull_request.labels.*.name, 'release')` as GitHub evaluates it:
+    an element equal to `release`, compared without case."""
+    return any(label.lower() == "release" for label in labels)
+
+
 def gate(
     tmp_path: Path,
     *,
     mode: str = "",
     title: str = "feat: a change",
+    labels: tuple[str, ...] = (),
     key: bool = True,
     author: str = "johan",
     actor: str = "johan",
@@ -69,6 +102,7 @@ def gate(
         "HAS_KEY": "true" if key else "false",
         "MODE": mode,
         "TITLE": title,
+        "LABELED": "true" if labeled(labels) else "false",
         "AUTHOR": author,
         "ACTOR": actor,
         "HEAD_REPO": "someone/fork" if fork else REPO,
@@ -88,26 +122,45 @@ def gate(
 
 
 @pytest.mark.parametrize("mode", ["", "release"])
-def test_release_is_the_default_and_reviews_a_release_pr(tmp_path: Path, mode: str) -> None:
-    code, _out, outputs = gate(tmp_path, mode=mode, title="release: 0.6.4")
+@pytest.mark.parametrize("title", RELEASE_TITLES)
+def test_release_is_the_default_and_reviews_a_release_pr(
+    tmp_path: Path, mode: str, title: str
+) -> None:
+    code, _out, outputs = gate(tmp_path, mode=mode, title=title)
     assert code == 0
     assert outputs == {"mode": "release", "release": "true", "run": "true"}
 
 
-@pytest.mark.parametrize(
-    "title", ["feat: a change", "Release: 0.6.4", "release: 0.6.4 and more", "release 0.6.4"]
-)
+@pytest.mark.parametrize("mode", ["", "release", "all"])
+@pytest.mark.parametrize("title", ["Ship the next version", *OTHER_TITLES])
+def test_a_pr_labeled_release_is_a_release_pr_whatever_its_title(
+    tmp_path: Path, mode: str, title: str
+) -> None:
+    code, _out, outputs = gate(tmp_path, mode=mode, title=title, labels=("bug", "release"))
+    assert code == 0
+    assert outputs == {"mode": mode or "release", "release": "true", "run": "true"}
+
+
+@pytest.mark.parametrize("title", OTHER_TITLES)
 def test_release_passes_any_other_pr_with_a_notice(tmp_path: Path, title: str) -> None:
-    code, out, outputs = gate(tmp_path, mode="release", title=title)
+    code, out, outputs = gate(tmp_path, mode="release", title=title, labels=("bug",))
     assert code == 0
     assert outputs == {"mode": "release", "release": "false", "run": "false"}
     assert "conventions: not a release PR" in out
+    assert "labeled `release`" in out
+    assert "`<version> Release`" in out
     assert "`release: <version>`" in out
     assert "CONVENTIONS_REVIEW" in out
 
 
+@pytest.mark.parametrize("title", RELEASE_TITLES + OTHER_TITLES)
+def test_the_gate_and_the_script_read_a_title_alike(tmp_path: Path, title: str) -> None:
+    _code, _out, outputs = gate(tmp_path, mode="all", title=title)
+    assert outputs["release"] == ("true" if fr.is_release_title(title) else "false")
+
+
 def test_all_reviews_every_pr(tmp_path: Path) -> None:
-    for title, release in (("feat: a change", "false"), ("release: 0.6.4", "true")):
+    for title, release in (("feat: a change", "false"), ("0.7.4 Release", "true")):
         code, _out, outputs = gate(tmp_path, mode="all", title=title)
         assert code == 0
         assert outputs == {"mode": "all", "release": release, "run": "true"}
@@ -189,12 +242,86 @@ def test_a_run_that_reviews_nothing_posts_no_comment(tmp_path: Path, case: dict)
     assert "steps.prepare.outputs.review == 'true'" in condition
 
 
-def test_the_gate_reads_the_callers_variable_and_the_title() -> None:
+def test_the_gate_reads_the_callers_variable_the_label_and_the_title() -> None:
     block = step_block("Gate").split("run: |", 1)[0]
     assert "MODE: ${{ vars.CONVENTIONS_REVIEW }}" in block
     assert "TITLE: ${{ github.event.pull_request.title }}" in block
+    assert "LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'release') }}" in block
     assert "FAMILY_REVIEW_REQUIRED" not in WORKFLOW
     assert "FAMILY_REVIEW_REQUIRED" not in README
+
+
+# --- the job's own condition -------------------------------------------------------------
+
+
+def job_condition() -> str:
+    """The job's own `if:`, a folded scalar before its steps, joined as YAML folds it."""
+    job = WORKFLOW.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[0]
+    assert job.count("\n    if: >-\n") == 1
+    folded = []
+    for line in job.split("\n    if: >-\n", 1)[1].splitlines():
+        if not line.startswith("      "):
+            break
+        folded.append(line.strip())
+    return " ".join(folded)
+
+
+def admitted(mode: str, title: str, labels: tuple[str, ...]) -> bool:
+    """CONDITION as GitHub evaluates it: `contains`, `startsWith`, `endsWith` and `!=` compare
+    strings without case, and an unset variable reads as the empty string."""
+    mode, title = mode.lower(), title.lower()
+    return (
+        labeled(labels)
+        or title.startswith("release: ")
+        or title.endswith(" release")
+        or mode not in ("", "release", "off")
+    )
+
+
+def test_the_job_holds_its_condition() -> None:
+    assert job_condition() == CONDITION
+    # The job's `if:` reads what a job's condition may: no secret, no step.
+    assert "secrets." not in CONDITION
+    assert "steps." not in CONDITION
+
+
+def test_a_pr_labeled_release_gets_the_release_review(tmp_path: Path) -> None:
+    """Proof 1 of the plan of .github 0.2.0: a title outside the pattern, the label set."""
+    title = "Ship the next version"
+    assert not fr.is_release_title(title)
+    assert admitted("", title, ("release",))
+    code, _out, outputs = gate(tmp_path, title=title, labels=("release",))
+    assert code == 0
+    assert outputs == {"mode": "release", "release": "true", "run": "true"}
+
+
+@pytest.mark.parametrize("mode", ["", "release", "off"])
+@pytest.mark.parametrize("labels", [(), ("bug",)])
+def test_a_pr_without_the_label_and_the_title_skips_the_job(
+    mode: str, labels: tuple[str, ...]
+) -> None:
+    """Proof 1 of the plan of .github 0.2.0: the job does not start, so the check reports as
+    skipped."""
+    assert not admitted(mode, "feat: a change", labels)
+
+
+@pytest.mark.parametrize("mode", ["", "release", "off", "all", "relase"])
+@pytest.mark.parametrize("labels", [(), ("bug",), ("release",)])
+@pytest.mark.parametrize("who", [{}, {"key": False, "fork": True}, {"author": "some-app[bot]"}])
+def test_a_skipped_job_hides_no_review_and_no_failure(
+    tmp_path: Path, mode: str, labels: tuple[str, ...], who: dict
+) -> None:
+    """Whatever the condition skips, the Gate would have passed without a review: a mode other
+    than `release` and `off` always starts the job, so a wrong value still fails naming the
+    three, and a title the condition admits only by its looser reading ends at the Gate."""
+    skipped = 0
+    for title in ("feat: a change", *RELEASE_TITLES, *OTHER_TITLES):
+        code, _out, outputs = gate(tmp_path, mode=mode, title=title, labels=labels, **who)
+        if not admitted(mode, title, labels):
+            skipped += 1
+            assert (code, outputs.get("run")) == (0, "false"), title
+    # The condition skips some pull request exactly where no label and no other mode admits it.
+    assert bool(skipped) == (mode in ("", "release", "off") and not labeled(labels))
 
 
 # --- the steps after the gate ------------------------------------------------------------
@@ -221,9 +348,24 @@ def test_the_readme_describes_the_review_by_mode() -> None:
     for mode in MODES:
         assert f"`{mode}`" in section
     assert "`## Documents`" in section
-    assert "`release: <version>`" in section
+    flat = " ".join(section.split())
+    # The release PR by its label and its title, and the job's own condition (.github#47).
+    assert "labeled `release`" in flat
+    assert "`<version> Release`" in flat
+    assert "`release: <version>`" in flat
+    assert "coordinate-core 0.7.4" in flat
+    assert "`labeled`" in flat
+    assert "skipped and passing" in flat
+    assert "`pyproject.toml`" in flat
     assert "sdk-core" not in section
     assert "`--docs`" not in README
+
+
+def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() -> None:
+    section = README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0]
+    flat = " ".join(section.split())
+    assert "labeled `release`" in flat
+    assert "`<version> Release`" in flat
 
 
 # --- the verdict -------------------------------------------------------------------------
