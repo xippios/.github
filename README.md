@@ -90,13 +90,26 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   and the job summary carries the script's line with the cause (the SDK's error class and its
   redacted message, a refusal's category), the turns, the tool calls and the token usage.
   Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
+  - **The release pull request** (https://github.com/xippios/.github/issues/47): one labeled
+    `release`, or titled `<version> Release`, and `release: <version>` until every workspace has
+    adopted coordinate-core 0.7.4 (`docs/style/pulls.md#release-pr` of a coordinate root,
+    https://github.com/xippios/coordinate-core/issues/791 and
+    https://github.com/xippios/coordinate-core/issues/805), on any branch. The job's own `if:`
+    skips any other pull request unless the mode is `all` or a value the Gate refuses, so a
+    caller needs no condition of its own: its check `conventions / conventions` reports as
+    skipped and passing, and no runner starts. GitHub's expressions know no regular expression
+    and compare without case, so the condition admits a title by its start, `release:` and a
+    space, or by its end, a space and `Release`, and the Gate below matches it exactly. A caller
+    runs on `labeled` too, so a label set after the opening starts the review.
   - **The mode**: the caller's variable `CONVENTIONS_REVIEW`, read from the calling repository,
-    where a repository variable overrides the organization's by GitHub's precedence. `release`,
-    the default when neither is set, reviews a pull request titled `release: <version>`
-    (`docs/style/pulls.md` of a coordinate root), on any branch, and passes any other with a
-    notice. `all` reviews every pull request. `off` passes every pull request with a notice. Any
-    other value fails the check and names the three. A pull request that no mode reviews makes
-    no API call and needs no key. The mode reads the title, so a caller runs on `edited` too.
+    where a repository variable overrides the organization's by GitHub's precedence, and read
+    without case by the condition and the Gate alike, so `Off` is `off`. `release`, the default
+    when neither is set, reviews a release pull request. `all` reviews every pull request. `off`
+    reviews none. Any other value fails the check and names the three. A pull request the
+    condition skips gets no notice, since no job runs; one it admits that the mode does not
+    review passes with the Gate's notice. A pull request that no mode reviews makes no API call
+    and needs no key. The mode reads the title and the label, so a caller runs on `edited` and
+    `labeled` too.
   - **The documents**: the ones the repository's `README.md` links under `## Documents`, read on
     the default branch and never from the pull request, so a pull request cannot rewrite the
     rules it is judged by (C80, `docs/style/repository.md` of a coordinate root). A path, an
@@ -110,6 +123,10 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     tag (`v*`) reachable from the base to the head, since the pull request's own diff is the
     CHANGELOG and the bump. Without a tag it judges the pull request's own diff and says so. Any
     other pull request is judged on its own diff, merge base to head.
+  - **The version**: the review names the version a release pull request ships, read from its
+    title, else from the `[project]` version of the head's `pyproject.toml`, taken from the
+    commit and in a version's characters only. Where neither names one, the job summary says
+    so and the review runs without it.
   - **The Messages API**: the review left the Claude Code action for the Messages API, called
     with an API key, on 2026-10-29 (D101 to D103).
   - **Where the script comes from**: this repository, checked out into `.sdk-gates` at
@@ -124,9 +141,10 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     (decided 2026-10-26).
   - **Gate**, in order: a Dependabot pull request (its author and the triggering actor both
     `dependabot[bot]`) ends green with the notice "conventions: Dependabot PR, reviewed by
-    `ci` only", since Dependabot runs get no Actions secrets. A pull request the mode does
-    not review ends green with its notice. A pull request opened or updated by any other
-    GitHub App (a login ending in `[bot]`) gets no review and fails by design, with
+    `ci` only", since Dependabot runs get no Actions secrets. A pull request the job's
+    condition admits and the mode does not review ends green with its notice. A pull request
+    opened or updated by any other GitHub App (a login ending in `[bot]`) gets no review and
+    fails by design, with
     "conventions: a pull request opened or updated by a GitHub App gets no review", as the
     action's empty `allowed_bots` had it. Every other pull request needs the organization
     secret `ANTHROPIC_API_KEY`, shared with every repository (coordinate-core#368): a pull
@@ -375,8 +393,9 @@ answers are escaped in the summary and the report.
 
 Both workflows carry `on: workflow_call` alone (C58, 2026-11-03): a repository calls them as
 jobs from its `gates.yml`, which runs on `pull_request` with the types `opened`,
-`synchronize`, `reopened` and `edited` (`edited` because the description is judged and a base
-change arrives as `edited`). The required-workflow wiring, an Enterprise-only ruleset rule,
+`synchronize`, `reopened`, `edited` and `labeled` (`edited` because the description is judged
+and a base change arrives as `edited`, `labeled` because a label set after the opening starts
+the review). The required-workflow wiring, an Enterprise-only ruleset rule,
 went with the `on: pull_request` trigger; until then both also ran on this repository's own
 pull requests.
 
@@ -394,10 +413,13 @@ rule has no such gap.
 
 In caller mode a repository carries its own caller file, `.github/workflows/gates.yml`,
 beside `ci.yml`. It runs on `pull_request` with
-`types: [opened, synchronize, reopened, edited]`: a caller's `on: pull_request` without
-`types` runs on the first three only, and `edited` matters to both gates, to the review
+`types: [opened, synchronize, reopened, edited, labeled]`: a caller's `on: pull_request`
+without `types` runs on the first three only; `edited` matters to both gates, to the review
 because the description is judged and to `merge-class` because a change of the base
-branch arrives as `edited`. The caller can ship before the ruleset decision: both jobs
+branch arrives as `edited`; and `labeled` matters to the review, since the label `release`
+makes a release pull request, so a label set after the opening starts the review
+(https://github.com/xippios/.github/issues/47). The caller can ship before the ruleset
+decision: both jobs
 carry `if: vars.GATES_CALLER == '1'` and run only once Johannes sets that repository
 variable, which he does per repository if the editor does not offer the required-workflow
 rule. It passes the review exactly one secret, never `secrets: inherit`:
@@ -407,7 +429,7 @@ name: gates
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened, edited, labeled]
 
 permissions:
   contents: read
@@ -487,8 +509,9 @@ uvx --from actionlint-py==1.7.12.25 actionlint
 
 A dry run clones the pull request into a temporary directory (or `--workdir`, kept), prepares
 the material as the workflow does, the documents from the clone's `origin/main` (`--main`
-names another ref) and a pull request titled `release: <version>` on its release's range, and
-runs the review, then prints the summary line and the findings, each with the document it goes
+names another ref) and a pull request labeled `release` or titled `<version> Release` or
+`release: <version>` on its release's range, with its version, and runs the review, then
+prints the summary line and the findings, each with the document it goes
 against. A README that links no documents ends it there, green, as in the workflow. It needs
 `gh` signed in and the key in the environment of that one command, never on disk or in the
 shell's history: `read -rs` prompts for it without echo:
