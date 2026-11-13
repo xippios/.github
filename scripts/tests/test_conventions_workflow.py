@@ -489,6 +489,22 @@ def verdict_step(
     return done.returncode, summary.read_text() + done.stderr, calls, comment
 
 
+# The two fields of the script's `--out` document that no output shows (.github#65), as
+# `Outcome.as_json` writes them, so the exact comparisons below hold that the step leaves them
+# out of the job summary, the log and the comment.
+KEPT = {
+    key: value
+    for key, value in fr.Outcome(
+        model=fr.MODEL,
+        effort=fr.EFFORT,
+        usage=fr.Usage(input=1_000_000, cache_write=2_000_000, cache_read=3_000_000, output=4_000),
+    )
+    .as_json()
+    .items()
+    if key in ("cost_estimate_usd", "cost_estimate_basis")
+}
+
+
 def result(verdict: str, findings: list[dict], *, release: bool = False) -> dict:
     return {
         "verdict": verdict,
@@ -496,7 +512,13 @@ def result(verdict: str, findings: list[dict], *, release: bool = False) -> dict
         "range": {"release": release, "since": "a" * 40, "tag": "v0.6.3" if release else None},
         "documents": ["sdk-core: docs/conventions.md", "sdk-usda-psd: docs/conventions.md"],
         "summary": "conventions: verdict=…",
+        **KEPT,
     }
+
+
+def test_the_fixture_carries_the_fields_the_document_keeps() -> None:
+    assert set(KEPT) == {"cost_estimate_usd", "cost_estimate_basis"}
+    assert KEPT["cost_estimate_usd"] > 0
 
 
 def finding(document: str, text: str, file: str = "src/pkg/mod.py", line=2, blocking=False):
@@ -636,10 +658,19 @@ def test_a_failed_post_is_in_the_summary_and_a_warning(tmp_path: Path, verdict: 
 def test_no_verdict_fails_with_the_scripts_line(tmp_path: Path) -> None:
     code, summary, calls, comment = verdict_step(
         tmp_path,
-        {"verdict": None, "summary": "conventions: no verdict (the turn cap of 120 was reached)"},
+        {
+            "verdict": None,
+            "summary": "conventions: no verdict (the turn cap of 120 was reached)",
+            **KEPT,
+        },
     )
     assert code == 1
-    assert summary.startswith("## conventions: no verdict\n\nconventions: no verdict (the turn cap")
+    assert summary == (
+        "## conventions: no verdict\n\n"
+        "conventions: no verdict (the turn cap of 120 was reached)\n\n"
+        "The review returned no verdict; the check fails.\n"
+    )
+    assert (tmp_path / "stdout.txt").read_text() == summary + "\n"
     assert comment is None
     assert calls == []
     code, summary, _calls, _comment = verdict_step(tmp_path, None)
