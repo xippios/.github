@@ -11,7 +11,9 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
   pull request's head, after emptying it: ``diff.patch`` and ``log.txt`` of the range (merge
   base to head; on a release pull request, ``--release``, from the last release tag reachable
   from the base, or the pull request's own range without one), ``pr.json`` and
-  ``checks.json`` (by ``gh``), ``meta.json`` (the coordinates and the range, for ``review``),
+  ``checks.json`` (by ``gh``), ``meta.json`` (the coordinates and the range, for ``review``,
+  and on a release pull request the version it ships, read from its title, else from the
+  ``[project]`` version of the head's ``pyproject.toml``),
   and under ``documents/`` the documents the repository's ``README.md`` links under
   ``## Documents`` on ``main`` (``--main``, C80), listed in ``documents.json``: a path, an
   anchor or a URL of the repository itself is read from ``main``, never from the pull request,
@@ -29,8 +31,8 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
   ask for it). The verdict, the findings and the usage go to ``--out``, one summary line to
   stdout and ``$GITHUB_STEP_SUMMARY``.
 - ``dry-run`` runs ``prepare`` in a temporary (or given) directory and then ``review``, and
-  prints the summary line and the findings, for a terminal. A pull request titled
-  ``release: <version>`` is judged on its release's range, as in the workflow.
+  prints the summary line and the findings, for a terminal. A pull request labeled
+  ``release`` or titled as a release is judged on its release's range, as in the workflow.
 
 The tools read inside the workspace only: a path is resolved (``realpath``) and must lie
 under the workspace's real path; ``.git`` at any depth, ``.envrc``, ``.env`` and ``.env.*``,
@@ -62,6 +64,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
@@ -114,7 +117,7 @@ DOCUMENTS_DIR = "documents"
 DOCUMENTS_FILE = "documents.json"
 LOG_FORMAT = "commit %H%nAuthor: %an <%ae>%nDate:   %aI%n%n%B"
 PR_FIELDS = "title,body,author,comments,files"
-FACT_FIELDS = "baseRefOid,headRefOid,title"
+FACT_FIELDS = "baseRefOid,headRefOid,title,labels"
 CHECK_FIELDS = "name,state,bucket,workflow,description,startedAt,completedAt,link"
 CHECKS_FALLBACK = '{"error": "gh pr checks failed; the ci result is unknown"}\n'
 SUBPROCESS_TIMEOUT = 600
@@ -125,9 +128,17 @@ RAW_ACCEPT = "Accept: application/vnd.github.raw+json"
 
 REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
-# A release PR by its title, `release: <version>` (docs/style/pulls.md#release-pr); the
-# workflow's gate matches the same form.
-RELEASE_TITLE = re.compile(r"release: v?\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.+-]*)?")
+# A release PR by its label, or by its title (docs/style/pulls.md#release-pr): `<version>
+# Release`, and `release: <version>` until every workspace has adopted coordinate-core 0.7.4
+# (coordinate-core#791, coordinate-core#805), as the core's `RELEASE_TITLE` reads them; the
+# workflow's gate matches the same forms.
+RELEASE_LABEL = "release"
+RELEASE_TITLE = re.compile(
+    r"release: v?(?P<old>\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.+-]*)?)|(?P<new>\d+\.\d+\.\d+) Release"
+)
+# A version as the review names it: a version's characters only, so neither a title nor a
+# `pyproject.toml` brings other text into the first message.
+VERSION = re.compile(r"\d[0-9A-Za-z.+!-]{0,63}")
 # The README's `## Documents` section and its links, as `doctor`'s `documents` check reads
 # them (C80, docs/style/repository.md).
 DOCUMENTS_HEADING = re.compile(r"^#{2,3} Documents[ \t]*$", re.M)
@@ -198,15 +209,15 @@ the {documents} under `{review}/documents/`. Read what you need with the tools, 
 `submit_verdict`."""
 
 RELEASE_MESSAGE = """\
-Review the release pull request {repo}#{pr}: base {base}, head {head}. The range is the \
+Review the release pull request {repo}#{pr}: base {base}, head {head}.{version} The range is the \
 release's, from {tag} ({since}) to the head: the pull request's own diff is the CHANGELOG and \
 the version, and the diff prepared for you holds everything the release ships. Its material \
 is under `{review}/`, the {documents} under `{review}/documents/`. Read what you need with \
 the tools, then call `submit_verdict`."""
 
 UNTAGGED_MESSAGE = """\
-Review the release pull request {repo}#{pr}: base {base}, head {head}. The range is the pull \
-request's own, from the merge base of base and head to the head, since no release tag is \
+Review the release pull request {repo}#{pr}: base {base}, head {head}.{version} The range is \
+the pull request's own, from the merge base of base and head to the head, since no release tag is \
 reachable from the base. Its material is under `{review}/`, the {documents} under \
 `{review}/documents/`. Read what you need with the tools, then call `submit_verdict`."""
 
@@ -448,19 +459,74 @@ def _git_to_file(workspace: Path, target: Path, *args: str) -> None:
         raise PrepareError(f"git {args[0]} failed: {detail}")
 
 
-def pull_request_facts(repo: str, pr: int) -> tuple[str, str, str]:
-    """The base and head commits of the pull request as GitHub reports them now, and its title."""
+def pull_request_facts(repo: str, pr: int) -> tuple[str, str, str, list[str]]:
+    """The base and head commits of the pull request as GitHub reports them now, and more.
+
+    The title and the names of the labels come with them.
+    """
     out = _checked(["gh", "pr", "view", str(pr), "--repo", repo, "--json", FACT_FIELDS])
     try:
         data = json.loads(out)
-        return str(data["baseRefOid"]), str(data["headRefOid"]), str(data.get("title") or "")
+        labels = [str(label["name"]) for label in data.get("labels") or []]
+        return (
+            str(data["baseRefOid"]),
+            str(data["headRefOid"]),
+            str(data.get("title") or ""),
+            labels,
+        )
     except (ValueError, KeyError, TypeError, AttributeError) as exc:
         raise PrepareError("gh pr view returned no base and head") from exc
 
 
+def release_version(title: str) -> str | None:
+    """The version ``title`` names as a release PR's; None for any other title.
+
+    Either form of ``RELEASE_TITLE`` (docs/style/pulls.md#release-pr), without its ``v``.
+    """
+    found = RELEASE_TITLE.fullmatch(title.strip())
+    return (found.group("old") or found.group("new")) if found else None
+
+
 def is_release_title(title: str) -> bool:
-    """Whether ``title`` names a release PR, ``release: <version>`` (docs/style/pulls.md)."""
-    return RELEASE_TITLE.fullmatch(title.strip()) is not None
+    """Whether ``title`` names a release PR, ``<version> Release`` or ``release: <version>``."""
+    return release_version(title) is not None
+
+
+def is_release_label(labels: Sequence[str]) -> bool:
+    """Whether the pull request carries the label ``release``.
+
+    The names are compared without case, as the workflow's ``contains`` compares them.
+    """
+    return any(label.lower() == RELEASE_LABEL for label in labels)
+
+
+def head_version(workspace: Path, head: str) -> str | None:
+    """The ``[project]`` version of ``pyproject.toml`` at ``head``; None without one.
+
+    The file is read from the commit, never through the checkout, and a version outside
+    ``VERSION`` (a dynamic one, another text) counts as none.
+    """
+    if _object_type(workspace, head, "pyproject.toml") != "blob":
+        return None
+    proc = _run(["git", "-C", str(workspace), "cat-file", "blob", f"{head}:pyproject.toml"])
+    if proc.returncode != 0:
+        return None
+    try:
+        project = tomllib.loads(proc.stdout.decode("utf-8")).get("project")
+    except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+        return None
+    version = project.get("version") if isinstance(project, dict) else None
+    return version if isinstance(version, str) and VERSION.fullmatch(version) else None
+
+
+def _pr_title(raw: bytes) -> str:
+    """The title in ``gh pr view``'s JSON; empty when it names none."""
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return ""
+    title = data.get("title") if isinstance(data, dict) else None
+    return title if isinstance(title, str) else ""
 
 
 def clone_pull_request(repo: str, pr: int, head: str, workdir: Path) -> None:
@@ -699,9 +765,21 @@ def prepare(
         f"--format={LOG_FORMAT}",
         f"{since}..{head}",
     )
-    (review / "pr.json").write_bytes(
-        _checked(["gh", "pr", "view", str(pr), "--repo", repo, "--json", PR_FIELDS])
-    )
+    pr_json = _checked(["gh", "pr", "view", str(pr), "--repo", repo, "--json", PR_FIELDS])
+    (review / "pr.json").write_bytes(pr_json)
+    version = None
+    if release:
+        version, source = release_version(_pr_title(pr_json)), "the title"
+        if version is None or not VERSION.fullmatch(version):
+            version, source = head_version(workspace, head), "the head's pyproject.toml"
+        if version is None:
+            _notice(
+                "conventions: neither the title nor the head's pyproject.toml names the "
+                "release's version",
+                summary,
+            )
+        else:
+            _notice(f"conventions: the release's version is {version}, read from {source}", summary)
     # No ci result is no reason to stop: ci is required on its own.
     checks = _run(["gh", "pr", "checks", str(pr), "--repo", repo, "--json", CHECK_FIELDS])
     if checks.returncode == 0:
@@ -717,6 +795,7 @@ def prepare(
         "release": release,
         "since": since,
         "tag": tag,
+        "version": version,
     }
     (review / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     for name in sorted(p.name for p in review.iterdir()):
@@ -1183,7 +1262,8 @@ class Material:
 
     ``documents`` holds ``(label, source, text)`` per document of ``documents.json``, in the
     README's order; ``since`` is where the judged range starts, ``tag`` the release tag it
-    starts at on a release pull request.
+    starts at on a release pull request, ``version`` the version it ships where its title or
+    the head's ``pyproject.toml`` names one.
     """
 
     workspace: Path
@@ -1197,6 +1277,7 @@ class Material:
     since: str = ""
     tag: str | None = None
     main: str = "main"
+    version: str | None = None
 
 
 def _label(path: Path, workspace: Path) -> str:
@@ -1214,6 +1295,7 @@ def load_material(workspace: Path, review: Path) -> Material:
         repo, pr, base, head = meta["repo"], meta["pr"], meta["base"], meta["head"]
         release, since, tag = bool(meta.get("release")), meta.get("since") or base, meta.get("tag")
         main = str(meta.get("main") or "main")
+        version = meta.get("version")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise PrepareError(f"{review_label}/meta.json is missing or unreadable") from exc
     if not (isinstance(repo, str) and REPO_NAME.fullmatch(repo) and isinstance(pr, int)):
@@ -1222,6 +1304,8 @@ def load_material(workspace: Path, review: Path) -> Material:
         raise PrepareError(f"{review_label}/meta.json names no base and head")
     if tag is not None and not isinstance(tag, str):
         raise PrepareError(f"{review_label}/meta.json names no release tag")
+    if version is not None and not (isinstance(version, str) and VERSION.fullmatch(version)):
+        raise PrepareError(f"{review_label}/meta.json names no release version")
     try:
         listed = json.loads((review / DOCUMENTS_FILE).read_text(encoding="utf-8"))
         entries = [(str(d["label"]), str(d["source"]), str(d["file"])) for d in listed]
@@ -1250,6 +1334,7 @@ def load_material(workspace: Path, review: Path) -> Material:
         since=since,
         tag=tag,
         main=main,
+        version=version,
     )
 
 
@@ -1284,6 +1369,7 @@ def first_message(material: Material) -> dict[str, object]:
         documents=f"{count} document{'s' if count != 1 else ''}",
         tag=material.tag,
         since=material.since,
+        version=f" It releases version {material.version}." if material.version else "",
     )
     return {"role": "user", "content": text}
 
@@ -1465,8 +1551,8 @@ def _facts(args: argparse.Namespace) -> tuple[str, str, bool]:
     if base is None or head is None:
         if args.workdir is None:
             raise PrepareError("--base-sha and --head-sha are needed without --workdir")
-        base, head, title = pull_request_facts(args.repo, args.pr)
-        release = release or is_release_title(title)
+        base, head, title, labels = pull_request_facts(args.repo, args.pr)
+        release = release or is_release_label(labels) or is_release_title(title)
     if not (SHA.fullmatch(base) and SHA.fullmatch(head)):
         raise PrepareError("base and head must be full commit SHAs")
     return base, head, release
@@ -1542,7 +1628,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     prep.add_argument(
         "--release",
         action="store_true",
-        help="a release PR: judge the range from the last release tag reachable from the base",
+        help=(
+            "a release PR: judge the range from the last release tag reachable from the base, "
+            "and name its version from the title, else from the head's pyproject.toml"
+        ),
     )
 
     def loop_options(sub: argparse.ArgumentParser) -> None:

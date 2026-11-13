@@ -11,13 +11,21 @@
 # (a private repository's, a missing file) fails the check naming it; a README that links none
 # passes with a notice, and no API call is made.
 #
+# A release PR is labeled `release` or titled `<version> Release`, and `release: <version>`
+# until every workspace has adopted coordinate-core 0.7.4 (coordinate-core#791,
+# coordinate-core#805). The job's own `if:` skips any other PR unless the mode could review it
+# (.github#47), so a caller needs no condition and its check `conventions / conventions`
+# reports as skipped and passing. A caller runs on `labeled` too, so a label set after the
+# opening starts the review.
+#
 # The mode is the caller's variable CONVENTIONS_REVIEW, a repository variable over the
 # organization's by GitHub's precedence: `release` (the default when neither is set) reviews a
-# PR titled `release: <version>` on any branch and passes any other with a notice; `all`
-# reviews every PR; `off` passes every PR with a notice; another value fails naming the three.
+# release PR on any branch and passes any other with a notice; `all` reviews every PR; `off`
+# passes every PR with a notice; another value fails naming the three.
 # On a release PR the review judges the range from the last release tag reachable from the
 # base to the head, since the PR's own diff is the CHANGELOG and the bump; without a tag it
-# judges the PR's own diff and says so.
+# judges the PR's own diff and says so. It names the version the release ships, read from the
+# title, else from the head's pyproject.toml.
 #
 # The review left the Claude Code action for the Messages API, called with an API key, on
 # 2026-10-29 (D101 to D103).
@@ -38,8 +46,8 @@
 # One wiring (C58, 2026-11-03; two until then): called as a job from a repository's gates.yml,
 # which passes ANTHROPIC_API_KEY alone (`on: workflow_call`, check
 # `conventions / conventions`); the caller runs on `pull_request` with the types opened,
-# synchronize, reopened and edited, so `github.event.pull_request` is there, and a change of
-# the title or of the base arrives as `edited`.
+# synchronize, reopened, edited and labeled, so `github.event.pull_request` is there, a change
+# of the title or of the base arrives as `edited`, and the label `release` as `labeled`.
 #
 # The gate, in order: a Dependabot pull request (author and actor both `dependabot[bot]`)
 # ends green, reviewed by `ci` only, since Dependabot runs get no Actions secrets. A pull
@@ -81,6 +89,17 @@ permissions:
 jobs:
   conventions:
     name: conventions
+    # The job's own condition (.github#47): a release PR by its label or its title, or a mode
+    # other than `release` and `off`, which reviews every PR or fails naming the three. Any
+    # other PR skips the job: no runner starts, and the caller's check reports as skipped and
+    # passing. GitHub's functions compare without case and know no regular expression, so a
+    # title passes here by its ends and the Gate matches it exactly.
+    if: >-
+      contains(github.event.pull_request.labels.*.name, 'release')
+      || startsWith(github.event.pull_request.title, 'release: ')
+      || endsWith(github.event.pull_request.title, ' Release')
+      || (vars.CONVENTIONS_REVIEW != '' && vars.CONVENTIONS_REVIEW != 'release'
+      && vars.CONVENTIONS_REVIEW != 'off')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # A new push or edit supersedes the review of the previous state.
@@ -88,14 +107,15 @@ jobs:
       group: conventions-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      # The mode and the title decide first, so a pull request that no mode reviews costs no
-      # checkout, no key and no API call (C57 as amended by coordinate-core#364).
+      # The mode, the label and the title decide first, so a pull request that no mode reviews
+      # costs no checkout, no key and no API call (C57 as amended by coordinate-core#364).
       - name: Gate
         id: gate
         env:
           HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
           MODE: ${{ vars.CONVENTIONS_REVIEW }}
           TITLE: ${{ github.event.pull_request.title }}
+          LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'release') }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
           ACTOR: ${{ github.actor }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
@@ -120,9 +140,14 @@ jobs:
               exit 1
               ;;
           esac
-          # A release PR by its title, `release: <version>` (docs/style/pulls.md), on any branch.
+          # A release PR by its label `release`, or by its title (docs/style/pulls.md#release-pr):
+          # `<version> Release`, and `release: <version>` until every workspace has adopted
+          # coordinate-core 0.7.4 (coordinate-core#805), on any branch. scripts/conventions.py
+          # reads the title alike.
           release=false
-          if printf '%s\n' "$TITLE" | grep -Eq '^release: v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.+-]*)?$'; then
+          if [ "$LABELED" = "true" ]; then
+            release=true
+          elif printf '%s\n' "$TITLE" | grep -Eq '^(release: v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.+-]*)?|[0-9]+\.[0-9]+\.[0-9]+ Release)$'; then
             release=true
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
@@ -136,7 +161,7 @@ jobs:
             echo "run=false" >> "$GITHUB_OUTPUT"
           elif [ "$mode" = "release" ] && [ "$release" != "true" ]; then
             # shellcheck disable=SC2016
-            echo 'conventions: not a release PR; with CONVENTIONS_REVIEW release the review runs on a PR titled `release: <version>`' | tee -a "$GITHUB_STEP_SUMMARY"
+            echo 'conventions: not a release PR; with CONVENTIONS_REVIEW release the review runs on a PR labeled `release` or titled `<version> Release` or `release: <version>`' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           elif app "$AUTHOR" || app "$ACTOR"; then
             echo "conventions: a pull request opened or updated by a GitHub App gets no review" | tee -a "$GITHUB_STEP_SUMMARY"
@@ -189,7 +214,8 @@ jobs:
       # branch, another repository's from GitHub with the workflow's token, which reads a
       # public repository and fails on a private one, naming the document. A README that
       # links none ends the job green here, with a notice and `review=false`: no API call.
-      # On a release PR (the gate's `release`) the range runs from the last release tag.
+      # On a release PR (the gate's `release`) the range runs from the last release tag, and
+      # the version comes from the title, else from the head's pyproject.toml.
       - name: Prepare the review material
         id: prepare
         if: steps.gate.outputs.run == 'true'
