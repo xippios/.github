@@ -4,8 +4,9 @@ caller's own `scripts/adr_index.py` writes from the records in `docs/adr/`, or w
 number twice, and each failure names the script to run. The tests hold the workflow's declaration
 and its pins, as test_spelling.py holds those of spelling.yml, and run the workflow's own step in a
 caller's checkout whose script stands in for the template's: it writes the list of the records,
-and with `--check` writes nothing and exits 1 when the index differs. It checks no number twice,
-as an older script might not, and it runs only under `python -I`."""
+and with `--check` writes nothing and exits 1 when the index differs. Like the template's, it
+writes nothing and exits 1 in both modes while a record's first line does not read. It checks no
+number twice, as an older script might not, and it runs only under `python -I`."""
 
 import json
 import os
@@ -25,6 +26,7 @@ RUN = f"python3 {SCRIPT}"
 
 STAND_IN = """\
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -32,6 +34,16 @@ if not sys.flags.isolated:
     sys.exit("adr_index.py: run without -I")
 root = Path(__file__).resolve().parent.parent
 names = sorted(p.name for p in (root / "docs" / "adr").glob("*.md"))
+unread = [
+    name
+    for name in names
+    if re.match(r"\\d{4}-.+\\.md$", name)
+    and not (root / "docs" / "adr" / name).read_text().startswith(f"# ADR-{name[:4]}: ")
+]
+for name in unread:
+    print(f"docs/adr/{name}: the first line does not read")
+if unread:
+    sys.exit(1)
 wanted = {
     "docs/adr.md": "".join(f"- {name}\\n" for name in names),
     "docs/adr.json": json.dumps({"records": names}) + "\\n",
@@ -194,6 +206,21 @@ def test_a_missing_index_fails(tmp_path: Path, caller: Path) -> None:
     assert any(f"`{RUN}`" in line for line in errors(out)), out
 
 
+def test_a_record_that_does_not_read_is_mended_before_the_script_runs(
+    tmp_path: Path, caller: Path
+) -> None:
+    """The script writes nothing while a record does not read, so running it alone mends nothing:
+    the annotation says first to mend what the script's lines name (.github#59, finding 1)."""
+    (caller / "docs" / "adr" / "0003-wrong.md").write_text("# Wrong title\n")
+    code, out = check(tmp_path)
+    assert code != 0, out
+    assert "docs/adr/0003-wrong.md: the first line does not read" in out
+    failed = [line for line in errors(out) if f"`{RUN}`" in line]
+    assert len(failed) == 1, out
+    assert "mend" in failed[0], out
+    assert failed[0].index("mend") < failed[0].index(f"`{RUN}`"), out
+
+
 def test_a_number_taken_twice_fails_whatever_the_script_says(tmp_path: Path, caller: Path) -> None:
     (caller / "docs" / "adr" / "0002-another-cap.md").write_text("# ADR-0002: Another cap\n")
     write_index(caller)
@@ -215,7 +242,9 @@ def test_only_a_numbered_record_takes_a_number(tmp_path: Path, caller: Path) -> 
 
 
 def test_a_record_name_cannot_start_a_workflow_command(tmp_path: Path, caller: Path) -> None:
-    (caller / "docs" / "adr" / "0002-x\n::warning::planted 100%.md").write_text("# ADR-0002\n")
+    (caller / "docs" / "adr" / "0002-x\n::warning::planted 100%.md").write_text(
+        "# ADR-0002: Planted\n"
+    )
     write_index(caller)
     code, out = check(tmp_path)
     assert code != 0, out
