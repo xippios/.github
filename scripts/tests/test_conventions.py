@@ -226,8 +226,7 @@ def test_two_tool_calls_then_the_verdict(
 
     line = (
         "conventions: verdict=ready findings=1 blocking=0 turns=3 tool_calls=4 input=160 "
-        "cache_write=1035 cache_read=2030 output=60 cost_estimate_usd=0.01 "
-        "model=claude-opus-5-5 effort=high"
+        "cache_write=1035 cache_read=2030 output=60 model=claude-opus-5-5 effort=high"
     )
     assert code == 0
     assert result["verdict"] == "ready"
@@ -264,6 +263,35 @@ def test_two_tool_calls_then_the_verdict(
     assert "src/pkg/mod.py:2: VALUE = 1" in results[1]["content"]
     third = client.messages.requests[2]["messages"]
     assert third[-1]["content"][0]["content"] == "src/pkg/mod.py"
+
+
+@pytest.mark.parametrize(
+    ("value", "reason"),
+    [("ready", None), ("not ready", None), (None, "API error: RateLimitError: rate limited")],
+)
+def test_the_summary_line_carries_no_cost_figure(value, reason) -> None:
+    """The line leaves the estimate out for every caller, whatever its visibility, and keeps
+    the token counts, the model and the effort (.github#65)."""
+    outcome = fr.Outcome(
+        model=fr.MODEL,
+        effort="xhigh",
+        verdict=value,
+        reason=reason,
+        usage=fr.Usage(
+            input=1_000_000, cache_write=2_000_000, cache_read=3_000_000, output=4_000_000
+        ),
+        turns=7,
+        tool_calls={"read_file": 2, "submit_verdict": 1},
+    )
+    line = outcome.summary_line()
+    assert "cost" not in line
+    assert "usd" not in line.lower()
+    assert f"{outcome.usage.cost():.2f}" not in line
+    assert line.endswith(
+        " turns=7 tool_calls=3 input=1000000 cache_write=2000000 cache_read=3000000 "
+        "output=4000000 model=claude-opus-5-5 effort=xhigh"
+    )
+    assert outcome.as_json()["summary"] == line
 
 
 def test_the_request_caches_the_prefix_and_forces_nothing(

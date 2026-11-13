@@ -44,8 +44,9 @@ line's first 4,000 characters, and a timer (``SIGALRM``) stops a search after 20
 inside a regular expression too, as an ``is_error`` result.
 
 The job log is public: the script prints paths, counts, the verdict and redacted error
-text, never a file's content, a tool result or the prompt. Anything that looks like an
-Anthropic key or a GitHub token is redacted from everything it prints or writes.
+text, never a file's content, a tool result, the prompt or the cost estimate, which goes to
+``--out`` alone. Anything that looks like an Anthropic key or a GitHub token is redacted
+from everything it prints or writes.
 
 Exit status: 0 ``ready``, 1 ``not ready``, 2 no verdict (the review could not run, or ended
 without one: no key, an API error, a refusal, a ``max_tokens`` stop, the turn cap) and, for
@@ -85,7 +86,9 @@ MAX_TOKENS = 64000
 KEY_ENV = "ANTHROPIC_API_KEY"
 
 # List prices of claude-opus-5-5 in USD per million tokens; a cache write (5-minute TTL)
-# costs 1.25 times the input price. The cost in the summary is an estimate from these.
+# costs 1.25 times the input price. The cost in the `--out` document is an estimate from
+# these; the summary line, which the job log and the job summary show, carries none
+# (.github#65).
 INPUT_USD = 4.0
 OUTPUT_USD = 20.0
 CACHE_WRITE_USD = INPUT_USD * 1.25
@@ -1205,13 +1208,17 @@ class Outcome:
         return {"ready": 0, "not ready": 1}.get(self.verdict or "", 2)
 
     def summary_line(self) -> str:
-        """The one line for the log and the step summary, redacted."""
+        """The one line for the log and the step summary, redacted.
+
+        It carries the token counts, the model and the effort, and no cost estimate, for
+        every caller (.github#65).
+        """
         usage = self.usage
         counts = (
             f"turns={self.turns} tool_calls={sum(self.tool_calls.values())} "
             f"input={usage.input} cache_write={usage.cache_write} "
             f"cache_read={usage.cache_read} output={usage.output} "
-            f"cost_estimate_usd={usage.cost():.2f} model={self.model} effort={self.effort}"
+            f"model={self.model} effort={self.effort}"
         )
         if self.verdict is None:
             return redact(f"conventions: no verdict ({self.reason}) {counts}")
