@@ -19,9 +19,11 @@
 # opening starts the review.
 #
 # The mode is the caller's variable CONVENTIONS_REVIEW, a repository variable over the
-# organization's by GitHub's precedence: `release` (the default when neither is set) reviews a
-# release PR on any branch and passes any other with a notice; `all` reviews every PR; `off`
-# passes every PR with a notice; another value fails naming the three.
+# organization's by GitHub's precedence, read without case in the condition and the Gate alike:
+# `release` (the default when neither is set) reviews a release PR on any branch; `all` reviews
+# every PR; `off` reviews none; another value fails naming the three. A PR the condition skips
+# gets no notice, since no job runs; one it admits that the mode does not review passes with
+# the Gate's notice.
 # On a release PR the review judges the range from the last release tag reachable from the
 # base to the head, since the PR's own diff is the CHANGELOG and the bump; without a tag it
 # judges the PR's own diff and says so. It names the version the release ships, read from the
@@ -130,13 +132,15 @@ jobs:
             esac
           }
           # The caller's CONVENTIONS_REVIEW, `release` when neither the repository nor the
-          # organization sets it. The backticks below are Markdown for the summary, not
-          # command substitutions.
+          # organization sets it, read without case as the job's condition reads it, so `Off`
+          # is `off` in both. The backticks below are Markdown for the summary, not command
+          # substitutions.
           mode="${MODE:-release}"
+          mode="${mode,,}"
           case "$mode" in
             release|all|off) ;;
             *)
-              echo "conventions: CONVENTIONS_REVIEW is \`$mode\`; it is \`release\`, \`all\` or \`off\` (C57)" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "conventions: CONVENTIONS_REVIEW is \`$MODE\`; it is \`release\`, \`all\` or \`off\` (C57)" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
               ;;
           esac
