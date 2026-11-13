@@ -195,6 +195,34 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
 
   PHP 8.4 and Composer 2.11.1 come from setup-php. Permissions: `contents: read`. The job times
   out after 20 minutes.
+- **`.github/workflows/adr-index.yml`** (https://github.com/xippios/coordinate-core/issues/755,
+  https://github.com/xippios/.github/issues/46) checks that a repository's index of its
+  architecture decision records is current: `docs/adr.md` and `docs/adr.json` must be what the
+  repository's own `scripts/adr_index.py` writes from the records in `docs/adr/`, and no two
+  records may take one number. A repository's `gates.yml` calls it as a job, check
+  `adr-index / adr-index`, with no input and no secret:
+
+  ```yaml
+  adr-index:
+    uses: xippios/.github/.github/workflows/adr-index.yml@main
+  ```
+
+  - **The script is the caller's**: the template of a coordinate repository renders
+    `scripts/adr_index.py`, and the job runs that file from the checkout, never a copy of its
+    own, with `--check`, which writes nothing and exits 1 when either file differs from the
+    records or a record does not read. The runner's `python3` runs it with `-I`, as `coordinate`
+    does, since the script needs the standard library alone. A caller without the script fails,
+    naming it.
+  - **A number twice**: the job reads the records' numbers itself, from the names
+    `docs/adr/NNNN-<slug>.md` the script reads, so two records with one number fail the check
+    whatever the caller's script checks, each pair named. On a pull request the checkout is its
+    merge with the base, so a number the base took since the branch left it counts as taken.
+  - **The failure names the script**: each error annotation says to run
+    `python3 scripts/adr_index.py`, which writes both files from the records, and to commit
+    them; the script's own lines above it say what differs. A record's name reaches an
+    annotation escaped, so no name starts a workflow command.
+
+  Permissions: `contents: read`; the checkout keeps no token. The job times out after 5 minutes.
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
   family's version, 0.17.1), the scripts' tests on a pinned pytest (with the review's
   `anthropic` 2.3.0 and `spelling.yml`'s codespell; a fake client, no key, no network), and
