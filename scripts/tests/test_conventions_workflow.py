@@ -183,6 +183,22 @@ def test_another_value_fails_and_names_the_three(tmp_path: Path) -> None:
     assert "run" not in outputs
 
 
+@pytest.mark.parametrize(
+    ("value", "mode"), [("Off", "off"), ("OFF", "off"), ("Release", "release"), ("ALL", "all")]
+)
+@pytest.mark.parametrize("title", ["feat: a change", "0.7.4 Release"])
+def test_the_gate_reads_the_mode_without_case_as_the_condition_does(
+    tmp_path: Path, value: str, mode: str, title: str
+) -> None:
+    """The condition compares the mode without case (finding 1 of the review of .github#60), so
+    the Gate reads `Off` as `off`: one value means one mode in both."""
+    code, _out, outputs = gate(tmp_path, mode=value, title=title)
+    expected, _out, _outputs = gate(tmp_path, mode=mode, title=title)
+    assert code == expected == 0
+    assert outputs == _outputs
+    assert outputs["mode"] == mode
+
+
 def test_a_reviewed_pr_without_the_key_fails_naming_the_secret(tmp_path: Path) -> None:
     code, out, _outputs = gate(tmp_path, mode="release", title="release: 0.6.4", key=False)
     assert code == 1
@@ -305,15 +321,19 @@ def test_a_pr_without_the_label_and_the_title_skips_the_job(
     assert not admitted(mode, "feat: a change", labels)
 
 
-@pytest.mark.parametrize("mode", ["", "release", "off", "all", "relase"])
+@pytest.mark.parametrize(
+    "mode", ["", "release", "off", "all", "relase", "Off", "OFF", "Release", "ALL"]
+)
 @pytest.mark.parametrize("labels", [(), ("bug",), ("release",)])
 @pytest.mark.parametrize("who", [{}, {"key": False, "fork": True}, {"author": "some-app[bot]"}])
 def test_a_skipped_job_hides_no_review_and_no_failure(
     tmp_path: Path, mode: str, labels: tuple[str, ...], who: dict
 ) -> None:
     """Whatever the condition skips, the Gate would have passed without a review: a mode other
-    than `release` and `off` always starts the job, so a wrong value still fails naming the
-    three, and a title the condition admits only by its looser reading ends at the Gate."""
+    than `release` and `off`, in any case, always starts the job, so a wrong value still fails
+    naming the three; a value that differs from `off` or `release` by case alone is that mode
+    in the Gate too; and a title the condition admits only by its looser reading ends at the
+    Gate."""
     skipped = 0
     for title in ("feat: a change", *RELEASE_TITLES, *OTHER_TITLES):
         code, _out, outputs = gate(tmp_path, mode=mode, title=title, labels=labels, **who)
@@ -321,7 +341,7 @@ def test_a_skipped_job_hides_no_review_and_no_failure(
             skipped += 1
             assert (code, outputs.get("run")) == (0, "false"), title
     # The condition skips some pull request exactly where no label and no other mode admits it.
-    assert bool(skipped) == (mode in ("", "release", "off") and not labeled(labels))
+    assert bool(skipped) == (mode.lower() in ("", "release", "off") and not labeled(labels))
 
 
 # --- the steps after the gate ------------------------------------------------------------
@@ -357,8 +377,45 @@ def test_the_readme_describes_the_review_by_mode() -> None:
     assert "`labeled`" in flat
     assert "skipped and passing" in flat
     assert "`pyproject.toml`" in flat
+    # A PR the condition skips gets no notice; the notice is the Gate's, on a PR the condition
+    # admits (finding 3 of the review of .github#60). The mode is read without case (finding 1).
+    assert "passes any other with a notice" not in flat
+    assert "passes every pull request with a notice" not in flat
+    assert "the Gate's notice" in flat
+    assert "read without case" in flat
     assert "sdk-core" not in section
     assert "`--docs`" not in README
+
+
+def workflow_header() -> str:
+    """The comment that opens conventions.yml, before its first key, as one line."""
+    lines = []
+    for line in WORKFLOW.splitlines():
+        if line.strip() and not line.startswith("#"):
+            break
+        lines.append(line.removeprefix("#"))
+    return " ".join(" ".join(lines).split())
+
+
+def test_the_workflows_header_says_a_skipped_pr_gets_no_notice() -> None:
+    header = workflow_header()
+    assert "passes any other with a notice" not in header
+    assert "passes every PR with a notice" not in header
+    assert "the Gate's notice" in header
+    assert "read without case" in header
+
+
+def test_the_readmes_caller_runs_on_labeled() -> None:
+    """The wiring's text and its caller give the types a caller runs on, `labeled` among them,
+    so a label set after the opening starts the review (finding 2 of the review of .github#60).
+    """
+    section = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
+    flat = " ".join(section.split())
+    assert "`opened`, `synchronize`, `reopened`, `edited` and `labeled`" in flat
+    assert "`types: [opened, synchronize, reopened, edited, labeled]`" in flat
+    assert "    types: [opened, synchronize, reopened, edited, labeled]\n" in section
+    assert "types: [opened, synchronize, reopened, edited]" not in section
+    assert "a label set after the opening starts the review" in flat
 
 
 def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() -> None:
