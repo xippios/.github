@@ -52,7 +52,7 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   spelling:
     uses: xippios/.github/.github/workflows/spelling.yml@main
     with:
-      paths: rules docs README.md CLAUDE.md .claude
+      paths: rules docs/style docs/adr docs/adr.md docs/adr.json docs/reports README.md CLAUDE.md .claude workspace.toml labels.yml
   ```
 
   A line that must keep a British word, such as a compatibility read of an old key, carries
@@ -315,7 +315,7 @@ jobs:
   spelling:
     uses: xippios/.github/.github/workflows/spelling.yml@main
     with:
-      paths: rules docs README.md CLAUDE.md .claude
+      paths: rules docs/style docs/adr docs/adr.md docs/adr.json docs/reports README.md CLAUDE.md .claude workspace.toml labels.yml
 
   conventions:
     uses: xippios/.github/.github/workflows/conventions.yml@main
@@ -329,23 +329,14 @@ jobs:
 
 ## Rulesets
 
-The organization's rulesets by name (gate coordinate#9; `gh api orgs/xippios/rulesets`), as
-far as they touch this repository and the checks of its workflows:
+The organization's ruleset on this repository (gate coordinate#9;
+`gh api orgs/xippios/rulesets`):
 
 - **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
   required, one approving review, review from code owners (`.github/CODEOWNERS` names
   the human for every path), stale approvals dismissed on push, `ci` and `review` required,
   merge or squash. The review does not run here (C58); `ci` calls `spelling.yml` over this
   repository's files.
-- **`Coordinate Review`** (org branch ruleset on the coordinate roots) requires
-  `spelling / spelling` and `conventions / conventions`, the contexts of the root's caller,
-  beside `review`; **`Coordinate Core`** requires `conventions / conventions` beside its own
-  checks.
-- **`XIPPIOS SDK Main`** (org branch ruleset on `main` of `sdk-*` and `xippios-mcp`) requires
-  `ci` and `review`, strict, and **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of
-  the same repositories) restricts the update and the deletion of a `v*` tag.
-- The others, `Coordinate Main`, `Coordinate Tags`, `XIPPIOS Web Main`, `XIPPIOS Web Tags` and
-  `XIPPIOS Branch Names`, require no context of these workflows.
 
 ## Running the checks locally
 
