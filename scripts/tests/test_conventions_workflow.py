@@ -374,7 +374,9 @@ def test_the_readme_describes_the_review_by_mode() -> None:
     assert "`<version> Release`" in flat
     assert "`release: <version>`" in flat
     assert "coordinate-core 0.7.4" in flat
-    assert "`labeled`" in flat
+    # A caller runs on no label, so a label set later counts from the next event (.github#68).
+    assert "`labeled`" not in flat
+    assert "a label set after the opening counts from the next push or edit" in flat
     assert "skipped and passing" in flat
     assert "`pyproject.toml`" in flat
     # A PR the condition skips gets no notice; the notice is the Gate's, on a PR the condition
@@ -405,17 +407,30 @@ def test_the_workflows_header_says_a_skipped_pr_gets_no_notice() -> None:
     assert "read without case" in header
 
 
-def test_the_readmes_caller_runs_on_labeled() -> None:
-    """The wiring's text and its caller give the types a caller runs on, `labeled` among them,
-    so a label set after the opening starts the review (finding 2 of the review of .github#60).
-    """
+def test_the_workflows_header_lays_out_a_caller_on_no_label() -> None:
+    """The header gives the four types a caller of coordinate-core 0.7.6 runs on, and says that
+    a label set after the opening counts from the next push or edit (.github#68)."""
+    header = workflow_header()
+    assert "opened, synchronize, reopened and edited" in header
+    assert "labeled" not in header.replace("labeled `release`", "")
+    assert "a label set after the opening counts from the next push or edit" in header
+
+
+def test_the_readmes_caller_runs_on_no_label() -> None:
+    """The wiring's text and its caller give the four types a caller of coordinate-core 0.7.6
+    runs on, without `labeled` and with no `if:` on a job, and say that a label set after the
+    opening counts from the next push or edit (.github#68, C57 as amended by
+    coordinate-core#1059)."""
     section = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(section.split())
-    assert "`opened`, `synchronize`, `reopened`, `edited` and `labeled`" in flat
-    assert "`types: [opened, synchronize, reopened, edited, labeled]`" in flat
-    assert "    types: [opened, synchronize, reopened, edited, labeled]\n" in section
-    assert "types: [opened, synchronize, reopened, edited]" not in section
-    assert "a label set after the opening starts the review" in flat
+    caller = section.split("```yaml\n", 1)[1].split("```", 1)[0]
+    assert "`opened`, `synchronize`, `reopened` and `edited`" in flat
+    assert "    types: [opened, synchronize, reopened, edited]\n" in caller
+    assert "labeled" not in section
+    assert "if:" not in caller
+    assert "uses: xippios/.github/.github/workflows/conventions.yml@main" in caller
+    assert "A label set after the opening" in flat
+    assert "counts from the next push or edit" in flat
 
 
 def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() -> None:

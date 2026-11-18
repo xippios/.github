@@ -4,8 +4,12 @@ its name from 2026-10-27 to the rename back, and name the organization's ruleset
 
 The repository is public, so neither the README nor the header comment of a workflow states a
 known gap of the gates, a bypass of a ruleset or a cost (coordinate-core#630, coordinate-core#631,
-.github#44)."""
+.github#44). The README links no private repository: of the organization's repositories it links
+this one alone and names the others in words (proof 1 of .github 0.3.0). It and the comment of
+`.github/CODEOWNERS` name the human by role, in words, as the house style names a member
+(.github#63); the rule line keeps the login, which is what GitHub reads."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -14,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 README = (ROOT / "README.md").read_text()
 WORKFLOWS = ROOT / ".github" / "workflows"
 CI = (WORKFLOWS / "ci.yml").read_text()
+CODEOWNERS = (ROOT / ".github" / "CODEOWNERS").read_text()
 # The wording of a known gap, a bypass and a cost, as the README and the headers had it.
 UNSTATED = ("known limits", "not a boundary", "net is open", "bypass", "cost", "billed", "credits")
 
@@ -34,17 +39,35 @@ def test_the_readme_is_titled_by_the_repositorys_name() -> None:
 
 
 def test_the_caller_example_names_the_repository_as_it_is() -> None:
-    assert "uses: xippios/.github/.github/workflows/merge-class.yml@main" in README
+    assert "uses: xippios/.github/.github/workflows/spelling.yml@main" in README
     assert "uses: xippios/.github/.github/workflows/conventions.yml@main" in README
     assert "uses: xippios/sdk-gates/.github/workflows/" not in README
 
 
 def test_the_rulesets_named_are_the_organizations() -> None:
-    for name in ("GitHub Main", "XIPPIOS SDK Main", "XIPPIOS SDK Tags"):
+    for name in ("GitHub Main", "Coordinate Review", "XIPPIOS SDK Main", "XIPPIOS SDK Tags"):
         assert f"`{name}`" in README
-    for old in ("sdk-main-protection", "sdk-merge-class"):
-        assert old not in README
-        assert old not in CI
+    assert "sdk-main-protection" not in README
+    assert "sdk-main-protection" not in CI
+
+
+def test_the_readme_links_no_repository_of_the_organization_but_this_one() -> None:
+    linked = set(re.findall(r"https://github\.com/xippios/([A-Za-z0-9._-]+)", README))
+    assert linked <= {".github"}
+
+
+def test_the_readme_and_codeowners_name_the_human_by_role() -> None:
+    comment = "\n".join(line for line in CODEOWNERS.splitlines() if line.startswith("#"))
+    rule = next(line.split() for line in CODEOWNERS.splitlines() if line.startswith("*"))
+    logins = [owner.removeprefix("@") for owner in rule[1:]]
+    for login in logins:
+        assert login not in README
+        assert login not in comment
+    assert "the human's" in comment
+    flat = " ".join(README.split())
+    assert "Every pull request here waits for the human" in flat
+    assert "`.github/CODEOWNERS` names the human for every path" in flat
+    assert "the human's code-owner approval" in flat
 
 
 def test_ci_describes_this_repository() -> None:

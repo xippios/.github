@@ -7,13 +7,22 @@ longer calls `auto.yml`, so the workflow, its tests and its README entry leave t
 The forms generator is retired (.github#33). From coordinate-core 0.6.4 the coordinate
 workspace's adoption run writes the issue forms and the PR template from the style of the core's
 release (coordinate-core#371), so nothing runs `scripts/forms.py`, and it leaves with its tests.
+
+The merge-class gate is retired (.github#31, step 1 of .github 0.3.0). The sdk repositories merge
+by the reviewer's approval and their code owners, as every coordinate workspace does, and their
+callers name the workflow no more, so `merge-class.yml` leaves with `scripts/merge_class.py`, its
+tests and the names that only it used, `FAMILY_REPOSITORIES` and `FAMILY_TEST_FILES`. The README
+describes what stays, without the families, the merge classes and the classifier's local run.
 """
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 README = (ROOT / "README.md").read_text()
+# What only the merge-class gate named.
+MERGE_CLASS = ("merge-class", "merge_class", "FAMILY_REPOSITORIES", "FAMILY_TEST_FILES")
 
 
 def test_the_auto_gate_is_gone() -> None:
@@ -31,8 +40,39 @@ def test_no_workflow_calls_or_names_the_auto_gate() -> None:
 def test_the_readme_lists_the_workflows_that_remain() -> None:
     assert "workflows/auto.yml" not in README
     assert "COORDINATE_PLATFORM_LOGIN" not in README
-    for name in ("merge-class.yml", "conventions.yml", "spelling.yml", "ci.yml"):
-        assert f"**`.github/workflows/{name}`**" in README, name
+    listed = set(re.findall(r"\*\*`\.github/workflows/([a-z-]+\.yml)`\*\*", README))
+    assert listed == {workflow.name for workflow in WORKFLOWS.glob("*.yml")}
+    for name in ("spelling.yml", "conventions.yml", "site-tests.yml", "adr-index.yml", "ci.yml"):
+        assert name in listed, name
+
+
+def test_the_merge_class_gate_is_gone() -> None:
+    assert not (WORKFLOWS / "merge-class.yml").exists()
+    assert not (ROOT / "scripts" / "merge_class.py").exists()
+    assert not (ROOT / "scripts" / "tests" / "test_merge_class.py").exists()
+
+
+def test_nothing_names_the_merge_class_gate_or_its_family_names() -> None:
+    files = [ROOT / "README.md", ROOT / "ruff.toml", *sorted((ROOT / ".github").rglob("*"))]
+    files += sorted((ROOT / "scripts").rglob("*.py"))
+    this = Path(__file__).resolve()
+    for path in files:
+        if not path.is_file() or path.resolve() == this:
+            continue
+        text = path.read_text()
+        for name in MERGE_CLASS:
+            assert name not in text, f"{path.relative_to(ROOT)} names {name}"
+
+
+def test_the_readme_describes_no_family_and_no_merge_class() -> None:
+    """The core's own documents hold the families and the merge classes from coordinate-core
+    0.7.5 on; the README keeps what a caller of the remaining workflows needs."""
+    for heading in ("## Merge classes", "## Running the classifier locally"):
+        assert heading not in README
+    flat = " ".join(README.split()).lower()
+    assert "famil" not in flat
+    assert "classifier" not in flat
+    assert "gates_caller" not in flat
 
 
 def test_the_forms_generator_is_gone() -> None:
@@ -49,6 +89,5 @@ def test_the_readme_says_who_writes_the_forms() -> None:
     assert "forms.py" not in README
     section = README.split("\n## The forms\n", 1)[1].split("\n## ", 1)[0]
     assert "adoption run" in section
-    assert "https://github.com/xippios/coordinate-core/issues/371" in section
     assert "https://github.com/xippios/.github/issues/33" in section
     assert "`config.yml` stays by hand" in section
