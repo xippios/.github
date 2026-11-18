@@ -120,15 +120,19 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     in the `[project]` dependencies or optional dependencies of its `pyproject.toml` and the
     link names a branch: then it is read at the highest release tag of that repository, `v`
     and a release version, that the requirement admits, as `~=0.3.0` admits `v0.3.2` and no
-    `v0.4.0` (https://github.com/xippios/.github/issues/70). So a repository is judged by the
-    documents of the release it is on, and the pull request that raises its requirement is
-    the first judged by the newer ones. The package's name comes from that repository's own
-    `pyproject.toml`, so the check names no repository. A link that names a tag or a commit,
-    and a repository whose package the head does not require, are read at the link's ref.
-    Where no release tag fits, or the requirement names no version the check compares (a
+    `v0.4.0` (https://github.com/xippios/.github/issues/70, as the human decided in
+    https://github.com/xippios/.github/issues/74). The requirement is the head's, so a
+    repository is judged by the documents of the release it is on, and the pull request that
+    raises its requirement is the first judged by the newer ones
+    (https://github.com/xippios/.github/issues/75). The package's name comes from that
+    repository's own `pyproject.toml`, so the check names no repository; one that GitHub does
+    not find, a private repository's included, means no package. A link that names a tag or a
+    commit, and a repository whose package the head does not require, are read at the link's
+    ref. Where no release tag fits, or the requirement names no version the check compares (a
     release version after `~=`, `==`, `!=`, `<=`, `>=`, `<` or `>`, `.*` after `==` and
     `!=`), or the file is not in that release, the link's ref stands and the job summary says
-    so. Tags that cannot be read fail the check, naming the repository. The job summary and
+    so. That repository's tags, and its `pyproject.toml` for any reason but "not found", that
+    cannot be read fail the check, naming the repository. The job summary and
     `documents.json` name the ref each document was read at. A link the review
     cannot read as a file, a directory or a page outside GitHub, fails the check naming it. A
     README that links none passes with the notice "links no documents under ## Documents;

@@ -24,8 +24,9 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
   and the link names a branch, at its highest release tag (``v`` and a release version) that
   they admit (``Pins``); where none fits, or the requirement names no version the check
   compares, or the file is not in that release, the link's ref stands and the job summary
-  says so. ``documents.json`` and the job summary name the ref each document was read at,
-  and tags that cannot be read fail it, naming the repository. A README that links none
+  says so. ``documents.json`` and the job summary name the ref each document was read at.
+  That repository's tags, and its ``pyproject.toml`` for any reason but "not found", that
+  cannot be read fail it, naming the repository. A README that links none
   writes an empty list, says so, and the step output ``review=false`` tells the workflow to
   pass without a review. With ``--workdir`` it first clones the repository there, at the pull
   request's head.
@@ -168,6 +169,8 @@ CLAUSE = re.compile(r"\s*(~=|==|!=|<=|>=|<|>)\s*(\d{1,9}(?:\.\d{1,9}){0,9})(\.\*
 RELEASE_TAG = re.compile(r"v(\d{1,9}(?:\.\d{1,9}){0,9})")
 # A link's ref that names a commit, full or abbreviated: read there, as one at a tag is.
 COMMIT_REF = re.compile(r"[0-9a-f]{7,64}")
+# gh's error for a file or repository GitHub does not find, a private one's included.
+NOT_FOUND = re.compile(r"\(HTTP 404\)")
 
 REPROMPT = "Call submit_verdict now."
 VERDICTS = ("ready", "not ready")
@@ -838,12 +841,20 @@ def requirement_of(requirements: Sequence[str], package: str) -> Requirement | N
 def package_name(owner: str, repository: str, gitref: str) -> str | None:
     """The normalized ``[project]`` name in another repository's ``pyproject.toml`` at ``gitref``.
 
-    None where the file cannot be read, is no TOML or names no package.
+    None where GitHub finds no such file (a private repository's too, whose document then fails
+    as before), or it is no TOML or names no package. Any other failure to read it (a server
+    error, a rate limit, a lost connection) is a PrepareError naming the repository: leaving
+    the link's ref would judge by unreleased rules, with no line that says why.
     """
     endpoint = f"repos/{owner}/{repository}/contents/pyproject.toml?ref={quote(gitref)}"
     proc = _run(["gh", "api", endpoint, "-H", RAW_ACCEPT])
     if proc.returncode != 0:
-        return None
+        if NOT_FOUND.search(proc.stderr.decode("utf-8", errors="replace")):
+            return None
+        raise PrepareError(
+            f"the pyproject.toml of {printable(f'{owner}/{repository}')} could not be read with "
+            "the workflow's token; the review cannot run"
+        )
     try:
         project = tomllib.loads(proc.stdout.decode("utf-8")).get("project")
     except (UnicodeDecodeError, tomllib.TOMLDecodeError):
