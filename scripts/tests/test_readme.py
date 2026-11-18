@@ -19,6 +19,11 @@ README = (ROOT / "README.md").read_text()
 WORKFLOWS = ROOT / ".github" / "workflows"
 CI = (WORKFLOWS / "ci.yml").read_text()
 CODEOWNERS = (ROOT / ".github" / "CODEOWNERS").read_text()
+# The paths a coordinate root's `gates.yml` gives `spelling.yml` at coordinate-core 0.7.6.
+ROOT_PATHS = (
+    "paths: rules docs/style docs/adr docs/adr.md docs/adr.json docs/reports README.md CLAUDE.md"
+    " .claude workspace.toml labels.yml"
+)
 # The wording of a known gap, a bypass and a cost, as the README and the headers had it.
 UNSTATED = ("known limits", "not a boundary", "net is open", "bypass", "cost", "billed", "credits")
 
@@ -44,11 +49,24 @@ def test_the_caller_example_names_the_repository_as_it_is() -> None:
     assert "uses: xippios/sdk-gates/.github/workflows/" not in README
 
 
-def test_the_rulesets_named_are_the_organizations() -> None:
-    for name in ("GitHub Main", "Coordinate Review", "XIPPIOS SDK Main", "XIPPIOS SDK Tags"):
-        assert f"`{name}`" in README
+def test_the_readme_names_the_ruleset_of_this_repository_alone() -> None:
+    """The README keeps the ruleset of this repository, `GitHub Main`, and what a caller needs;
+    the rulesets of the other repositories stay in the core's private spec (ADR-0011 of
+    coordinate-core, finding 1 of the review of .github#76)."""
+    section = README.split("\n## Rulesets\n", 1)[1].split("\n## ", 1)[0]
+    assert "**`GitHub Main`**" in section
+    for name in ("Coordinate ", "XIPPIOS "):
+        assert name not in README
     assert "sdk-main-protection" not in README
     assert "sdk-main-protection" not in CI
+
+
+def test_the_callers_paths_are_the_roots() -> None:
+    """Both caller examples give `spelling.yml` the paths of a coordinate root's caller, as the
+    root's `gates.yml` names them at coordinate-core 0.7.6 (finding 2 of the review of
+    .github#76)."""
+    lines = [line.strip() for line in README.splitlines() if line.strip().startswith("paths: ")]
+    assert lines == [ROOT_PATHS, ROOT_PATHS]
 
 
 def test_the_readme_links_no_repository_of_the_organization_but_this_one() -> None:
