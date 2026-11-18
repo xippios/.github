@@ -130,10 +130,11 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     commit, and a repository whose package the head does not require, are read at the link's
     ref. Where no release tag fits, or the requirement names no version the check compares (a
     release version after `~=`, `==`, `!=`, `<=`, `>=`, `<` or `>`, `.*` after `==` and
-    `!=`), or the file is not in that release, the link's ref stands and the job summary says
-    so. That repository's tags, and its `pyproject.toml` for any reason but "not found", that
-    cannot be read fail the check, naming the repository. The job summary and
-    `documents.json` name the ref each document was read at. A link the review
+    `!=`), or GitHub does not find the file in that release, the link's ref stands and the job
+    summary says so. That repository's tags, and its `pyproject.toml` for any reason but "not
+    found", that cannot be read fail the check, naming the repository, and so does a document
+    that the release fails to serve for any reason but "not found", naming the document. The
+    job summary and `documents.json` name the ref each document was read at. A link the review
     cannot read as a file, a directory or a page outside GitHub, fails the check naming it. A
     README that links none passes with the notice "links no documents under ## Documents;
     nothing to judge", since the root's `doctor` owns that contract.

@@ -23,10 +23,12 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
   ``pyproject.toml`` name that repository's package (the name in its own ``pyproject.toml``)
   and the link names a branch, at its highest release tag (``v`` and a release version) that
   they admit (``Pins``); where none fits, or the requirement names no version the check
-  compares, or the file is not in that release, the link's ref stands and the job summary
-  says so. ``documents.json`` and the job summary name the ref each document was read at.
-  That repository's tags, and its ``pyproject.toml`` for any reason but "not found", that
-  cannot be read fail it, naming the repository. A README that links none
+  compares, or GitHub does not find the file in that release, the link's ref stands and the
+  job summary says so. ``documents.json`` and the job summary name the ref each document was
+  read at. That repository's tags, and its ``pyproject.toml`` for any reason but "not
+  found", that cannot be read fail it, naming the repository, and so does a document that
+  the release fails to serve for any reason but "not found", naming the document. A README
+  that links none
   writes an empty list, says so, and the step output ``review=false`` tells the workflow to
   pass without a review. With ``--workdir`` it first clones the repository there, at the pull
   request's head.
@@ -949,15 +951,23 @@ class Pins:
 class UnreadableDocument(PrepareError):
     """Another repository's document could not be read with the token at hand."""
 
+    def __init__(self, message: str, *, not_found: bool) -> None:
+        """``not_found``: GitHub found no such file there, a private repository's included."""
+        super().__init__(message)
+        self.not_found = not_found
+
 
 def _read_other(ref: DocumentRef) -> bytes:
     path = quote(ref.path, safe="/")
     endpoint = f"repos/{ref.owner}/{ref.repository}/contents/{path}?ref={quote(ref.ref or '')}"
     proc = _run(["gh", "api", endpoint, "-H", RAW_ACCEPT])
     if proc.returncode != 0:
+        not_found = NOT_FOUND.search(proc.stderr.decode("utf-8", errors="replace")) is not None
+        guess = ": a private repository or a missing file" if not_found else ""
         raise UnreadableDocument(
-            f"{printable(ref.where)} could not be read with the workflow's token: a private "
-            "repository or a missing file; the review cannot run"
+            f"{printable(ref.where)} could not be read with the workflow's token{guess}; the "
+            "review cannot run",
+            not_found=not_found,
         )
     return proc.stdout
 
@@ -969,7 +979,8 @@ def read_document(
 
     The repository's own document is read from ``main``; another's from GitHub, at the ref
     ``pins`` resolves (the release the head's requirement allows, else the link's ref). A
-    document that is not in that release is read at its link's ref, with a notice.
+    document that GitHub does not find in that release is read at its link's ref, with a
+    notice; any other failure to read it there fails, naming the document at the release.
     """
     where = printable(ref.where)
     if ref.directory:
@@ -986,8 +997,8 @@ def read_document(
         read = pins.resolve(ref) if pins else ref
         try:
             data = _read_other(read)
-        except UnreadableDocument:
-            if read is ref or pins is None:
+        except UnreadableDocument as exc:
+            if read is ref or pins is None or not exc.not_found:
                 raise
             pins.not_in_release(ref, read)
             read, data = ref, _read_other(ref)
