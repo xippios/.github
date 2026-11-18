@@ -197,10 +197,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     `xippios/web-<site>:dev-site-tests` into the host through such a repository, with
     `--update-with-dependencies`. The host's other packages stay as its lock has them.
   - **The suite**: the job copies `.env.example` to `.env` where the host has none, generates a
-    key and runs `php artisan test --testsuite=<site>`. Where the site has `tests/Browser`, it
-    also runs `php artisan dusk --testsuite=<site>` against the host served by
+    key and runs `php artisan test --testsuite=<site>`, whose pages render without the Vite
+    build, since the host's `Tests\TestCase` calls `withoutVite()`. Where the site has
+    `tests/Browser`, it then builds the host's assets with `npm ci --ignore-scripts` and
+    `npm run build` (https://github.com/xippios/.github/issues/69): the host's `vite.config.js`
+    takes the site's entries from `vendor/xippios/web-<site>`, where the require put the site,
+    and the host's layout loads them from `public/build/manifest.json`, without which a site's
+    page answers 500. No install script of a package runs, as the host's `.npmrc` also sets it.
+    Then it runs `php artisan dusk --testsuite=<site>` against the host served by
     `php artisan serve` at `APP_URL` `http://127.0.0.1:8000`, Laravel's recipe for Dusk on
-    GitHub Actions. The suites are the host's, one per site in its `phpunit.xml` and
+    GitHub Actions. Where the site has no `tests/Browser`, no npm runs and a notice says that
+    Dusk does not run. The suites are the host's, one per site in its `phpunit.xml` and
     `phpunit.dusk.xml`, from xippios-web 0.1.0.
   - **The checks before**: an empty secret fails the check and names it. A pull request from a
     fork never gets the secret, so it fails there. A key that web-template's `copier.yml` would
@@ -209,10 +216,13 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   - **The token** reaches two steps only: the host's checkout, which keeps no credential, and
     Composer's resolution, which runs with `--no-scripts` and `--no-plugins` and gets the token
     in `COMPOSER_AUTH`, never on disk. The skipped scripts, package discovery among them, the
-    plugins the host allows, the suite and Dusk run after it, without the token.
+    plugins the host allows, the suite, the build and Dusk run after it, without the token. The
+    build needs none: the host's `package-lock.json` takes every package from the public npm
+    registry, and its `.npmrc` names no registry and no credential.
 
-  PHP 8.4 and Composer 2.11.1 come from setup-php. Permissions: `contents: read`. The job times
-  out after 20 minutes.
+  PHP 8.4 and Composer 2.11.1 come from setup-php, and Node 22, the version the host's own
+  `ci.yml` builds with, from setup-node, with no cache. Permissions: `contents: read`. The job
+  times out after 20 minutes.
 - **`.github/workflows/adr-index.yml`** (https://github.com/xippios/coordinate-core/issues/755,
   https://github.com/xippios/.github/issues/46) checks that a repository's index of its
   architecture decision records is current: `docs/adr.md` and `docs/adr.json` must be what the
