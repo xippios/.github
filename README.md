@@ -2,39 +2,28 @@
 
 The organization's `.github` repository: its defaults, the issue forms under
 `.github/ISSUE_TEMPLATE/` and the pull request template of every repository, and the
-reusable gate workflows. Two families call the gates. The coordinate workspaces call
-`spelling.yml`, the spelling check (C79), from coordinate-core 0.5.1, and `conventions.yml`,
-the conventions review by mode on each repository's own documents, from coordinate-core 0.6.4
-(C57 as amended by coordinate-core#364, .github#32); their `auto` gate, which approved a run's
-pull request with the coordinate App, retired with 0.5.2, since the reviewer reviews a run's
-pull request like any other (coordinate-core#133, .github#26). The `sdk-*` repositories of the
-xippios SDK family call `merge-class` and `conventions`, the merge gate with the classifier
-behind it and the same review, until the sdk migration moves the family to the coordinate
-gates (coordinate-core plan §11.7). The conventions review keeps its place beside the reviewer
-for good (C57). GitHub decides what merges: the required checks pass, the required approvals
-are there, and auto-merge merges. The sites of the web workspace call `site-tests.yml`, which
-runs a site's suite through the host xippios-web, from web-template 0.1.0
-(https://github.com/xippios/.github/issues/30).
+reusable workflows that a repository calls as jobs. The coordinate workspaces call
+`spelling.yml`, the spelling check (C79), from coordinate-core 0.5.1, and
+`conventions.yml`, the conventions review by mode on each repository's own documents, from
+coordinate-core 0.6.4 (C57 as amended by coordinate-core#364, .github#32); `adr-index.yml`
+checks a repository's index of its decision records. The conventions
+review keeps its place beside the reviewer for good (C57). GitHub decides what merges: the
+required checks pass, the required approvals are there, and auto-merge merges. The sites of the
+web workspace call `site-tests.yml`, which runs a site's suite through the host xippios-web,
+from web-template 0.1.0 (https://github.com/xippios/.github/issues/30).
 
 Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
 `.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
-clone in the coordinate root is `defaults`. GitHub redirected the old name until 2026-11-03:
-the last run that checked this repository out as `xippios/sdk-gates` passed that step at
-13:21 UTC (run 41643651975), and by 14:09 UTC the name answered 404 (run 41650920936). Since
-C58 no run of this repository exercises that checkout. Both old workflows now check the
-repository out as `xippios/.github` (gap .github#16), into the directory still named
-`.sdk-gates`. What still names the old repository is the `uses:` lines in the `gates.yml` of
-sdk-core, sdk-template and the other sdk callers, which the sdk migration rewrites to
-`xippios/.github/…`, the review's job to `conventions:` calling `conventions.yml` (C57);
-until then those gate checks fail at the call, and the sdk family's ruleset, which requires
-`ci` alone, merges without them.
+clone in the coordinate root is `defaults`. GitHub redirected the old name until 2026-11-03,
+so `conventions.yml` checks the repository out by its name, `xippios/.github` (gap
+.github#16), into the directory still named `.sdk-gates`.
 
 ## The forms
 
 The issue forms under `.github/ISSUE_TEMPLATE/` and `.github/pull_request_template.md` are
 written by the coordinate workspace's adoption run from `docs/style/issues.md` and `pulls.md` of
 the coordinate-core release it adopts, from 0.6.4 on, and arrive as that run's pull request (C73,
-C74, https://github.com/xippios/coordinate-core/issues/371). A form has one field per section of
+C74). A form has one field per section of
 its template, in the same order and with the same names. It carries its issue type and no title
 prefix, and it has no field for who filed, since the account and the `by:` label say that (C62).
 Each file's header names the release it was written from: a form changes in the core's style and
@@ -43,11 +32,6 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
 
 ## The workflows
 
-- **`.github/workflows/merge-class.yml`** classifies a pull request as `auto` or `human`
-  with `scripts/merge_class.py`, always read from `main` of this repository. `auto` passes
-  the check; `human` fails it, with the rules hit, the trusted files and the remaining
-  changed files in the job summary. Permissions: `contents: read`. The job times out
-  after 20 minutes; the template clone, the render and the sdk-core clone each after 5.
 - **`.github/workflows/spelling.yml`** (coordinate-core 0.5.1, C79, .github#18) is the
   spelling check of the coordinate workspaces: a reusable workflow a repository's `gates.yml`
   calls as a job with the paths to check, check `spelling / spelling`. It runs codespell,
@@ -92,15 +76,14 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
   - **The release pull request** (https://github.com/xippios/.github/issues/47): one labeled
     `release`, or titled `<version> Release`, and `release: <version>` until every workspace has
-    adopted coordinate-core 0.7.4 (`docs/style/pulls.md#release-pr` of a coordinate root,
-    https://github.com/xippios/coordinate-core/issues/791 and
-    https://github.com/xippios/coordinate-core/issues/805), on any branch. The job's own `if:`
+    adopted coordinate-core 0.7.4 (`docs/style/pulls.md#release-pr` of a coordinate root), on
+    any branch. The job's own `if:`
     skips any other pull request unless the mode is `all` or a value the Gate refuses, so a
     caller needs no condition of its own: its check `conventions / conventions` reports as
     skipped and passing, and no runner starts. GitHub's expressions know no regular expression
     and compare without case, so the condition admits a title by its start, `release:` and a
     space, or by its end, a space and `Release`, and the Gate below matches it exactly. A caller
-    runs on `labeled` too, so a label set after the opening starts the review.
+    runs on no label, so a label set after the opening counts from the next push or edit.
   - **The mode**: the caller's variable `CONVENTIONS_REVIEW`, read from the calling repository,
     where a repository variable overrides the organization's by GitHub's precedence, and read
     without case by the condition and the Gate alike, so `Off` is `off`. `release`, the default
@@ -108,8 +91,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     reviews none. Any other value fails the check and names the three. A pull request the
     condition skips gets no notice, since no job runs; one it admits that the mode does not
     review passes with the Gate's notice. A pull request that no mode reviews makes no API call
-    and needs no key. The mode reads the title and the label, so a caller runs on `edited` and
-    `labeled` too.
+    and needs no key. The mode reads the title and the label, so a caller runs on `edited` too,
+    and a label set after the opening counts from the next push or edit.
   - **The documents**: the ones the repository's `README.md` links under `## Documents`, read on
     the default branch and never from the pull request, so a pull request cannot rewrite the
     rules it is judged by (C80, `docs/style/repository.md` of a coordinate root). A path, an
@@ -196,8 +179,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     GitHub token from the summary and the comment.
 - **`.github/workflows/site-tests.yml`** (https://github.com/xippios/.github/issues/30 as
   amended by https://github.com/xippios/.github/issues/37) runs a site's suite through the host
-  xippios-web, the only test harness of the web platform
-  (https://github.com/xippios/coordinate-web/issues/21). The `ci.yml` that web-template renders
+  xippios-web, the only test harness of the web platform.
+  The `ci.yml` that web-template renders
   into a site calls it as the job `tests`, check `tests / tests`, with the site's key and the
   organization secret `WEB_READ_TOKEN`, which reads xippios-web and the sites it requires:
 
@@ -242,8 +225,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   PHP 8.4 and Composer 2.11.1 come from setup-php, and Node 22, the version the host's own
   `ci.yml` builds with, from setup-node, with no cache. Permissions: `contents: read`. The job
   times out after 20 minutes.
-- **`.github/workflows/adr-index.yml`** (https://github.com/xippios/coordinate-core/issues/755,
-  https://github.com/xippios/.github/issues/46) checks that a repository's index of its
+- **`.github/workflows/adr-index.yml`**
+  (https://github.com/xippios/.github/issues/46) checks that a repository's index of its
   architecture decision records is current: `docs/adr.md` and `docs/adr.json` must be what the
   repository's own `scripts/adr_index.py` writes from the records in `docs/adr/`, and no two
   records may take one number. A repository's `gates.yml` calls it as a job, check
@@ -273,12 +256,12 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     no name starts a workflow command.
 
   Permissions: `contents: read`; the checkout keeps no token. The job times out after 5 minutes.
-- **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff (the
-  family's version, 0.17.1), the scripts' tests on a pinned pytest (with the review's
+- **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff 0.17.1,
+  the scripts' tests on a pinned pytest (with the review's
   `anthropic` 2.3.0 and `spelling.yml`'s codespell; a fake client, no key, no network), and
   actionlint with the runner's shellcheck. It calls `spelling.yml` over `README.md`, `.github`
   and `scripts` as the job `spelling`, and `ci` fails when that job did not pass, so the
-  ruleset's one required check covers both. The one test of `site-tests.yml` that requires a
+  ruleset's required check `ci` covers both. The one test of `site-tests.yml` that requires a
   site with the real Composer uses the runner's PHP and Composer, and is skipped elsewhere
   without them.
 
@@ -286,248 +269,91 @@ Every action in the workflows is pinned to a commit SHA with its version in a co
 `setup-uv` installs a pinned uv and `setup-php` a pinned Composer, the review runs a pinned
 `anthropic`, and the spelling check a pinned codespell.
 
-## Merge classes
-
-The rules, in order. Every rule is evaluated: the first `human` decides the class, every
-reason is reported.
-
-1. **Scaffold**, in a source repository only (one named `sdk-*` other than `sdk-core` and
-   `sdk-template`; the classifier also exempts `sdk-gates`, this repository's name until
-   the rename back, and as `.github` it matches no pattern at all; `sdk-template` and this
-   repository have no `src/`): the base has no `src/` directory: `human`.
-2. **Render trust**: the template is rendered with the head's answers at the commit the
-   head's `_commit` of `.copier-answers.yml` resolves to on the template's `main`
-   (`uvx copier copy --defaults --trust --skip-tasks --vcs-ref <that SHA> --data-file
-   <answers without _commit and _src_path>`). A changed file the template owns (rendered
-   and matched by no `_skip_if_exists` pattern of the template's `copier.yml` at that
-   commit) whose content and executable bit are identical to the render leaves the
-   changed set. A file the template does not render, a skip-listed file, a deleted file,
-   a symlink and a path that is not a plain relative path are never trusted (the last is
-   reported as `human`). Nothing is trusted when the render or the template clone fails,
-   when `_src_path` is not `https://github.com/xippios/sdk-template.git`, when `_commit`
-   is not a plain git ref, or when it is not on the template's `main`.
-   **Answers file**: the head's `.copier-answers.yml` is read only inside a subset of
-   YAML: every line at column 0 blank, a `#` comment or `key: value` with an unquoted
-   plain key, no top-level key twice, and no continuation line under `_commit`,
-   `core_version` or `core_git_ref`. Outside it the pull request is `human` and nothing
-   is trusted, since YAML, and so copier, may read a key or a value the classifier does
-   not see (a quoted key, the later of two duplicates). When the answers file changed, or
-   when rule 2 trusts any file, it must also be byte-identical to the `.copier-answers.yml`
-   copier writes back in the render, `_commit` and `_src_path` as copier writes them;
-   otherwise the pull request is `human` ("answers file is not in copier's canonical
-   form") and nothing is trusted. A changed answers file no render could check
-   (`--no-render`, a failed clone or render) is `human` as well.
-   **Answers**: in that form, a changed answer other than `_commit` moving forward along
-   the template's `main` (the base's `_commit` an ancestor of the head's), `core_version`
-   or `core_git_ref` is a session change: `human`, with the keys as the reason. An answer
-   the base lacks (a question a template release added) is free when its value equals the
-   question's literal default (one plain or quoted scalar without `{{`, `{%` or `{#`) in
-   the template's `copier.yml` at the head's `_commit`; with another value, a Jinja
-   default or a question unknown there it is `human` ("answers added with non-default
-   values"). A key the base has and the head lacks is free when the template at the
-   head's `_commit` no longer asks it (a question a template release removed, whose
-   answer `copier update` drops); while that `copier.yml` has a question of its name,
-   whatever its `when:` or `ask:`, it is `human` ("answers dropped by hand"). `_commit`
-   moving to an older or an unrelated commit is `human`, and so is a `_commit` change or
-   an added or dropped answer the template could not be checked for (`--no-render`, a
-   failed clone, a `_commit` the render refused).
-   **Core pin**: a non-empty `core_git_ref` on the head is accepted in two forms only:
-   `main`, which uv reads as the branch of `xippios/sdk-core` before any tag or commit, and
-   a full SHA (40 lowercase hex characters) of a commit on sdk-core's `main` (read from a
-   clone without trees and blobs). uv takes a full SHA as the commit itself, so no branch
-   or hex-named tag can take it over. Every other form (a `v*` tag, a short hex, a branch
-   name, `refs/...`) is `human` ("core pinned off main or not a full SHA") without a
-   lookup: each names a ref that can move, or one that a branch created later by its name
-   would take over at the next `uv lock`, since uv reads a branch first. The pin is
-   checked whether or not the pull request changes it, so every pull request is `human`
-   while core is pinned off `main` or by another form; when sdk-core cannot be cloned to
-   check a full SHA it is `human` too, and under `--no-render` a change to a non-empty
-   value is.
-3. **Protected paths** in what remains: `human`.
-   - Everywhere: `.github/**`, `.claude/settings.json`, `.claude/settings.local.json`,
-     `.claude/agents/**`, `.claude/hooks/**`, `.claude/commands/**` (in a source the
-     template renders them, so rule 2 trusts them when identical to the render),
-     `.mcp.json`, `CLAUDE.local.md`, `.pre-commit-config.yaml`, `.secrets.baseline`,
-     `hatch.toml` (hatchling merges a root `hatch.toml` over `[tool.hatch]`), `uv.toml`
-     (uv reads a root `uv.toml` as it reads `[tool.uv]`, and ignores `[tool.uv]` when both
-     exist), `docs/conventions.md`, `docs/adr/**`, `docs/review-checklist.md`,
-     `docs/definition-of-done.md`; and a change in `pyproject.toml` to where the package
-     is built and installed from or to what it installs: `[build-system]`, `[tool.uv]`
-     (index, sources, override-dependencies, ...), the whole `[tool.hatch]` (the packaged
-     paths, targets and build hooks under `[tool.hatch.build]`, the metadata hooks under
-     `[tool.hatch.metadata]`, the version source `[tool.hatch.version]`: code that runs at
-     build time), `[project.scripts]`, `[project.gui-scripts]` or
-     `[project.entry-points.*]` ("build or install routes changed"). The dependency lists
-     stay free. `.github/**` protects the workflow definitions, not the code a workflow
-     runs with a secret: the tests and scripts that `live.yml` runs with a key can merge
-     `auto`, and the conventions review reads them.
-   - In a source, also a template-owned file under `src/` that differs from the render
-     (an adapter changed by hand, which could expose tasks around rule 4); without a
-     render, `mcp.py`, `http.py`, `_version.py` and `api/__init__.py` under
-     `src/xippios/` count as template-owned by name.
-   - In a source, also `tests/test_family.py` and `tests/conftest.py`, the template-owned
-     test files that carry the family conformance check and the plugin line that serves
-     it: changed and not identical to the render ("a template-owned test file changed by
-     hand"), or deleted, whatever the render says, since rule 2 trusts no deleted file.
-     Without a render (no answers file, `--no-render`, a failed render) both count as
-     template-owned by name. `tests/test_tasks.py` is the session's (skip-listed) and
-     stays free.
-   - In `sdk-core`, also `src/**`.
-   - In `sdk-template`, also `copier.yml`, `copier.yaml`, `scripts/**`, the template
-     origin of every path protected in a source (the `template/` prefix, with or without
-     a `.jinja` suffix: `template/hatch.toml`, `template/uv.toml` and their `.jinja`
-     forms among them), any path under `template/` with Jinja (`{{` or `{%`) in its name,
-     and `template/pyproject.toml.jinja` when its dependency block changes
-     (`[project] dependencies`, `[project.optional-dependencies]`, `[dependency-groups]`,
-     and the build and install tables above), read past Jinja, `#` comments and strings
-     (basic, literal and multi-line), so a bracket in a comment or a string opens nothing,
-     and with headers and keys read as TOML spells them (bare and quoted parts, anything
-     inside the quotes, spaces and tabs around the dots and the name), a header or key
-     with a backslash in it refused outright as protected, whatever it names, since a
-     basic-string escape (`"\u0075v"`) can spell any name; when it ends inside a
-     multi-line string or a Jinja tag; when any changed line of it carries `{{`, `{%` or
-     `{#`; and, as a second net should that reading go wrong, when any changed line of
-     it, read on its own at any depth, looks like a header or a key of `[tool.uv]`,
-     `[build-system]`, `[tool.hatch]`, `[project.scripts]`, `[project.gui-scripts]`,
-     `[project.entry-points]`, `[dependency-groups]` or `[project.optional-dependencies]`
-     (`[tool.uv]`, `tool.uv.index-url = ...`, `uv.index-url = ...` under `[tool]`).
-   - In the repository named `sdk-gates`, every pull request: this one until the rename
-     back. As `.github` it is an ordinary repository to the classifier, and what holds every
-     pull request here for Johannes is the `GitHub Main` ruleset with `.github/CODEOWNERS`
-     (see Changing this repository); `merge-class` is not required here.
-4. **First surface**: a `src/xippios/**/tasks.py` whose `__all__` was empty or absent
-   names at least one task: `human`. An `__all__` that cannot be read statically is
-   `human` too: anything but top-level assignments of a literal list or tuple of strings
-   (and `+=` of one), any other mention of `__all__` (an import of or as it, a method
-   call, a def, a loop, a read that could alias it), a star import, a module
-   `__getattr__`, an `"__all__"` string (`globals()["__all__"]`,
-   `setattr(sys.modules[...], "__all__", ...)`), `globals`, `vars`, `locals`, `setattr`,
-   `exec`, `eval`, `__import__`, `sys.modules` or `__dict__`. That static reading has
-   limits (an adapter, a module the tasks import, a name bound at run time), so in a
-   source whose base exports no task from any `tasks.py` (empty, absent or unreadable
-   `__all__`), every changed file under `src/` that remains after rule 2 is `human` too:
-   the bootstrap closes them until the first surface has merged.
-5. **Release**: when the `[project]` version of `pyproject.toml` changes, what remains
-   must be a subset of `pyproject.toml`, `uv.lock`, `CHANGELOG.md`, `README.md`,
-   `CLAUDE.md`, `docs/handover.md` and `scripts/check-siblings.sh`; else `human`.
-6. Otherwise **`auto`**.
-
-The changed set and the comparisons of rules 2 to 5 are taken against the merge base of
-base and head, which is the base itself once the pull request is up to date with its
-branch (the required checks are strict). The branch name is no input. The classifier
-reads the pull request as git objects and executes nothing from it; file names and
-answers are escaped in the summary and the report.
-
 ## Wiring and check contexts
 
-Both workflows carry `on: workflow_call` alone (C58, 2026-11-03): a repository calls them as
-jobs from its `gates.yml`, which runs on `pull_request` with the types `opened`,
-`synchronize`, `reopened`, `edited` and `labeled` (`edited` because the description is judged
-and a base change arrives as `edited`, `labeled` because a label set after the opening starts
-the review). The required-workflow wiring, an Enterprise-only ruleset rule,
-went with the `on: pull_request` trigger; until then both also ran on this repository's own
-pull requests.
+The reusable workflows carry `on: workflow_call` alone (C58, 2026-11-03): a repository calls
+them as jobs from a workflow of its own beside `ci.yml`, a coordinate root's
+`.github/workflows/gates.yml` or an sdk source's `organization.yml`, and a site calls
+`site-tests.yml` from the `ci.yml` that web-template renders. On this repository's own pull
+requests only `spelling.yml` runs, called by `ci.yml`.
 
-| Wiring | Merge class check | Review check |
+From coordinate-core 0.7.6 and sdk-template 0.3.4 on, the caller of `spelling.yml`,
+`conventions.yml` and `adr-index.yml` runs on `pull_request` with the types `opened`,
+`synchronize`, `reopened` and `edited`. A caller's `on: pull_request` without `types` runs on the
+first three only, and `edited` matters to the review, since the description is judged and a
+change of the title or of the base arrives as `edited`. A caller runs on no label (C57):
+GitHub starts a workflow on a label of any name and reports a head's checks from its newest
+run, so the run of a label could stand for the head. A label set
+after the opening, `release` among them, counts from the next push or edit. The caller's jobs
+carry no `if:`, so each run reports every check: the review's job decides in its own condition,
+under `conventions.yml` above, and its check reports skipped and passing on a pull request that
+condition skips (https://github.com/xippios/.github/issues/47).
+
+| Workflow | Caller job | Check context |
 | --- | --- | --- |
-| Caller (a repository's `gates.yml` calls the workflow as a job) | `merge-class / merge-class` | `conventions / conventions` |
+| `spelling.yml` | `spelling` | `spelling / spelling` |
+| `conventions.yml` | `conventions` | `conventions / conventions` |
+| `adr-index.yml` | `adr-index` | `adr-index / adr-index` |
+| `site-tests.yml` | `tests` | `tests / tests` |
 
-A skipped caller job reports one check named after the caller job alone (`merge-class`,
-`conventions`), never the slash-joined context, and GitHub counts a skipped check as
-passing. So a ruleset must never require the bare names: while `GATES_CALLER` is unset, a
-switched-off `gates.yml` would satisfy both. In caller mode a ruleset requires the
-slash-joined contexts, and only once the variable is set in every repository the ruleset
-targets; requiring them earlier leaves every pull request pending. The required-workflow
-rule has no such gap.
-
-In caller mode a repository carries its own caller file, `.github/workflows/gates.yml`,
-beside `ci.yml`. It runs on `pull_request` with
-`types: [opened, synchronize, reopened, edited, labeled]`: a caller's `on: pull_request`
-without `types` runs on the first three only; `edited` matters to both gates, to the review
-because the description is judged and to `merge-class` because a change of the base
-branch arrives as `edited`; and `labeled` matters to the review, since the label `release`
-makes a release pull request, so a label set after the opening starts the review
-(https://github.com/xippios/.github/issues/47). The caller can ship before the ruleset
-decision: both jobs
-carry `if: vars.GATES_CALLER == '1'` and run only once Johannes sets that repository
-variable, which he does per repository if the editor does not offer the required-workflow
-rule. It passes the review exactly one secret, never `secrets: inherit`:
+A context joins the caller's job id and the callee's job name, so a ruleset requires the
+slash-joined context and a caller keeps the job ids above. The caller passes the review exactly
+one secret, never `secrets: inherit`, and grants the permissions the review asks; a caller that
+grants less fails at the start:
 
 ```yaml
 name: gates
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled]
+    types: [opened, synchronize, reopened, edited]
 
 permissions:
   contents: read
 
 jobs:
-  merge-class:
-    if: vars.GATES_CALLER == '1'
-    uses: xippios/.github/.github/workflows/merge-class.yml@main
-    permissions:
-      contents: read
+  spelling:
+    uses: xippios/.github/.github/workflows/spelling.yml@main
+    with:
+      paths: rules docs README.md CLAUDE.md .claude
 
   conventions:
-    if: vars.GATES_CALLER == '1'
     uses: xippios/.github/.github/workflows/conventions.yml@main
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     permissions:
       contents: read
       pull-requests: write
       checks: read
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 ## Rulesets
 
 The organization's rulesets by name (gate coordinate#9; `gh api orgs/xippios/rulesets`), as
-far as they touch this repository and the gates:
+far as they touch this repository and the checks of its workflows:
 
 - **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
   required, one approving review, review from code owners (`.github/CODEOWNERS` names
-  Johannes for every path), stale approvals dismissed on push, `ci` required, merge or
-  squash. Neither `merge-class` nor `conventions` runs here: both left this repository's own
-  pull requests (C58).
-- **`XIPPIOS SDK Main`** (org branch ruleset on `main` of `sdk-*` and `xippios-mcp`):
-  pull request required, no approval count, an extra approval for unattributed changes,
-  review threads resolved, stale approvals dismissed on push, `ci` required and strict,
-  merge, squash or rebase. The gate checks `merge-class` and
-  `conventions` run from each repository's `gates.yml` and are not required, so the class is
-  informational there until the sdk migration moves the family to the coordinate gates. Until
-  then a caller's review job keeps its old id and workflow; the migration renames both, the job
-  id to `conventions` as in the caller example above, so the check reads
-  `conventions / conventions`.
-- **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of `sdk-*` and `xippios-mcp`):
-  update and deletion restricted, so a `v*` tag, once created, is moved or deleted by no
-  session.
-- The coordinate and web workspaces have theirs, `Coordinate Main`, `Coordinate Core`,
-  `Coordinate Tags`, `XIPPIOS Web Main` and `XIPPIOS Web Tags`, described in
-  coordinate-core's `docs/identities/setup.md` §7.
+  the human for every path), stale approvals dismissed on push, `ci` and `review` required,
+  merge or squash. The review does not run here (C58); `ci` calls `spelling.yml` over this
+  repository's files.
+- **`Coordinate Review`** (org branch ruleset on the coordinate roots) requires
+  `spelling / spelling` and `conventions / conventions`, the contexts of the root's caller,
+  beside `review`; **`Coordinate Core`** requires `conventions / conventions` beside its own
+  checks.
+- **`XIPPIOS SDK Main`** (org branch ruleset on `main` of `sdk-*` and `xippios-mcp`) requires
+  `ci` and `review`, strict, and **`XIPPIOS SDK Tags`** (org tag ruleset on `refs/tags/v*` of
+  the same repositories) restricts the update and the deletion of a `v*` tag.
+- The others, `Coordinate Main`, `Coordinate Tags`, `XIPPIOS Web Main`, `XIPPIOS Web Tags` and
+  `XIPPIOS Branch Names`, require no context of these workflows.
 
-## Running the classifier locally
+## Running the checks locally
 
-From a checkout of the repository whose pull request you classify, with this repository
-cloned somewhere (Python 3.11 or later, git, and `uvx` for the render):
-
-```sh
-python3 <this clone>/scripts/merge_class.py --repo xippios/<repo> --base origin/main --head HEAD --workdir .
-```
-
-It prints `class=auto` or `class=human` with the reasons, the trusted and the remaining
-files; `--summary <file>` appends the markdown summary, `--no-render` skips rule 2's
-render and the core pin check (nothing is trusted, and any change to
-`.copier-answers.yml` is `human`), `--template-url` and `--core-url` point rule 2 at other
-clones of the template and of sdk-core. Exit status: 0 `auto`, 1 `human`, 2 when the
-classification itself failed.
-
-The checks of this repository:
+The checks of this repository, as `ci` runs them:
 
 ```sh
 uvx ruff@0.17.1 check scripts && uvx ruff@0.17.1 format --check scripts
-uv run --no-project --with pytest==9.1.1 --with anthropic==2.3.0 pytest scripts/tests -q
+uv run --no-project --with pytest==9.1.1 --with anthropic==2.3.0 --with codespell==2.4.3 pytest scripts/tests -q
 uvx --from actionlint-py==1.7.12.25 actionlint
 ```
 
@@ -558,15 +384,15 @@ verdict.
 
 ## Changing this repository
 
-Every pull request here waits for Johannes: the `GitHub Main` ruleset wants his code-owner
-approval (below) and `ci` green, so no session can change the gates, the class computation
+Every pull request here waits for the human: the `GitHub Main` ruleset wants the human's
+code-owner approval (below) and `ci` and `review` green, so no session can change the workflows
 or the review on its own. A pull request that changes `conventions.py` is checked by `ci`
-and the dry run below; the review no longer runs on this repository's own pull requests
+and the dry run above; the review no longer runs on this repository's own pull requests
 (C58). The documents the review judges by are each repository's own, listed in its README's
 `## Documents` (C80), so nothing here decides what a repository is held to.
 
-`.github/CODEOWNERS` names Johannes for every path, so the organization ruleset's code-owner
+`.github/CODEOWNERS` names the human for every path, so the organization ruleset's code-owner
 review (gate coordinate#9: one approval, review from code owners, stale approvals dismissed on
-push) is the human's approval on every pull request here; a machine user's approval, the
-reviewer's included, is a recommendation. `coordinate sync` writes the root's CODEOWNERS from
-`workspace.toml`; this repository's is kept by hand.
+push) is the human's approval on every pull request here. The reviewer's approval sets the
+required status `review` beside it, never in its place. `coordinate sync` writes the root's
+CODEOWNERS from `workspace.toml`; this repository's is kept by hand.
