@@ -2,10 +2,11 @@
 the reusable workflow that the `ci.yml` of a site rendered from web-template calls with the input
 `site` and the secret `WEB_READ_TOKEN`. It checks the site out at the caller's commit and the host
 xippios-web at `main`, requires the site into the host at that commit through a Composer `vcs`
-repository, and runs `php artisan test --testsuite=<site>`, Dusk too where the site has browser
-tests. The tests read the declaration and the pins, and run the workflow's own steps with `composer`
-and `php` replaced by fakes that record their calls; one test runs the requirement with the real
-Composer, where the machine has one."""
+repository, and runs `php artisan test --testsuite=<site>`. Where the site has browser tests, it
+builds the host's assets, the site's entries among them, and runs Dusk against the host served
+(.github#69). The tests read the declaration and the pins, and run the workflow's own steps with
+`composer`, `php` and `npm` replaced by fakes that record their calls; one test runs the requirement
+with the real Composer, where the machine has one."""
 
 import json
 import os
@@ -87,7 +88,7 @@ def run(name: str, workspace: Path, cwd: Path, env: dict[str, str]) -> tuple[int
     """Run the step `name` in `cwd` with fakes first on the PATH: exit code and output."""
     bin_dir = workspace.parent / "bin"
     bin_dir.mkdir(exist_ok=True)
-    for tool in ("composer", "php"):
+    for tool in ("composer", "php", "npm"):
         fake = bin_dir / tool
         fake.write_text(FAKE.format(python=sys.executable, name=tool))
         fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
@@ -179,7 +180,7 @@ def test_the_input_and_the_secret_reach_scripts_through_the_environment() -> Non
 
 def test_actions_are_pinned_to_commits_and_no_checkout_keeps_a_credential() -> None:
     uses = re.findall(r"uses: (\S+)(?: # (v?[\d.]+))?", SITE_TESTS.split("\njobs:\n", 1)[-1])
-    assert len(uses) == 3
+    assert len(uses) == 4
     for ref, version in uses:
         assert re.fullmatch(r"[\w./-]+@[0-9a-f]{40}", ref), ref
         assert version, ref
@@ -210,7 +211,7 @@ def test_the_token_reaches_only_the_host_checkout_and_composers_resolution() -> 
         "      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
         "      - name: require",
     ]
-    for name in ("site", "environment", "suite", "dusk"):
+    for name in ("site", "environment", "suite", "build", "dusk"):
         assert "WEB_READ_TOKEN" not in step(name), name
 
 
@@ -219,6 +220,54 @@ def test_php_and_composer_are_pinned() -> None:
     assert 'php-version: "8.4"\n' in setup
     assert re.search(r"tools: composer:\d+\.\d+\.\d+\n", setup), setup
     assert "coverage: none\n" in setup
+
+
+def test_node_is_the_version_the_host_builds_with_and_keeps_no_cache() -> None:
+    # The host's own ci.yml builds with setup-node v7.1.0 and Node 22 (.github#69).
+    setup = next(text for text in steps() if "uses: actions/setup-node@" in text)
+    assert re.match(r"      - uses: actions/setup-node@[0-9a-f]{40} # v7\.1\.0\n", setup), setup
+    assert 'node-version: "22"\n' in setup
+    # No cache of the caller's, as setup-uv's enable-cache: false keeps none in the other workflows.
+    assert "package-manager-cache: false\n" in setup
+    assert "cache:" not in setup.replace("package-manager-cache:", "")
+    assert "registry-url:" not in setup
+    assert "token:" not in setup
+
+
+def test_the_build_comes_after_composers_resolution_and_before_the_host_is_served() -> None:
+    names = [text.splitlines()[0] for text in steps()]
+    node = next(i for i, name in enumerate(names) if "uses: actions/setup-node@" in name)
+    order = [names.index(f"      - name: {name}") for name in ("require", "suite", "build", "dusk")]
+    assert order == sorted(order), names
+    assert node < order[2], names
+    # npm runs in the build alone, and the host is served in the Dusk step after it.
+    npm = [text.splitlines()[0] for text in steps() if "npm " in text]
+    assert npm == ["      - name: build"]
+    serve = [text.splitlines()[0] for text in steps() if "artisan serve" in text]
+    assert serve == ["      - name: dusk"]
+    build = steps()[order[2]]
+    assert "        working-directory: host\n" in build
+    assert "env:" not in build
+
+
+def test_the_build_does_not_run_without_browser_tests(workspace: Path) -> None:
+    code, out = run("build", workspace, workspace / "host", {})
+    assert code == 0, out
+    assert "the site has no tests/Browser, so the host's assets are not built" in out
+    assert calls(workspace) == []
+
+
+def test_the_build_builds_the_hosts_assets_where_the_site_has_browser_tests(
+    workspace: Path,
+) -> None:
+    (workspace / "site" / "tests" / "Browser").mkdir(parents=True)
+    code, out = run("build", workspace, workspace / "host", {})
+    assert code == 0, out
+    # --ignore-scripts, as the host's .npmrc sets it: no install script of a package runs.
+    assert calls(workspace) == [
+        ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+        ["npm", "run", "build"],
+    ]
 
 
 def test_an_empty_token_fails_naming_the_secret(workspace: Path) -> None:
@@ -426,3 +475,6 @@ def test_the_readme_names_the_workflow_its_caller_and_the_secret() -> None:
     assert "site:" in entry
     assert "WEB_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}" in entry
     assert "web-template" in entry
+    # The build before Dusk, and the Node it runs on (.github#69).
+    assert "`npm run build`" in entry
+    assert "Node 22" in entry

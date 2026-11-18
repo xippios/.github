@@ -11,14 +11,16 @@
 # that commit the branch `site-tests` of the site's checkout, since a Composer `vcs` repository reads
 # a local clone's branches, and requires `xippios/web-<site>:dev-site-tests` into the host through
 # such a repository. The host's other packages stay as its lock has them. Then it runs
-# `php artisan test --testsuite=<site>`, and Dusk with the same suite where the site has
-# `tests/Browser`.
+# `php artisan test --testsuite=<site>`. Where the site has `tests/Browser`, it builds the host's
+# assets with `npm ci` and `npm run build`, the site's entries among them, since the host's layout
+# loads them from the Vite manifest on every page (https://github.com/xippios/.github/issues/69),
+# and runs Dusk with the same suite against the host served.
 #
 # The token reaches the host's checkout, which keeps no credential, and Composer's resolution, which
-# runs no script and no plugin. The scripts, the plugins, the suite and Dusk run after it, without the
-# token.
-# Actions are pinned to commit SHAs, the version in a comment, and setup-php installs a pinned
-# Composer.
+# runs no script and no plugin. The scripts, the plugins, the suite, the build and Dusk run after it,
+# without the token.
+# Actions are pinned to commit SHAs, the version in a comment. setup-php installs a pinned Composer,
+# and setup-node Node 22, the version the host's own ci.yml builds with.
 name: Site tests
 
 on:
@@ -66,6 +68,10 @@ jobs:
           php-version: "8.4"
           tools: composer:2.11.1
           coverage: none
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          package-manager-cache: false
       - name: site
         working-directory: site
         env:
@@ -110,6 +116,18 @@ jobs:
           SITE: ${{ inputs.site }}
         run: |
           php artisan test --testsuite="$SITE"
+      - name: build
+        working-directory: host
+        run: |
+          if [ ! -d "$GITHUB_WORKSPACE/site/tests/Browser" ]; then
+            echo "site-tests: the site has no tests/Browser, so the host's assets are not built"
+            exit 0
+          fi
+          # The host's vite.config.js takes the site's entries from vendor/xippios/web-<site>, where
+          # the require put the site, and Dusk's pages load public/build/manifest.json. No install
+          # script of a package runs, as the host's .npmrc also sets it.
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
       - name: dusk
         working-directory: host
         env:
