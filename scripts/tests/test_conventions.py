@@ -1103,7 +1103,7 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     CHECKS_JSON or 8, `api repos/…/tags?…` tags.txt or a 502, `api repos/…/contents/
     pyproject.toml?…` other-pyproject.toml, or pyproject-fail's error, or a 404 (api-fail, or
     no other-pyproject.toml), and `api repos/…/contents/…?ref=<ref>` at-<ref>.md, else
-    DOCUMENT, or a 404 (api-fail, or missing-<ref>)."""
+    DOCUMENT, or a 404 (api-fail, or missing-<ref>), or fail-<ref>'s error."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "pr.json").write_text(PR_JSON)
@@ -1127,6 +1127,7 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         f'{not_found} fi; cat "$here/other-pyproject.toml" ;;\n'
         f'  "api repos/"*) [ -f "$here/api-fail" ] && {{ {not_found} }}; ref=${{2##*ref=}}; '
         f'[ -f "$here/missing-$ref" ] && {{ {not_found} }}; '
+        '[ -f "$here/fail-$ref" ] && { cat "$here/fail-$ref" >&2; exit 1; }; '
         'if [ -f "$here/at-$ref.md" ]; then cat "$here/at-$ref.md"; '
         'else cat "$here/document.md"; fi ;;\n'
         "  *) exit 1 ;;\n"
@@ -1612,6 +1613,48 @@ def test_a_document_that_is_not_in_the_release_is_read_at_the_links_ref(
         f"conventions: {LABELS[1]} is not in v0.3.10; it is read at main, the ref its link names"
     ) in summary
     assert f"conventions: document {LABELS[1]}, read at main, {len(DOCUMENT)} bytes" in summary
+
+
+FAILURES = [
+    "gh: Server Error (HTTP 502)",
+    "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+    "error connecting to api.github.com",
+]
+
+
+@pytest.mark.parametrize("error", FAILURES)
+def test_a_document_the_release_fails_to_serve_fails_naming_it(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys, error: str
+) -> None:
+    """Only "not found" at the release leaves the link's ref: after any other failure there,
+    the link's ref would bring unreleased rules under a line saying the file is not in it."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "fail-v0.3.10").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({RELEASE_URL}) could not be read with the workflow's token; "
+        "the review cannot run"
+    )
+    out = capsys.readouterr().out
+    assert line in out
+    assert "is not in" not in out
+    assert actions["summary"].read_text().splitlines()[-1] == line
+    assert sdk_core_calls(fake_gh)[-1] == API_CALL.replace("ref=main", "ref=v0.3.10")
+    assert not actions["output"].exists()
+
+
+@pytest.mark.parametrize("error", FAILURES)
+def test_a_document_at_its_links_ref_that_fails_otherwise_is_named_without_a_guess(
+    tmp_path: Path, fake_gh: Path, capsys, error: str
+) -> None:
+    """Not "not found": the line guesses no private repository and no missing file."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    (fake_gh / "fail-main").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    assert (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with the workflow's token; "
+        "the review cannot run"
+    ) in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
