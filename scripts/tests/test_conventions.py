@@ -1101,8 +1101,9 @@ API_CALL = (
 def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A gh on PATH: `pr view` prints PR_JSON (or the SHAs and the title), `pr checks`
     CHECKS_JSON or 8, `api repos/…/tags?…` tags.txt or a 502, `api repos/…/contents/
-    pyproject.toml?…` other-pyproject.toml or a 404, and `api repos/…/contents/…?ref=<ref>`
-    at-<ref>.md, else DOCUMENT, or a 404 (api-fail, or missing-<ref>)."""
+    pyproject.toml?…` other-pyproject.toml, or pyproject-fail's error, or a 404 (api-fail, or
+    no other-pyproject.toml), and `api repos/…/contents/…?ref=<ref>` at-<ref>.md, else
+    DOCUMENT, or a 404 (api-fail, or missing-<ref>)."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "pr.json").write_text(PR_JSON)
@@ -1120,8 +1121,10 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         '  "pr checks "*) [ -f "$here/checks-fail" ] && exit 8; cat "$here/checks.json" ;;\n'
         '  "api repos/"*"/tags?"*) [ -f "$here/tags-fail" ] && '
         '{ echo "gh: Server Error (HTTP 502)" >&2; exit 1; }; cat "$here/tags.txt" ;;\n'
-        '  "api repos/"*"/contents/pyproject.toml?"*) [ -f "$here/other-pyproject.toml" ] || '
-        f'{{ {not_found} }}; cat "$here/other-pyproject.toml" ;;\n'
+        '  "api repos/"*"/contents/pyproject.toml?"*) [ -f "$here/pyproject-fail" ] && '
+        '{ cat "$here/pyproject-fail" >&2; exit 1; }; '
+        'if [ -f "$here/api-fail" ] || [ ! -f "$here/other-pyproject.toml" ]; then '
+        f'{not_found} fi; cat "$here/other-pyproject.toml" ;;\n'
         f'  "api repos/"*) [ -f "$here/api-fail" ] && {{ {not_found} }}; ref=${{2##*ref=}}; '
         f'[ -f "$here/missing-$ref" ] && {{ {not_found} }}; '
         'if [ -f "$here/at-$ref.md" ]; then cat "$here/at-$ref.md"; '
@@ -1609,6 +1612,48 @@ def test_a_document_that_is_not_in_the_release_is_read_at_the_links_ref(
         f"conventions: {LABELS[1]} is not in v0.3.10; it is read at main, the ref its link names"
     ) in summary
     assert f"conventions: document {LABELS[1]}, read at main, {len(DOCUMENT)} bytes" in summary
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "gh: Server Error (HTTP 502)",
+        "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        "error connecting to api.github.com",
+    ],
+)
+def test_a_pyproject_that_cannot_be_read_fails_naming_the_repository(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys, error: str
+) -> None:
+    """Any failure but "not found": leaving the link's ref would judge by unreleased rules
+    again, with no line that says why."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "pyproject-fail").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        "conventions: the pyproject.toml of xippios/sdk-core could not be read with the "
+        "workflow's token; the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert not actions["output"].exists()
+    assert sdk_core_calls(fake_gh) == [PYPROJECT_CALL]
+
+
+def test_a_private_repository_whose_package_the_head_requires_fails_on_its_document(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys
+) -> None:
+    """Its pyproject.toml is "not found", no package, and its document fails as before."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "api-fail").write_text("")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with the workflow's token: "
+        "a private repository or a missing file; the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert sdk_core_calls(fake_gh) == [PYPROJECT_CALL, API_CALL]
 
 
 def test_tags_that_cannot_be_read_fail_naming_the_repository(
