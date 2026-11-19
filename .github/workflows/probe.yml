@@ -1,0 +1,21 @@
+# A probe that never merges: it calls conventions.yml of this commit as a caller's gates.yml
+# does, since no pull request of this repository runs that file before its merge (.github#82).
+name: probe
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    uses: ./.github/workflows/conventions.yml
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: read
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
