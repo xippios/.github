@@ -9,8 +9,22 @@
 # posts no comment. The documents are never read from the pull request, so a pull request
 # cannot rewrite the rules it is judged by: the repository's own come from the default branch,
 # another repository's from its link's ref or the release the head requires. A document the
-# review cannot read (a private repository's, a missing file) fails the check naming it; a
-# README that links none passes with a notice, and no API call is made.
+# review cannot read (a private repository's that no token reaches, a missing file) fails the
+# check naming it and the tokens it was read with; a README that links none passes with a
+# notice, and no API call is made.
+#
+# The read token (.github#62): the caller's optional secret DOCUMENTS_READ_TOKEN. Another
+# repository's file, a listed document, that repository's pyproject.toml and its tags, is
+# read with the workflow's token first; only where GitHub does not find it, a private
+# repository's included, is it read again with the read token, so a private sibling's
+# document is read and its pin resolves as a public one's does. Any other failure fails the
+# check at once. Without the secret, or with it empty, the check reads with the workflow's
+# token alone. The token is in the Prepare step's environment alone, and the script hands it
+# to gh as the GH_TOKEN of that one read, so no other process, the review's included, gets
+# it, and it reaches neither the job summary, documents.json nor the log. The list of
+# documents comes from the README on the default branch (C80), so a pull request chooses
+# nothing the token reads but a release tag. A pull request from a fork or of Dependabot gets
+# no secret, and the Gate ends it before any read.
 #
 # A release PR is labeled `release` or titled `<version> Release`, and `release: <version>`
 # until every workspace has adopted coordinate-core 0.7.4 (coordinate-core#791,
@@ -47,7 +61,8 @@
 # verdict.
 #
 # One wiring (C58, 2026-11-03; two until then): called as a job from a repository's gates.yml,
-# which passes ANTHROPIC_API_KEY alone (`on: workflow_call`, check
+# which passes ANTHROPIC_API_KEY and, where its README lists a private repository's document,
+# DOCUMENTS_READ_TOKEN, each by name (`on: workflow_call`, check
 # `conventions / conventions`); the caller runs on `pull_request` with the types opened,
 # synchronize, reopened and edited, with no `if:` on the job, so `github.event.pull_request` is
 # there and a change of the title or of the base arrives as `edited`.
@@ -82,6 +97,8 @@ on:
   workflow_call:
     secrets:
       ANTHROPIC_API_KEY:
+        required: false
+      DOCUMENTS_READ_TOKEN:
         required: false
 
 permissions:
@@ -217,10 +234,12 @@ jobs:
       # documents are the ones the README links under `## Documents` on the default branch,
       # read there and never from the pull request (C80): the repository's own from that
       # branch, another repository's from GitHub with the workflow's token, which reads a
-      # public repository and fails on a private one, naming the document, at the ref its
-      # link names or at the release tag of it that the head's pyproject.toml requires
-      # (README.md, "The documents"; .github#70). A README that links none ends the job
-      # green here, with a notice and `review=false`: no API call.
+      # public repository, and where GitHub does not find a file with it, with the caller's
+      # DOCUMENTS_READ_TOKEN (see the header; .github#62), at the ref its link names or at
+      # the release tag of it that the head's pyproject.toml requires (README.md, "The
+      # documents"; .github#70). A document neither reads fails, naming it. The read token is
+      # in this step's environment alone. A README that links none ends the job green here,
+      # with a notice and `review=false`: no API call.
       # On a release PR (the gate's `release`) the range runs from the last release tag, and
       # the version comes from the title, else from the head's pyproject.toml.
       - name: Prepare the review material
@@ -229,6 +248,7 @@ jobs:
         working-directory: ${{ runner.temp }}
         env:
           GH_TOKEN: ${{ github.token }}
+          DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
