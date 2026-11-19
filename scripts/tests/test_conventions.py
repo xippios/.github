@@ -1881,12 +1881,14 @@ def nowhere_but_its_read(fake_gh: Path, ws: Path, actions: dict[str, Path], out:
             assert READ_TOKEN.encode() not in path.read_bytes()
 
 
+@pytest.mark.parametrize("read_token", [READ_TOKEN, f"  {READ_TOKEN}\n"])
 def test_a_private_siblings_document_is_read_with_the_read_token(
-    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys, read_token: str
 ) -> None:
-    """GitHub does not find it with the workflow's token; the read token reads it."""
+    """GitHub does not find it with the workflow's token; the read token reads it, a padded
+    value as the token it pads."""
     ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
-    private_sibling(fake_gh, monkeypatch, READ_TOKEN)
+    private_sibling(fake_gh, monkeypatch, read_token)
     assert prepare(REPO, ws, base, head) == 0
     at_links_ref(ws)
     assert asked(fake_gh) == [("workflow", API_CALL), ("read", API_CALL)]
@@ -1931,12 +1933,12 @@ def test_a_private_siblings_pin_resolves_with_the_read_token(
     nowhere_but_its_read(fake_gh, ws, actions, captured.out + captured.err)
 
 
-@pytest.mark.parametrize("read_token", [None, ""])
+@pytest.mark.parametrize("read_token", [None, "", " \n"])
 def test_without_the_read_token_a_private_siblings_document_fails_as_before(
     tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys, read_token
 ) -> None:
-    """No secret, or an empty one, as a caller that passes none hands the callee: one read
-    with the workflow's token, and the same failure as before."""
+    """No secret, an empty one, as a caller that passes none hands the callee, or a blank
+    one: one read with the workflow's token, and the same failure as before."""
     ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
     private_sibling(fake_gh, monkeypatch, read_token)
     assert prepare(REPO, ws, base, head) == 2

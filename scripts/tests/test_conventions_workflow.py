@@ -91,8 +91,12 @@ def gate(
     author: str = "johan",
     actor: str = "johan",
     fork: bool = False,
+    read_token_unused: bool = False,
 ) -> tuple[int, str, dict[str, str]]:
-    """Run the Gate step: the exit code, what it printed and summarized, and its outputs."""
+    """Run the Gate step: the exit code, what it printed and summarized, and its outputs.
+
+    ``read_token_unused``: a public caller passed DOCUMENTS_READ_TOKEN, which its check does
+    not use (.github#83)."""
     summary = tmp_path / "summary.md"
     output = tmp_path / "output.txt"
     summary.write_text("")
@@ -107,6 +111,7 @@ def gate(
         "ACTOR": actor,
         "HEAD_REPO": "someone/fork" if fork else REPO,
         "REPO": REPO,
+        "READ_TOKEN_UNUSED": "true" if read_token_unused else "false",
         "GITHUB_STEP_SUMMARY": str(summary),
         "GITHUB_OUTPUT": str(output),
     }
@@ -442,42 +447,98 @@ def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() ->
 
 # --- the read token (.github#62) ---------------------------------------------------------
 
-READ_TOKEN_VALUE = "          DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}\n"
+# Only a private caller's check gets the secret (.github#83): GitHub's `case()` returns its
+# last argument where no predicate is true, and `github.event` of a called workflow is the
+# caller's payload, whose `repository.private` is a boolean.
+READ_TOKEN_VALUE = (
+    "          DOCUMENTS_READ_TOKEN: ${{ case(github.event.repository.private == true, "
+    "secrets.DOCUMENTS_READ_TOKEN, '') }}\n"
+)
+READ_TOKEN_UNUSED = (
+    "          READ_TOKEN_UNUSED: ${{ secrets.DOCUMENTS_READ_TOKEN != '' "
+    "&& github.event.repository.private != true }}\n"
+)
+UNUSED_NOTICE = (
+    "conventions: DOCUMENTS_READ_TOKEN is not used in a public repository, whose review "
+    "comment and job summary would show what the review quotes from a private document "
+    "(.github#83)"
+)
 
 
-def test_the_read_token_is_an_optional_secret_that_reaches_the_prepare_step_alone() -> None:
+def test_the_read_token_reaches_a_private_callers_prepare_step_alone() -> None:
     """The caller may pass DOCUMENTS_READ_TOKEN; only the step that reads the documents gets
-    it, never the review, the verdict or a checkout."""
+    it, and only where the calling repository is private. The Gate learns whether a public
+    caller passed one, never its value; the review, the verdict and a checkout get nothing."""
     secrets = WORKFLOW.split("  workflow_call:\n    secrets:\n", 1)[1].split("\npermissions:", 1)[0]
     assert "      ANTHROPIC_API_KEY:\n        required: false\n" in secrets
     assert "      DOCUMENTS_READ_TOKEN:\n        required: false\n" in secrets
-    assert WORKFLOW.count("${{ secrets.DOCUMENTS_READ_TOKEN }}") == 1
+    assert WORKFLOW.count("secrets.DOCUMENTS_READ_TOKEN") == 2
+    assert "${{ secrets.DOCUMENTS_READ_TOKEN }}" not in WORKFLOW
     assert READ_TOKEN_VALUE in step_block("Prepare the review material")
-    for name in ("Gate", "Review", "Verdict"):
-        assert "DOCUMENTS_READ_TOKEN" not in step_block(name)
+    assert READ_TOKEN_UNUSED in step_block("Gate")
+    for name in (
+        "Check out the pull request head with full history",
+        "Check out the review script from xippios/.github",
+        "Install uv",
+        "Review",
+        "Verdict",
+    ):
+        # A block runs up to the next step and takes in the comment above it: no key, no value.
+        assert "DOCUMENTS_READ_TOKEN:" not in step_block(name)
+        assert "secrets.DOCUMENTS_READ_TOKEN" not in step_block(name)
+
+
+def test_a_public_caller_that_passes_the_read_token_gets_a_notice_where_the_review_runs(
+    tmp_path: Path,
+) -> None:
+    code, out, outputs = gate(tmp_path, mode="all", read_token_unused=True)
+    assert code == 0
+    assert outputs["run"] == "true"
+    assert UNUSED_NOTICE in out
+
+
+@pytest.mark.parametrize(("mode", "unused"), [("all", False), ("release", True), ("off", True)])
+def test_no_notice_on_the_read_token_where_it_is_used_or_nothing_is_read(
+    tmp_path: Path, mode: str, unused: bool
+) -> None:
+    """A private caller, or a caller without the secret; a pull request the mode passes."""
+    _code, out, _outputs = gate(tmp_path, mode=mode, read_token_unused=unused)
+    assert "DOCUMENTS_READ_TOKEN" not in out
 
 
 def test_the_workflows_header_lays_out_the_read_token() -> None:
     header = workflow_header()
     assert "DOCUMENTS_READ_TOKEN" in header
-    assert "a pull request chooses nothing the token reads but a release tag" in header
+    assert "only where the calling repository is private" in header
+    assert "quote the documents it judges by" in header
+    assert "a pull request chooses nothing but a release tag" in header
+    assert "chooses nothing the token reads" not in header
 
 
 def test_the_readme_lays_out_the_read_token_and_its_caller() -> None:
-    """The documents' text names the token and what a pull request cannot choose; the caller
-    passes it by name, beside the key (.github#62)."""
+    """The documents' text names the token, that only a private caller's check uses it and
+    why, and what a pull request cannot choose of what the check reads, which bounds the
+    check and not the secret; the caller passes it by name, beside the key (.github#62,
+    .github#83)."""
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
     flat = " ".join(section.split())
     assert "`DOCUMENTS_READ_TOKEN`" in flat
     assert "fails the check on a private one" not in flat
-    assert "a pull request chooses nothing the token reads but a release tag" in flat
+    assert "only where the calling repository is private" in flat
+    assert "`github.event.repository.private`" in flat
+    assert "quote the documents it judges by" in flat
+    assert "to everyone who reads that repository" in flat
+    assert "a pull request chooses nothing but a release tag" in flat
+    assert "chooses nothing the token reads" not in flat
+    assert "the organization's setting" in flat
     wiring = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
     caller = wiring.split("```yaml\n", 1)[1].split("```", 1)[0]
     assert "      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n" in caller
     assert "      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}\n" in caller
     assert "inherit" not in caller
     assert "exactly one secret" not in " ".join(wiring.split())
+    assert "      # Only in a private repository whose README.md lists " in caller
 
 
 # --- the verdict -------------------------------------------------------------------------
