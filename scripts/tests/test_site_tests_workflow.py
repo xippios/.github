@@ -15,6 +15,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -113,6 +114,22 @@ def calls(workspace: Path) -> list[list[str]]:
     """The calls the fakes recorded."""
     path = workspace.parent / "calls"
     return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+def calls_with(workspace: Path, call: list[str], seconds: float = 30.0) -> list[list[str]]:
+    """The calls the fakes recorded, once ``call`` is among them or ``seconds`` have passed.
+
+    A call the step starts in the background may record itself after the step's shell has
+    returned, later still under load (.github#78). A line not yet written whole is left out.
+    """
+    path = workspace.parent / "calls"
+    deadline = time.monotonic() + seconds
+    while True:
+        text = path.read_text() if path.exists() else ""
+        recorded = [json.loads(line) for line in text[: text.rfind("\n") + 1].splitlines()]
+        if call in recorded or time.monotonic() >= deadline:
+            return recorded
+        time.sleep(0.05)
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -368,8 +385,10 @@ def test_dusk_runs_the_suite_of_the_site_with_the_host_served(workspace: Path) -
     (workspace / "site" / "tests" / "Browser").mkdir(parents=True)
     code, out = run("dusk", workspace, workspace / "host", {"SITE": KEY})
     assert code == 0, out
-    recorded = calls(workspace)
-    assert ["php", "artisan", "serve", "--no-reload"] in recorded
+    # `php artisan serve` runs in the background: wait for its record before the assertion.
+    serve = ["php", "artisan", "serve", "--no-reload"]
+    recorded = calls_with(workspace, serve)
+    assert serve in recorded
     assert [call for call in recorded if call[2] != "serve"] == [
         ["php", "artisan", "dusk:chrome-driver", "--detect"],
         ["php", "artisan", "dusk", f"--testsuite={KEY}"],

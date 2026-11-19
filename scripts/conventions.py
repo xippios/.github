@@ -17,8 +17,12 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
   and under ``documents/`` the documents the repository's ``README.md`` links under
   ``## Documents`` on ``main`` (``--main``, C80), listed in ``documents.json``: a path, an
   anchor or a URL of the repository itself is read from ``main``, never from the pull request,
-  and a URL of another repository from GitHub with the token at hand, which reads a public
-  repository and fails on a private one, naming the document. Another repository's document
+  and a URL of another repository from GitHub with the token at hand (``GH_TOKEN``, the
+  workflow's), which reads a public repository. Where GitHub does not find a file of another
+  repository with it, a private one's included, it is read again with the caller's read token
+  ``DOCUMENTS_READ_TOKEN`` where that is set and not empty, the document, the
+  ``pyproject.toml`` and the tags below alike; a document that neither reads fails, naming it
+  and the tokens it was read with. Another repository's document
   is read at the ref its link names or, where the ``[project]`` requirements of the head's
   ``pyproject.toml`` name that repository's package (the name in its own ``pyproject.toml``)
   and the link names a branch, at its highest release tag (``v`` and a release version) that
@@ -94,6 +98,12 @@ MAX_TURNS = 120
 # review. Streamed: the SDK refuses a non-streaming request it expects to run this long.
 MAX_TOKENS = 64000
 KEY_ENV = "ANTHROPIC_API_KEY"
+# The caller's optional read token (.github#62): another repository's file that GitHub does
+# not find with the workflow's token, a private repository's included, is read again with it.
+# No subprocess gets the variable; the one read that needs the token gets it as its GH_TOKEN.
+READ_TOKEN_ENV = "DOCUMENTS_READ_TOKEN"
+WORKFLOW_TOKEN = "the workflow's token"
+BOTH_TOKENS = f"the workflow's token and {READ_TOKEN_ENV}"
 
 # List prices of claude-opus-5-5 in USD per million tokens; a cache write (5-minute TTL)
 # costs 1.25 times the input price. The cost in the `--out` document is an estimate from
@@ -446,15 +456,25 @@ def _notice(text: str, summary: str | None) -> None:
 # --- prepare -----------------------------------------------------------------------------
 
 
-def _env() -> dict[str, str]:
-    env = dict(os.environ)
+def _env(token: str | None = None) -> dict[str, str]:
+    """A subprocess's environment, without the read token's variable.
+
+    ``token``, where given, is its GH_TOKEN: the one read that needs the read token gets it so.
+    """
+    env = {name: value for name, value in os.environ.items() if name != READ_TOKEN_ENV}
     env["GIT_TERMINAL_PROMPT"] = "0"
     env["GIT_LITERAL_PATHSPECS"] = "1"
+    if token:
+        env["GH_TOKEN"] = token
     return env
 
 
 def _run(
-    args: Sequence[str], *, cwd: Path | None = None, stdout: int | None = None
+    args: Sequence[str],
+    *,
+    cwd: Path | None = None,
+    stdout: int | None = None,
+    token: str | None = None,
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         return subprocess.run(
@@ -463,7 +483,7 @@ def _run(
             stdout=subprocess.PIPE if stdout is None else stdout,
             stderr=subprocess.PIPE,
             check=False,
-            env=_env(),
+            env=_env(token),
             timeout=SUBPROCESS_TIMEOUT,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
@@ -840,22 +860,42 @@ def requirement_of(requirements: Sequence[str], package: str) -> Requirement | N
     return Requirement(package, tuple(clauses) if readable else None)
 
 
+def _not_found(proc: subprocess.CompletedProcess[bytes]) -> bool:
+    return NOT_FOUND.search(proc.stderr.decode("utf-8", errors="replace")) is not None
+
+
+def _api_other(*args: str) -> tuple[subprocess.CompletedProcess[bytes], str]:
+    """``gh api`` on another repository: the last answer, and the tokens it was asked with.
+
+    It asks with the workflow's token, and again with the read token where GitHub does not
+    find what was asked and the caller passes one (.github#62). Any other failure is the
+    answer: the read token never stands in for a server error, a rate limit or a lost
+    connection. An empty read token is none, as a caller that passes no secret hands it.
+    """
+    proc = _run(["gh", "api", *args])
+    token = os.environ.get(READ_TOKEN_ENV, "").strip()
+    if proc.returncode == 0 or not token or not _not_found(proc):
+        return proc, WORKFLOW_TOKEN
+    return _run(["gh", "api", *args], token=token), BOTH_TOKENS
+
+
 def package_name(owner: str, repository: str, gitref: str) -> str | None:
     """The normalized ``[project]`` name in another repository's ``pyproject.toml`` at ``gitref``.
 
-    None where GitHub finds no such file (a private repository's too, whose document then fails
-    as before), or it is no TOML or names no package. Any other failure to read it (a server
-    error, a rate limit, a lost connection) is a PrepareError naming the repository: leaving
-    the link's ref would judge by unreleased rules, with no line that says why.
+    None where GitHub finds no such file, with the read token too where the caller passes one
+    (a private repository's the tokens do not reach, whose document then fails), or it is no
+    TOML or names no package. Any other failure to read it (a server error, a rate limit, a
+    lost connection) is a PrepareError naming the repository: leaving the link's ref would
+    judge by unreleased rules, with no line that says why.
     """
     endpoint = f"repos/{owner}/{repository}/contents/pyproject.toml?ref={quote(gitref)}"
-    proc = _run(["gh", "api", endpoint, "-H", RAW_ACCEPT])
+    proc, tokens = _api_other(endpoint, "-H", RAW_ACCEPT)
     if proc.returncode != 0:
-        if NOT_FOUND.search(proc.stderr.decode("utf-8", errors="replace")):
+        if _not_found(proc):
             return None
         raise PrepareError(
             f"the pyproject.toml of {printable(f'{owner}/{repository}')} could not be read with "
-            "the workflow's token; the review cannot run"
+            f"{tokens}; the review cannot run"
         )
     try:
         project = tomllib.loads(proc.stdout.decode("utf-8")).get("project")
@@ -870,11 +910,11 @@ def package_name(owner: str, repository: str, gitref: str) -> str | None:
 def repository_tags(owner: str, repository: str) -> list[str]:
     """The names of another repository's tags; PrepareError when they cannot be read."""
     endpoint = f"repos/{owner}/{repository}/tags?per_page=100"
-    proc = _run(["gh", "api", endpoint, "--paginate", "--jq", ".[].name"])
+    proc, tokens = _api_other(endpoint, "--paginate", "--jq", ".[].name")
     if proc.returncode != 0:
         raise PrepareError(
-            f"the tags of {printable(f'{owner}/{repository}')} could not be read with the "
-            "workflow's token; the review cannot run"
+            f"the tags of {printable(f'{owner}/{repository}')} could not be read with "
+            f"{tokens}; the review cannot run"
         )
     return proc.stdout.decode("utf-8", errors="replace").split()
 
@@ -949,7 +989,7 @@ class Pins:
 
 
 class UnreadableDocument(PrepareError):
-    """Another repository's document could not be read with the token at hand."""
+    """Another repository's document could not be read with the tokens at hand."""
 
     def __init__(self, message: str, *, not_found: bool) -> None:
         """``not_found``: GitHub found no such file there, a private repository's included."""
@@ -960,13 +1000,12 @@ class UnreadableDocument(PrepareError):
 def _read_other(ref: DocumentRef) -> bytes:
     path = quote(ref.path, safe="/")
     endpoint = f"repos/{ref.owner}/{ref.repository}/contents/{path}?ref={quote(ref.ref or '')}"
-    proc = _run(["gh", "api", endpoint, "-H", RAW_ACCEPT])
+    proc, tokens = _api_other(endpoint, "-H", RAW_ACCEPT)
     if proc.returncode != 0:
-        not_found = NOT_FOUND.search(proc.stderr.decode("utf-8", errors="replace")) is not None
+        not_found = _not_found(proc)
         guess = ": a private repository or a missing file" if not_found else ""
         raise UnreadableDocument(
-            f"{printable(ref.where)} could not be read with the workflow's token{guess}; the "
-            "review cannot run",
+            f"{printable(ref.where)} could not be read with {tokens}{guess}; the review cannot run",
             not_found=not_found,
         )
     return proc.stdout

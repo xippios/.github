@@ -1103,7 +1103,10 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     CHECKS_JSON or 8, `api repos/…/tags?…` tags.txt or a 502, `api repos/…/contents/
     pyproject.toml?…` other-pyproject.toml, or pyproject-fail's error, or a 404 (api-fail, or
     no other-pyproject.toml), and `api repos/…/contents/…?ref=<ref>` at-<ref>.md, else
-    DOCUMENT, or a 404 (api-fail, or missing-<ref>), or fail-<ref>'s error."""
+    DOCUMENT, or a 404 (api-fail, or missing-<ref>), or fail-<ref>'s error. Where `private`
+    holds a token, every `api repos/…` call with another GH_TOKEN is a 404 first, as GitHub
+    answers for a private repository. Each call's GH_TOKEN goes to tokens, a line per call,
+    and a call that sees DOCUMENTS_READ_TOKEN in its environment to leaked."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "pr.json").write_text(PR_JSON)
@@ -1115,6 +1118,10 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "#!/bin/sh\n"
         'here=$(dirname "$0")\n'
         'printf "%s\\n" "$*" >> "$here/calls"\n'
+        'printf "%s\\n" "${GH_TOKEN:-}" >> "$here/tokens"\n'
+        '[ -n "${DOCUMENTS_READ_TOKEN+set}" ] && printf "%s\\n" "$*" >> "$here/leaked"\n'
+        'case "$1 $2" in "api repos/"*) [ -f "$here/private" ] && '
+        f'[ "${{GH_TOKEN:-}}" != "$(cat "$here/private")" ] && {{ {not_found} }} ;; esac\n'
         'case "$1 $2 $*" in\n'
         '  "pr view "*baseRefOid*) cat "$here/shas.json" ;;\n'
         '  "pr view "*) cat "$here/pr.json" ;;\n'
@@ -1814,6 +1821,261 @@ def test_the_instructions_say_where_another_repositorys_documents_are_read() -> 
     ) in text
     assert "The heading of each document names where it was read." in text
     assert "read from `main`, never from the pull request" not in text
+
+
+# --- a private sibling's documents with the caller's read token (.github#62) ---------------
+
+# The workflow's token as the Prepare step sets GH_TOKEN, and the caller's read token, each
+# shaped as GitHub issues them, so the script's redaction would catch either.
+WORKFLOW_TOKEN = "ghs_workflow0123456789"
+READ_TOKEN = "github_pat_read0123456789"
+BOTH = "the workflow's token and DOCUMENTS_READ_TOKEN"
+
+
+def private_sibling(
+    fake_gh: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    read_token: str | None,
+    *,
+    private: bool = True,
+    workflow_token: str | None = WORKFLOW_TOKEN,
+) -> None:
+    """sdk-core private where ``private``: gh answers 404 to every token but READ_TOKEN. The
+    environment of the Prepare step: GH_TOKEN the workflow's token (None: gh's own login, as
+    in a dry run), DOCUMENTS_READ_TOKEN the caller's (None: no such variable)."""
+    if private:
+        (fake_gh / "private").write_text(READ_TOKEN)
+    if workflow_token is None:
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("GH_TOKEN", workflow_token)
+    if read_token is None:
+        monkeypatch.delenv("DOCUMENTS_READ_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("DOCUMENTS_READ_TOKEN", read_token)
+
+
+def asked(fake_gh: Path) -> list[tuple[str, str]]:
+    """sdk-core's calls, each with the token it was asked with: `workflow` or `read`."""
+    calls = (fake_gh / "calls").read_text().splitlines()
+    tokens = (fake_gh / "tokens").read_text().splitlines()
+    names = {WORKFLOW_TOKEN: "workflow", READ_TOKEN: "read"}
+    return [
+        (names.get(token, token), call)
+        for call, token in zip(calls, tokens, strict=True)
+        if "sdk-core" in call
+    ]
+
+
+def nowhere_but_its_read(fake_gh: Path, ws: Path, actions: dict[str, Path], out: str) -> None:
+    """The read token reached gh as the GH_TOKEN of its read alone: no call saw
+    DOCUMENTS_READ_TOKEN, and no argument list, output, job summary or file of the material
+    carries it."""
+    assert not (fake_gh / "leaked").exists()
+    assert READ_TOKEN not in (fake_gh / "calls").read_text()
+    assert READ_TOKEN not in out
+    if actions["summary"].exists():
+        assert READ_TOKEN not in actions["summary"].read_text()
+    for path in (ws / ".review").rglob("*"):
+        if path.is_file():
+            assert READ_TOKEN.encode() not in path.read_bytes()
+
+
+@pytest.mark.parametrize("read_token", [READ_TOKEN, f"  {READ_TOKEN}\n"])
+def test_a_private_siblings_document_is_read_with_the_read_token(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys, read_token: str
+) -> None:
+    """GitHub does not find it with the workflow's token; the read token reads it, a padded
+    value as the token it pads."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    private_sibling(fake_gh, monkeypatch, read_token)
+    assert prepare(REPO, ws, base, head) == 0
+    at_links_ref(ws)
+    assert asked(fake_gh) == [("workflow", API_CALL), ("read", API_CALL)]
+    # `pr view` and `pr checks` before it are the workflow's.
+    tokens = (fake_gh / "tokens").read_text().splitlines()
+    assert tokens == [WORKFLOW_TOKEN, WORKFLOW_TOKEN, WORKFLOW_TOKEN, READ_TOKEN]
+    assert f"conventions: document {LABELS[1]}, read at main, {len(DOCUMENT)} bytes" in (
+        actions["summary"].read_text().splitlines()
+    )
+    captured = capsys.readouterr()
+    nowhere_but_its_read(fake_gh, ws, actions, captured.out + captured.err)
+
+
+def test_a_private_siblings_pin_resolves_with_the_read_token(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys
+) -> None:
+    """Its pyproject.toml, its tags and its document at the release, as a public one's."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    private_sibling(fake_gh, monkeypatch, READ_TOKEN)
+    assert prepare(REPO, ws, base, head) == 0
+    assert listed(ws)[1] == {
+        "label": LABELS[1],
+        "source": RELEASE_URL,
+        "ref": "v0.3.10",
+        "file": "documents/2-conventions.md",
+    }
+    assert (ws / ".review" / "documents" / "2-conventions.md").read_text() == AT_RELEASE
+    at_release = API_CALL.replace("ref=main", "ref=v0.3.10")
+    assert asked(fake_gh) == [
+        ("workflow", PYPROJECT_CALL),
+        ("read", PYPROJECT_CALL),
+        ("workflow", TAGS_CALL),
+        ("read", TAGS_CALL),
+        ("workflow", at_release),
+        ("read", at_release),
+    ]
+    assert actions["summary"].read_text().splitlines()[0] == (
+        "conventions: the documents of xippios/sdk-core are read at v0.3.10, the highest release "
+        "tag that the head's requirement xippios-core~=0.3.0 admits"
+    )
+    captured = capsys.readouterr()
+    nowhere_but_its_read(fake_gh, ws, actions, captured.out + captured.err)
+
+
+@pytest.mark.parametrize("read_token", [None, "", " \n"])
+def test_without_the_read_token_a_private_siblings_document_fails_as_before(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys, read_token
+) -> None:
+    """No secret, an empty one, as a caller that passes none hands the callee, or a blank
+    one: one read with the workflow's token, and the same failure as before."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    private_sibling(fake_gh, monkeypatch, read_token)
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with the workflow's token: "
+        "a private repository or a missing file; the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert asked(fake_gh) == [("workflow", PYPROJECT_CALL), ("workflow", API_CALL)]
+    assert not actions["output"].exists()
+
+
+def test_a_document_neither_token_reads_fails_naming_it_and_both_tokens(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys
+) -> None:
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    private_sibling(fake_gh, monkeypatch, READ_TOKEN)
+    (fake_gh / "missing-main").write_text("")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with {BOTH}: a private "
+        "repository or a missing file; the review cannot run"
+    )
+    captured = capsys.readouterr()
+    assert line in captured.out
+    assert actions["summary"].read_text() == line + "\n"
+    assert asked(fake_gh) == [("workflow", API_CALL), ("read", API_CALL)]
+    nowhere_but_its_read(fake_gh, ws, actions, captured.out + captured.err)
+
+
+@pytest.mark.parametrize("error", [*FAILURES, "gh: Bad credentials (HTTP 401)"])
+def test_a_read_with_the_read_token_that_fails_otherwise_fails_naming_both_tokens(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys, error: str
+) -> None:
+    """An expired token, a server error, a rate limit: no guess at the cause."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    private_sibling(fake_gh, monkeypatch, READ_TOKEN)
+    (fake_gh / "fail-main").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with {BOTH}; the review "
+        "cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+
+
+@pytest.mark.parametrize(
+    ("failing", "what"), [("pyproject-fail", "the pyproject.toml of"), ("tags-fail", "the tags of")]
+)
+def test_a_private_siblings_pyproject_or_tags_that_fail_name_the_repository_and_both_tokens(
+    tmp_path: Path,
+    fake_gh: Path,
+    actions: dict[str, Path],
+    monkeypatch,
+    capsys,
+    failing: str,
+    what: str,
+) -> None:
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    private_sibling(fake_gh, monkeypatch, READ_TOKEN)
+    (fake_gh / failing).write_text("gh: Server Error (HTTP 502)\n")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {what} xippios/sdk-core could not be read with {BOTH}; the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert not actions["output"].exists()
+
+
+@pytest.mark.parametrize("error", FAILURES)
+def test_only_not_found_asks_again_with_the_read_token(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys, error: str
+) -> None:
+    """Step 2's rule stands (.github#71): any failure but "not found" fails at once, and the
+    read token is never asked."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    private_sibling(fake_gh, monkeypatch, READ_TOKEN, private=False)
+    (fake_gh / "fail-main").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    assert (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with the workflow's token; "
+        "the review cannot run"
+    ) in capsys.readouterr().out
+    assert asked(fake_gh) == [("workflow", API_CALL)]
+
+
+def test_a_public_siblings_files_are_read_with_the_workflows_token_alone(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch, capsys
+) -> None:
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    private_sibling(fake_gh, monkeypatch, READ_TOKEN, private=False)
+    assert prepare(REPO, ws, base, head) == 0
+    assert listed(ws)[1]["ref"] == "v0.3.10"
+    assert set((fake_gh / "tokens").read_text().splitlines()) == {WORKFLOW_TOKEN}
+    captured = capsys.readouterr()
+    nowhere_but_its_read(fake_gh, ws, actions, captured.out + captured.err)
+
+
+def test_no_process_gets_the_read_token_but_the_read_that_needs_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """git and every other gh call run without DOCUMENTS_READ_TOKEN; the one read that needs
+    it gets it as its GH_TOKEN."""
+    monkeypatch.setenv("GH_TOKEN", WORKFLOW_TOKEN)
+    monkeypatch.setenv("DOCUMENTS_READ_TOKEN", READ_TOKEN)
+    env = fr._env()
+    assert "DOCUMENTS_READ_TOKEN" not in env
+    assert READ_TOKEN not in env.values()
+    assert env["GH_TOKEN"] == WORKFLOW_TOKEN
+    read = fr._env(READ_TOKEN)
+    assert "DOCUMENTS_READ_TOKEN" not in read
+    assert read["GH_TOKEN"] == READ_TOKEN
+
+
+def test_dry_run_reads_a_private_siblings_document_with_the_read_token(
+    tmp_path: Path, fake_gh: Path, api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """gh's own login first, as the workflow's token in the workflow, then the read token from
+    the environment of the command."""
+    source, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    facts = {"baseRefOid": base, "headRefOid": head, "title": "feat: the change"}
+    (fake_gh / "shas.json").write_text(json.dumps(facts))
+
+    def clone(repo: str, pr: int, sha: str, workdir: Path) -> None:
+        git(tmp_path, "clone", "-q", str(source), str(workdir))
+        git(workdir, "checkout", "-q", "--detach", sha)
+
+    monkeypatch.setattr(fr, "clone_pull_request", clone)
+    private_sibling(fake_gh, monkeypatch, READ_TOKEN, workflow_token=None)
+    client = api(message([verdict()]))
+    assert fr.main(["dry-run", "--repo", REPO, "--pr", "7"]) == 0
+    system = client.messages.requests[0]["system"]
+    assert system[2]["text"] == f"The document `{LABELS[1]}`, read from {OTHER_URL}:\n\n{DOCUMENT}"
+    assert asked(fake_gh) == [("", API_CALL), ("read", API_CALL)]
 
 
 def test_a_release_pr_judges_the_range_from_the_last_tag(
