@@ -6,10 +6,11 @@
 # the form of docs/style/reviews.md#conventions-check, created on the first run that reviews
 # the pull request and edited in place after (.github#36); no verdict (an API error, a refusal,
 # the turn cap) fails it with the cause, the turns and the token usage in the job summary and
-# posts no comment. The documents are read on the default branch, never from the pull request,
-# so a pull request cannot rewrite the rules it is judged by. A document the review cannot read
-# (a private repository's, a missing file) fails the check naming it; a README that links none
-# passes with a notice, and no API call is made.
+# posts no comment. The documents are never read from the pull request, so a pull request
+# cannot rewrite the rules it is judged by: the repository's own come from the default branch,
+# another repository's from its link's ref or the release the head requires. A document the
+# review cannot read (a private repository's, a missing file) fails the check naming it; a
+# README that links none passes with a notice, and no API call is made.
 #
 # A release PR is labeled `release` or titled `<version> Release`, and `release: <version>`
 # until every workspace has adopted coordinate-core 0.7.4 (coordinate-core#791,
@@ -216,8 +217,10 @@ jobs:
       # documents are the ones the README links under `## Documents` on the default branch,
       # read there and never from the pull request (C80): the repository's own from that
       # branch, another repository's from GitHub with the workflow's token, which reads a
-      # public repository and fails on a private one, naming the document. A README that
-      # links none ends the job green here, with a notice and `review=false`: no API call.
+      # public repository and fails on a private one, naming the document, at the ref its
+      # link names or at the release tag of it that the head's pyproject.toml requires
+      # (README.md, "The documents"; .github#70). A README that links none ends the job
+      # green here, with a notice and `review=false`: no API call.
       # On a release PR (the gate's `release`) the range runs from the last release tag, and
       # the version comes from the title, else from the head's pyproject.toml.
       - name: Prepare the review material

@@ -1100,13 +1100,17 @@ API_CALL = (
 @pytest.fixture
 def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A gh on PATH: `pr view` prints PR_JSON (or the SHAs and the title), `pr checks`
-    CHECKS_JSON or 8, `api repos/…/contents/…` DOCUMENT or a 404."""
+    CHECKS_JSON or 8, `api repos/…/tags?…` tags.txt or a 502, `api repos/…/contents/
+    pyproject.toml?…` other-pyproject.toml, or pyproject-fail's error, or a 404 (api-fail, or
+    no other-pyproject.toml), and `api repos/…/contents/…?ref=<ref>` at-<ref>.md, else
+    DOCUMENT, or a 404 (api-fail, or missing-<ref>), or fail-<ref>'s error."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     (bin_dir / "pr.json").write_text(PR_JSON)
     (bin_dir / "checks.json").write_text(CHECKS_JSON)
     (bin_dir / "document.md").write_text(DOCUMENT)
     gh = bin_dir / "gh"
+    not_found = 'echo "gh: Not Found (HTTP 404)" >&2; exit 1;'
     gh.write_text(
         "#!/bin/sh\n"
         'here=$(dirname "$0")\n'
@@ -1115,8 +1119,17 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         '  "pr view "*baseRefOid*) cat "$here/shas.json" ;;\n'
         '  "pr view "*) cat "$here/pr.json" ;;\n'
         '  "pr checks "*) [ -f "$here/checks-fail" ] && exit 8; cat "$here/checks.json" ;;\n'
-        '  "api repos/"*) [ -f "$here/api-fail" ] && { echo "gh: Not Found (HTTP 404)" >&2; '
-        'exit 1; }; cat "$here/document.md" ;;\n'
+        '  "api repos/"*"/tags?"*) [ -f "$here/tags-fail" ] && '
+        '{ echo "gh: Server Error (HTTP 502)" >&2; exit 1; }; cat "$here/tags.txt" ;;\n'
+        '  "api repos/"*"/contents/pyproject.toml?"*) [ -f "$here/pyproject-fail" ] && '
+        '{ cat "$here/pyproject-fail" >&2; exit 1; }; '
+        'if [ -f "$here/api-fail" ] || [ ! -f "$here/other-pyproject.toml" ]; then '
+        f'{not_found} fi; cat "$here/other-pyproject.toml" ;;\n'
+        f'  "api repos/"*) [ -f "$here/api-fail" ] && {{ {not_found} }}; ref=${{2##*ref=}}; '
+        f'[ -f "$here/missing-$ref" ] && {{ {not_found} }}; '
+        '[ -f "$here/fail-$ref" ] && { cat "$here/fail-$ref" >&2; exit 1; }; '
+        'if [ -f "$here/at-$ref.md" ]; then cat "$here/at-$ref.md"; '
+        'else cat "$here/document.md"; fi ;;\n'
         "  *) exit 1 ;;\n"
         "esac\n"
     )
@@ -1204,12 +1217,18 @@ def test_prepare_writes_the_review_material(
         API_CALL,
     ]
     # The documents the README on main links, in its order: the repository's own from main, the
-    # other repository's by its URL, an anchor as the README itself.
+    # other repository's by its URL, an anchor as the README itself. The head requires no
+    # package, so the other repository's is read at its link's ref, and nothing more is asked.
     documents = json.loads((review / "documents.json").read_text())
     assert documents == [
-        {"label": LABELS[0], "source": "main", "file": "documents/1-conventions.md"},
-        {"label": LABELS[1], "source": OTHER_URL, "file": "documents/2-conventions.md"},
-        {"label": LABELS[2], "source": "main", "file": "documents/3-README.md"},
+        {"label": LABELS[0], "source": "main", "ref": "main", "file": "documents/1-conventions.md"},
+        {
+            "label": LABELS[1],
+            "source": OTHER_URL,
+            "ref": "main",
+            "file": "documents/2-conventions.md",
+        },
+        {"label": LABELS[2], "source": "main", "ref": "main", "file": "documents/3-README.md"},
     ]
     assert (review / "documents" / "1-conventions.md").read_text() == "# conventions, main\n"
     assert (review / "documents" / "2-conventions.md").read_text() == DOCUMENT
@@ -1221,9 +1240,19 @@ def test_prepare_writes_the_review_material(
     ]
     out = capsys.readouterr().out
     assert "conventions: .review/diff.patch " in out
-    assert f"conventions: document {LABELS[0]}, read from main" in out
-    assert f"conventions: document {LABELS[1]}, read from {OTHER_URL}" in out
-    assert actions["summary"].read_text() == "conventions: 3 documents of README.md on main\n"
+    # Each document with the ref it was read at, in the log and in the job summary.
+    own = BASE_FILES["docs/conventions.md"]
+    read_at = [
+        f"conventions: document {LABELS[0]}, read at main, {len(own)} bytes",
+        f"conventions: document {LABELS[1]}, read at main, {len(DOCUMENT)} bytes",
+        f"conventions: document {LABELS[2]}, read at main, {len(README.encode())} bytes",
+    ]
+    for line in read_at:
+        assert line in out
+    assert actions["summary"].read_text().splitlines() == [
+        *read_at,
+        "conventions: 3 documents of README.md on main",
+    ]
     assert actions["output"].read_text() == "review=true\n"
 
 
@@ -1330,12 +1359,461 @@ def test_a_document_of_the_repository_by_its_url_comes_from_main(
     assert prepare(REPO, ws, base, head) == 0
     documents = json.loads((ws / ".review" / "documents.json").read_text())
     assert documents == [
-        {"label": LABELS[0], "source": "main", "file": "documents/1-conventions.md"}
+        {"label": LABELS[0], "source": "main", "ref": "main", "file": "documents/1-conventions.md"}
     ]
     assert (
         ws / ".review" / "documents" / "1-conventions.md"
     ).read_text() == "# conventions, main\n"
     assert "api " not in (fake_gh / "calls").read_text()
+
+
+# --- the release the head's pin allows (.github#70) -----------------------------------------
+
+# sdk-core as gh serves it: its package's name, written as PEP 503 normalizes it away, and its
+# tags. ~=0.3.0 admits v0.3.10 as the highest, by number and not by text; a pre-release, a tag
+# without its v and another name are no release tags.
+SDK_CORE_PYPROJECT = '[project]\nname = "Xippios_Core"\nversion = "0.4.0"\n'
+TAGS = "v0.1.0\nv0.2.1\nv0.3.0\nv0.3.2\nv0.3.10\nv0.4.0\nv0.3.11rc1\nv0.3.12-rc.1\n0.3.13\nlatest\n"
+AT_RELEASE = "# conventions of sdk-core, v0.3.10\n"
+RELEASE_URL = "https://github.com/xippios/sdk-core/blob/v0.3.10/docs/conventions.md"
+ADR_URL = "https://github.com/xippios/sdk-core/blob/main/docs/adr/0008-sources.md"
+PINNED_README = README.replace(
+    "- sdk-usda-psd: [Checks]",
+    f"- sdk-core: [docs/adr/0008-sources.md]({ADR_URL}) — a decision.\n- sdk-usda-psd: [Checks]",
+)
+RAW = "-H Accept: application/vnd.github.raw+json"
+PYPROJECT_CALL = f"api repos/xippios/sdk-core/contents/pyproject.toml?ref=main {RAW}"
+TAGS_CALL = "api repos/xippios/sdk-core/tags?per_page=100 --paginate --jq .[].name"
+
+
+def pyproject(*dependencies: str, optional: dict[str, list[str]] | None = None) -> str:
+    """A source's pyproject.toml with these requirements."""
+    text = '[project]\nname = "xippios-usda-psd"\nversion = "0.2.0"\n'
+    text += f"dependencies = {json.dumps(list(dependencies))}\n"
+    if optional:
+        text += "\n[project.optional-dependencies]\n"
+        for group, items in optional.items():
+            text += f"{group} = {json.dumps(items)}\n"
+    return text
+
+
+def pinned_checkout(
+    root: Path, fake_gh: Path, head_pyproject: str, *, readme: str = README
+) -> tuple[Path, str, str]:
+    """A source whose main requires core 0.2 and whose head has ``head_pyproject``, and sdk-core
+    as gh serves it: its pyproject.toml, its tags and its documents at v0.3.10."""
+    (fake_gh / "other-pyproject.toml").write_text(SDK_CORE_PYPROJECT)
+    (fake_gh / "tags.txt").write_text(TAGS)
+    (fake_gh / "at-v0.3.10.md").write_text(AT_RELEASE)
+    base_files = {
+        **BASE_FILES,
+        "README.md": readme,
+        "pyproject.toml": pyproject("xippios-core~=0.2.0"),
+    }
+    head_changes = {**HEAD_CHANGES, "pyproject.toml": head_pyproject}
+    return make_checkout(root, head_changes, base_files=base_files)
+
+
+def sdk_core_calls(fake_gh: Path) -> list[str]:
+    return [line for line in (fake_gh / "calls").read_text().splitlines() if "sdk-core" in line]
+
+
+def listed(ws: Path) -> list[dict[str, str]]:
+    return json.loads((ws / ".review" / "documents.json").read_text())
+
+
+def at_links_ref(ws: Path) -> None:
+    """sdk-core's document was read at main, its link's ref, as before."""
+    assert listed(ws)[1] == {
+        "label": LABELS[1],
+        "source": OTHER_URL,
+        "ref": "main",
+        "file": "documents/2-conventions.md",
+    }
+    assert (ws / ".review" / "documents" / "2-conventions.md").read_text() == DOCUMENT
+
+
+def test_a_dependencys_documents_are_read_at_the_release_the_heads_pin_allows(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys
+) -> None:
+    """main requires core 0.2 and the head raises it to 0.3: the head's requirement decides,
+    read from the commit, and sdk-core is resolved once for its two documents."""
+    head_pyproject = pyproject(
+        "httpx>=0.27",
+        "xippios-core~=0.3.0",
+        optional={"http": ["xippios-core[http]~=0.3.0 ; python_version >= '3.12'"]},
+    )
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, head_pyproject, readme=PINNED_README)
+    (ws / "pyproject.toml").write_text(pyproject("xippios-core>=9"))
+
+    assert prepare(REPO, ws, base, head) == 0
+    adr = "sdk-core: docs/adr/0008-sources.md"
+    assert listed(ws) == [
+        {"label": LABELS[0], "source": "main", "ref": "main", "file": "documents/1-conventions.md"},
+        {
+            "label": LABELS[1],
+            "source": RELEASE_URL,
+            "ref": "v0.3.10",
+            "file": "documents/2-conventions.md",
+        },
+        {
+            "label": adr,
+            "source": ADR_URL.replace("/main/", "/v0.3.10/"),
+            "ref": "v0.3.10",
+            "file": "documents/3-0008-sources.md",
+        },
+        {"label": LABELS[2], "source": "main", "ref": "main", "file": "documents/4-README.md"},
+    ]
+    assert (ws / ".review" / "documents" / "2-conventions.md").read_text() == AT_RELEASE
+    assert sdk_core_calls(fake_gh) == [
+        PYPROJECT_CALL,
+        TAGS_CALL,
+        API_CALL.replace("ref=main", "ref=v0.3.10"),
+        f"api repos/xippios/sdk-core/contents/docs/adr/0008-sources.md?ref=v0.3.10 {RAW}",
+    ]
+    resolved = (
+        "conventions: the documents of xippios/sdk-core are read at v0.3.10, the highest release "
+        "tag that the head's requirement xippios-core~=0.3.0 admits"
+    )
+    summary = actions["summary"].read_text().splitlines()
+    assert summary[0] == resolved
+    assert f"conventions: document {LABELS[1]}, read at v0.3.10, {len(AT_RELEASE)} bytes" in summary
+    assert f"conventions: document {adr}, read at v0.3.10, {len(AT_RELEASE)} bytes" in summary
+    assert summary[-1] == "conventions: 4 documents of README.md on main"
+    assert resolved in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("requirement", "tags"),
+    [
+        ("xippios-core>=9.0", TAGS),
+        ("xippios-core~=0.3.0", "latest\nv0.3.1rc1\nv0.4.0\n"),
+        ("xippios-core", ""),
+    ],
+)
+def test_no_release_tag_fitting_the_pin_leaves_the_links_ref(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], requirement: str, tags: str
+) -> None:
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject(requirement))
+    (fake_gh / "tags.txt").write_text(tags)
+    assert prepare(REPO, ws, base, head) == 0
+    at_links_ref(ws)
+    assert API_CALL in sdk_core_calls(fake_gh)
+    assert actions["summary"].read_text().splitlines()[0] == (
+        f"conventions: no release tag of xippios/sdk-core fits the head's requirement "
+        f"{requirement}; its documents are read at main, the ref their links name"
+    )
+
+
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "xippios-core @ git+https://github.com/xippios/sdk-core@main",
+        "xippios-core>=0.3.0rc1",
+        "xippios-core===0.3.2",
+        "xippios-core~=1",
+        "xippios-core>=0.3.*",
+        "xippios-core~=0.3.0,",
+    ],
+)
+def test_a_requirement_naming_no_version_the_check_compares_leaves_the_links_ref(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], requirement: str
+) -> None:
+    """One such requirement of the package is enough; its text, the pull request's, is not
+    printed."""
+    head_pyproject = pyproject("xippios-core~=0.3.0", optional={"other": [requirement]})
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, head_pyproject)
+    assert prepare(REPO, ws, base, head) == 0
+    at_links_ref(ws)
+    summary = actions["summary"].read_text()
+    assert summary.splitlines()[0] == (
+        "conventions: the head's requirement of xippios-core names no version the check compares "
+        "(a release version after ~=, ==, !=, <=, >=, < or >); the documents of xippios/sdk-core "
+        "are read at main, the ref their links name"
+    )
+    assert requirement.split("xippios-core", 1)[1] not in summary
+
+
+@pytest.mark.parametrize(
+    ("other", "requirement"),
+    [
+        (SDK_CORE_PYPROJECT, "xippios-core-extra~=0.3.0"),
+        (SDK_CORE_PYPROJECT, "other-package~=0.3.0"),
+        (None, "xippios-core~=0.3.0"),
+        ("[tool.uv]\npackage = false\n", "xippios-core~=0.3.0"),
+        ('[project]\nname = "xippios-core ~=0.3"\n', "xippios-core~=0.3.0"),
+        ("[project\nname = xippios-core\n", "xippios-core~=0.3.0"),
+    ],
+)
+def test_a_repository_whose_package_the_head_does_not_require_is_read_at_the_links_ref(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], other: str | None, requirement: str
+) -> None:
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject(requirement))
+    if other is None:
+        (fake_gh / "other-pyproject.toml").unlink()
+    else:
+        (fake_gh / "other-pyproject.toml").write_text(other)
+    assert prepare(REPO, ws, base, head) == 0
+    at_links_ref(ws)
+    assert sdk_core_calls(fake_gh) == [PYPROJECT_CALL, API_CALL]
+    assert "release tag" not in actions["summary"].read_text()
+
+
+@pytest.mark.parametrize(
+    "head_pyproject", [pyproject(), '[project]\nname = "pkg"\ndynamic = ["dependencies"]\n']
+)
+def test_a_head_that_requires_nothing_asks_another_repository_nothing_more(
+    tmp_path: Path, fake_gh: Path, head_pyproject: str
+) -> None:
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, head_pyproject)
+    assert prepare(REPO, ws, base, head) == 0
+    at_links_ref(ws)
+    assert sdk_core_calls(fake_gh) == [API_CALL]
+
+
+@pytest.mark.parametrize(
+    ("gitref", "asked"),
+    [
+        ("v0.3.0", True),
+        ("0123456789abcdef0123456789abcdef01234567", False),
+        ("2aa2d3e", False),
+    ],
+)
+def test_a_link_that_names_a_tag_or_a_commit_is_read_there(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], gitref: str, asked: bool
+) -> None:
+    link = OTHER_URL.replace("/main/", f"/{gitref}/")
+    readme = README.replace(OTHER_URL, link)
+    ws, base, head = pinned_checkout(
+        tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"), readme=readme
+    )
+    assert prepare(REPO, ws, base, head) == 0
+    assert listed(ws)[1] == {
+        "label": LABELS[1],
+        "source": link,
+        "ref": gitref,
+        "file": "documents/2-conventions.md",
+    }
+    read = API_CALL.replace("ref=main", f"ref={gitref}")
+    pyproject_at = PYPROJECT_CALL.replace("ref=main", f"ref={gitref}")
+    assert sdk_core_calls(fake_gh) == ([pyproject_at, TAGS_CALL, read] if asked else [read])
+    assert "release tag" not in actions["summary"].read_text()
+
+
+def test_a_document_that_is_not_in_the_release_is_read_at_the_links_ref(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path]
+) -> None:
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "missing-v0.3.10").write_text("")
+    assert prepare(REPO, ws, base, head) == 0
+    at_links_ref(ws)
+    assert sdk_core_calls(fake_gh)[-2:] == [API_CALL.replace("ref=main", "ref=v0.3.10"), API_CALL]
+    summary = actions["summary"].read_text().splitlines()
+    assert (
+        f"conventions: {LABELS[1]} is not in v0.3.10; it is read at main, the ref its link names"
+    ) in summary
+    assert f"conventions: document {LABELS[1]}, read at main, {len(DOCUMENT)} bytes" in summary
+
+
+FAILURES = [
+    "gh: Server Error (HTTP 502)",
+    "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+    "error connecting to api.github.com",
+]
+
+
+@pytest.mark.parametrize("error", FAILURES)
+def test_a_document_the_release_fails_to_serve_fails_naming_it(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys, error: str
+) -> None:
+    """Only "not found" at the release leaves the link's ref: after any other failure there,
+    the link's ref would bring unreleased rules under a line saying the file is not in it."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "fail-v0.3.10").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({RELEASE_URL}) could not be read with the workflow's token; "
+        "the review cannot run"
+    )
+    out = capsys.readouterr().out
+    assert line in out
+    assert "is not in" not in out
+    assert actions["summary"].read_text().splitlines()[-1] == line
+    assert sdk_core_calls(fake_gh)[-1] == API_CALL.replace("ref=main", "ref=v0.3.10")
+    assert not actions["output"].exists()
+
+
+@pytest.mark.parametrize("error", FAILURES)
+def test_a_document_at_its_links_ref_that_fails_otherwise_is_named_without_a_guess(
+    tmp_path: Path, fake_gh: Path, capsys, error: str
+) -> None:
+    """Not "not found": the line guesses no private repository and no missing file."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    (fake_gh / "fail-main").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    assert (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with the workflow's token; "
+        "the review cannot run"
+    ) in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "gh: Server Error (HTTP 502)",
+        "gh: API rate limit exceeded for user ID 1. (HTTP 403)",
+        "error connecting to api.github.com",
+    ],
+)
+def test_a_pyproject_that_cannot_be_read_fails_naming_the_repository(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys, error: str
+) -> None:
+    """Any failure but "not found": leaving the link's ref would judge by unreleased rules
+    again, with no line that says why."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "pyproject-fail").write_text(error + "\n")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        "conventions: the pyproject.toml of xippios/sdk-core could not be read with the "
+        "workflow's token; the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert not actions["output"].exists()
+    assert sdk_core_calls(fake_gh) == [PYPROJECT_CALL]
+
+
+def test_a_private_repository_whose_package_the_head_requires_fails_on_its_document(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys
+) -> None:
+    """Its pyproject.toml is "not found", no package, and its document fails as before."""
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "api-fail").write_text("")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        f"conventions: {LABELS[1]} ({OTHER_URL}) could not be read with the workflow's token: "
+        "a private repository or a missing file; the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert sdk_core_calls(fake_gh) == [PYPROJECT_CALL, API_CALL]
+
+
+def test_tags_that_cannot_be_read_fail_naming_the_repository(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], capsys
+) -> None:
+    ws, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    (fake_gh / "tags-fail").write_text("")
+    assert prepare(REPO, ws, base, head) == 2
+    line = (
+        "conventions: the tags of xippios/sdk-core could not be read with the workflow's token; "
+        "the review cannot run"
+    )
+    assert line in capsys.readouterr().out
+    assert actions["summary"].read_text() == line + "\n"
+    assert not actions["output"].exists()
+
+
+@pytest.mark.parametrize(
+    ("specifier", "version", "admitted"),
+    [
+        ("~=0.3.0", "0.3.0", True),
+        ("~=0.3.0", "0.3.10", True),
+        ("~=0.3.0", "0.4.0", False),
+        ("~=0.3.0", "0.2.9", False),
+        ("~=0.3", "0.9.1", True),
+        ("~=0.3", "1.0", False),
+        ("==0.3.*", "0.3.1", True),
+        ("==0.3.*", "0.30.0", False),
+        ("==0.3", "0.3.0", True),
+        ("==0.3.0", "0.3.1", False),
+        ("!=0.3.1", "0.3.1", False),
+        ("!=0.3.*", "0.3.5", False),
+        ("!=0.3.*", "0.4.0", True),
+        (">=0.3, <0.4", "0.3.9", True),
+        (">=0.3,<0.4", "0.4.0", False),
+        ("(>=0.3)", "0.3.0", True),
+        (">0.3.0", "0.3.0", False),
+        (">0.3.0", "0.3.0.1", True),
+        ("<=0.3.0", "0.3", True),
+        ("<0.3", "0.2.99", True),
+        ("", "9.9.9", True),
+    ],
+)
+def test_a_specifier_admits_a_release_as_pep_440_does(
+    specifier: str, version: str, admitted: bool
+) -> None:
+    clauses = fr.specifier_clauses(specifier)
+    assert clauses is not None
+    assert fr.admits(clauses, tuple(int(part) for part in version.split("."))) is admitted
+
+
+@pytest.mark.parametrize(
+    "specifier",
+    ["~=1", "===0.3.2", ">=0.3.0rc1", ">=0.3.0.post1", ">=0.3.*", "~=0.3.*", "latest", ">=0.3,"],
+)
+def test_a_specifier_the_check_does_not_compare_is_none(specifier: str) -> None:
+    assert fr.specifier_clauses(specifier) is None
+
+
+@pytest.mark.parametrize(
+    ("requirements", "text"),
+    [
+        (["xippios-core~=0.3.0"], "xippios-core~=0.3.0"),
+        (["Xippios_Core (>=0.3, <0.4)"], "xippios-core>=0.3,<0.4"),
+        (["xippios.core[http,cli] ==0.3.* ; python_version >= '3.12'"], "xippios-core==0.3.*"),
+        (
+            ["xippios-core~=0.3.0", "xippios-core[http]~=0.3.0", "xippios-core!=0.3.1"],
+            "xippios-core~=0.3.0,!=0.3.1",
+        ),
+        (["httpx>=0.27", "xippios-core"], "xippios-core"),
+        (["xippios-core-extra~=1.0", "httpx>=0.27"], None),
+    ],
+)
+def test_the_heads_requirement_of_a_package(requirements: list[str], text: str | None) -> None:
+    found = fr.requirement_of(requirements, "xippios-core")
+    assert (None if found is None else found.text) == text
+
+
+def test_a_requirement_with_a_url_compares_no_version() -> None:
+    requirements = ["xippios-core~=0.3.0", "xippios-core @ git+https://github.com/x/y@main"]
+    found = fr.requirement_of(requirements, "xippios-core")
+    assert found is not None
+    assert found.clauses is None
+
+
+def test_dry_run_reads_a_dependencys_documents_at_its_release(
+    tmp_path: Path, fake_gh: Path, api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, base, head = pinned_checkout(tmp_path, fake_gh, pyproject("xippios-core~=0.3.0"))
+    facts = {"baseRefOid": base, "headRefOid": head, "title": "feat: the change"}
+    (fake_gh / "shas.json").write_text(json.dumps(facts))
+
+    def clone(repo: str, pr: int, sha: str, workdir: Path) -> None:
+        git(tmp_path, "clone", "-q", str(source), str(workdir))
+        git(workdir, "checkout", "-q", "--detach", sha)
+
+    monkeypatch.setattr(fr, "clone_pull_request", clone)
+    client = api(message([verdict()]))
+    assert fr.main(["dry-run", "--repo", REPO, "--pr", "7"]) == 0
+    system = client.messages.requests[0]["system"]
+    assert system[2]["text"] == (
+        f"The document `{LABELS[1]}`, read from {RELEASE_URL}:\n\n{AT_RELEASE}"
+    )
+
+
+def test_the_instructions_say_where_another_repositorys_documents_are_read() -> None:
+    """True for every document, and still the same for every pull request: the system prompt
+    is cached."""
+    text = " ".join(fr.INSTRUCTIONS.split())
+    assert "The repository's own documents are read from `main`." in text
+    assert (
+        "Another repository's document is read at the ref its link names, or, where this "
+        "repository requires that repository's package, at the highest release tag there that "
+        "the requirement in the head's `pyproject.toml` admits"
+    ) in text
+    assert "The heading of each document names where it was read." in text
+    assert "read from `main`, never from the pull request" not in text
 
 
 def test_a_release_pr_judges_the_range_from_the_last_tag(
