@@ -22,3 +22,5 @@ def isolated_git(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "test@example.invalid")
     monkeypatch.delenv("GITHUB_OUTPUT", raising=False)
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    # The caller's read token (.github#62): a test that wants one sets it.
+    monkeypatch.delenv("DOCUMENTS_READ_TOKEN", raising=False)

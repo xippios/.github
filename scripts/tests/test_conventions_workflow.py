@@ -440,6 +440,46 @@ def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() ->
     assert "`<version> Release`" in flat
 
 
+# --- the read token (.github#62) ---------------------------------------------------------
+
+READ_TOKEN_VALUE = "          DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}\n"
+
+
+def test_the_read_token_is_an_optional_secret_that_reaches_the_prepare_step_alone() -> None:
+    """The caller may pass DOCUMENTS_READ_TOKEN; only the step that reads the documents gets
+    it, never the review, the verdict or a checkout."""
+    secrets = WORKFLOW.split("  workflow_call:\n    secrets:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert "      ANTHROPIC_API_KEY:\n        required: false\n" in secrets
+    assert "      DOCUMENTS_READ_TOKEN:\n        required: false\n" in secrets
+    assert WORKFLOW.count("${{ secrets.DOCUMENTS_READ_TOKEN }}") == 1
+    assert READ_TOKEN_VALUE in step_block("Prepare the review material")
+    for name in ("Gate", "Review", "Verdict"):
+        assert "DOCUMENTS_READ_TOKEN" not in step_block(name)
+
+
+def test_the_workflows_header_lays_out_the_read_token() -> None:
+    header = workflow_header()
+    assert "DOCUMENTS_READ_TOKEN" in header
+    assert "a pull request chooses nothing the token reads but a release tag" in header
+
+
+def test_the_readme_lays_out_the_read_token_and_its_caller() -> None:
+    """The documents' text names the token and what a pull request cannot choose; the caller
+    passes it by name, beside the key (.github#62)."""
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
+    flat = " ".join(section.split())
+    assert "`DOCUMENTS_READ_TOKEN`" in flat
+    assert "fails the check on a private one" not in flat
+    assert "a pull request chooses nothing the token reads but a release tag" in flat
+    wiring = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
+    caller = wiring.split("```yaml\n", 1)[1].split("```", 1)[0]
+    assert "      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n" in caller
+    assert "      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}\n" in caller
+    assert "inherit" not in caller
+    assert "exactly one secret" not in " ".join(wiring.split())
+
+
 # --- the verdict -------------------------------------------------------------------------
 
 
