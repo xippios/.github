@@ -98,9 +98,10 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     rules it is judged by (C80, `docs/style/repository.md` of a coordinate root). A path, an
     anchor and a URL of the repository itself are read from its default branch; a URL of another
     repository's file is read from GitHub with the workflow's token, which reads a public
-    repository, and where GitHub does not find the file with it, with the caller's read token
-    below. A document that neither reads fails the check, naming the document and the tokens
-    it was read with. It is read at the ref its link names, unless the head of the pull request
+    repository, and where GitHub does not find the file with it, with the read token below,
+    which a private caller passes. A document that neither reads fails the check, naming the
+    document and the tokens it was read with. It is read at the ref its link names, unless the
+    head of the pull request
     requires that repository's package in the `[project]` dependencies or optional
     dependencies of its `pyproject.toml` and the link names a branch: then it is read at the
     highest release tag of that repository, `v` and a release version, that the requirement
@@ -126,19 +127,29 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     nothing to judge", since the root's `doctor` owns that contract.
   - **The read token** (https://github.com/xippios/.github/issues/62): `DOCUMENTS_READ_TOKEN`,
     an optional secret of the caller, a token that reads the private repositories whose files
-    its README lists. The check asks GitHub for another repository's file with the workflow's
-    token first, and only where GitHub answers "not found" asks again with the read token: for
-    a listed document, that repository's `pyproject.toml` and its tags, so a private
-    repository's document is read and its pin resolves as a public one's does. Any other
-    failure fails the check as above, and the read token never stands in for it. Without the
-    secret, or with it empty, the check reads with the workflow's token alone. The token is in
-    the environment of the step that prepares the review material alone, and the script hands
-    it to `gh` as the `GH_TOKEN` of that one read, so no other process gets it, the review's
-    included, and neither the job summary, `documents.json` nor the log carries it. The list
-    of documents comes from the README on the default branch, never from the pull request, so
-    a pull request chooses nothing the token reads but a release tag, by the requirement of its
-    head. A pull request from a fork or of Dependabot gets no secret, and the Gate below ends
-    it before any read.
+    its README lists. The check uses it only where the calling repository is private, by
+    `github.event.repository.private` of the caller's event, as the human decided in
+    https://github.com/xippios/.github/issues/83. The review's comment and its job summary
+    quote the documents it judges by, so in a public repository they would publish a private
+    document's text, and in a private repository they can show the sibling's text to everyone
+    who reads that repository. A public repository that passes the secret reads as one that
+    passes none, and its job summary says so where the review runs: a private sibling's
+    document fails its check and names it. Where the check uses the token, it asks GitHub for
+    another repository's file with the workflow's token first, and only where GitHub answers
+    "not found" asks again with the read token: for a listed document, that repository's
+    `pyproject.toml` and its tags, so a private repository's document is read and its pin
+    resolves as a public one's does. Any other failure fails the check as above, and the read
+    token never stands in for it. Without the secret, or with it empty, the check reads with
+    the workflow's token alone. The token is in the environment of the step that prepares the
+    review material alone, and the script hands it to `gh` as the `GH_TOKEN` of that one read,
+    so no other process gets it, the review's included, and neither the job summary,
+    `documents.json` nor the log carries it. Of what the check reads with the token, a pull
+    request chooses nothing but a release tag, by the requirement of its head: the list of
+    documents comes from the README on the default branch, never from the pull request. That
+    bounds the check, not the secret: a changed workflow of any repository that receives the
+    secret can use it otherwise, and which repositories receive it is the organization's
+    setting. A pull request from a fork or of Dependabot gets no secret, and the Gate below
+    ends it before any read.
   - **The range**: on a release pull request the review judges everything from the last release
     tag (`v*`) reachable from the base to the head, since the pull request's own diff is the
     CHANGELOG and the bump. Without a tag it judges the pull request's own diff and says so. Any
@@ -316,9 +327,10 @@ condition skips (https://github.com/xippios/.github/issues/47).
 
 A context joins the caller's job id and the callee's job name, so a ruleset requires the
 slash-joined context and a caller keeps the job ids above. The caller passes the review its
-secrets by name, never `secrets: inherit`: `ANTHROPIC_API_KEY`, and `DOCUMENTS_READ_TOKEN` where
-its README lists a private repository's document (the read token under `conventions.yml`
-above). It grants the permissions the review asks; a caller that grants less fails at the start:
+secrets by name, never `secrets: inherit`: `ANTHROPIC_API_KEY`, and `DOCUMENTS_READ_TOKEN` in a
+private repository whose README lists a private repository's document (the read token under
+`conventions.yml` above). It grants the permissions the review asks; a caller that grants less
+fails at the start:
 
 ```yaml
 name: gates
@@ -344,7 +356,7 @@ jobs:
       checks: read
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      # Only where README.md lists a document of a private repository.
+      # Only in a private repository whose README.md lists a private repository's document.
       DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
 ```
 
@@ -381,7 +393,8 @@ names another ref) and a pull request labeled `release` or titled `<version> Rel
 prints the summary line and the findings, each with the document it goes
 against. A README that links no documents ends it there, green, as in the workflow. It needs
 `gh` signed in, whose login stands for the workflow's token, and a `DOCUMENTS_READ_TOKEN` in the
-environment of the command is read as the workflow reads the secret. It needs the key in the
+environment of the command is read as a private caller's workflow reads the secret, whatever the
+repository's visibility, since a dry run posts nothing. It needs the key in the
 environment of that one command, never on disk or in the shell's history: `read -rs` prompts
 for it without echo:
 
