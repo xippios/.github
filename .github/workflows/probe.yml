@@ -19,3 +19,14 @@ jobs:
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
       DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
+
+  # The control: a function that does not exist, in a job that never runs. A load that refuses
+  # it shows that the run above had its expressions checked, case() among them.
+  control:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - name: Control
+        env:
+          PROBE: ${{ cases(true, 'a', 'b') }}
+        run: echo "$PROBE"
