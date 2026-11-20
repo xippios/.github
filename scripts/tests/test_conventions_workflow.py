@@ -1015,3 +1015,31 @@ def test_the_readme_and_the_header_lay_out_the_run_before() -> None:
         in (flat)
     )
     assert "prints the states and the marks as the comment shows them" in flat
+
+
+def test_an_earlier_finding_that_no_longer_blocks_says_so_with_its_reason(tmp_path: Path) -> None:
+    """An earlier finding that blocked and is carried by one that does not block prints the
+    judge's reason, in the words of `became` in conventions.py (finding 1 of the second review
+    of .github#104)."""
+    new = [finding("sdk-core: docs/conventions.md#ci", "No ci badge.")]
+    before = {
+        **finding("sdk-core: docs/conventions.md#ci", "No ci badge.", blocking=True),
+        "state": "open",
+        "finding": 1,
+        "reason": "The rule binds release PRs alone",
+        "unblocked": True,
+    }
+    earlier = {"head": BEFORE, "findings": [before]}
+    _code, _summary, _calls, comment = verdict_step(
+        tmp_path, {**result("ready", new), "earlier": earlier}
+    )
+    assert comment is not None
+    words = fr.became(before)
+    assert words == (
+        "Open: finding 1 above. It blocked before and no longer blocks: The rule binds release "
+        "PRs alone."
+    )
+    assert (
+        f"1. **sdk-core: docs/conventions.md#ci** No ci badge. `src/pkg/mod.py:2`. {words}\n"
+        in (comment)
+    )

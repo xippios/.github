@@ -2871,7 +2871,7 @@ def with_earlier(
         "head": EARLIER_HEAD,
         "compared": changed is not None,
         "files": list(changed or []),
-        "head_files": list(head_files),
+        "head_files": None if head_files is None else list(head_files),
     }
     (review / "changed.json").write_text(json.dumps(compared))
 
@@ -2921,6 +2921,9 @@ def test_a_run_before_without_findings_asks_for_no_state(
     assert client.messages.requests[0]["messages"][0]["content"] == plain
     assert result["earlier"] == {"head": EARLIER_HEAD, "findings": []}
     assert result["head"] == HEAD
+    # The pull request too, so a later dry run takes no other one's file (finding 2 of the
+    # second review of .github#104).
+    assert (result["repo"], result["pr"]) == (REPO, 11)
 
 
 def test_each_finding_of_the_run_before_gets_what_became_of_it(
@@ -3045,7 +3048,7 @@ def test_without_a_decision_of_the_opener_nothing_is_decided(
     with_earlier(workspace, BEFORE, decisions=0)
     bad = judged("ready", [finding(line=1)], answers)
     good = judged(
-        "ready", [finding(line=1)], [state(1, "open", 1), state(2, "open", 1), state(3, "fixed")]
+        "ready", [finding(line=1)], [state(1, "open", 1), state(2, "fixed"), state(3, "fixed")]
     )
     client = api(message([bad]), message([good]))
     code, _ = run_review(workspace, tmp_path)
@@ -3138,6 +3141,10 @@ def test_a_finding_names_a_line_only_where_its_file_has_it_at_the_head(
         ),
         (state(1, "open", 2), "Open: finding 2 above."),
         (
+            {**state(1, "open", 2, "No rule binds it"), "unblocked": True},
+            "Open: finding 2 above. It blocked before and no longer blocks: No rule binds it.",
+        ),
+        (
             state(1, "open", 2, "The rule is a must."),
             (
                 "Open: finding 2 above. The opener decided otherwise, and the rule stands: "
@@ -3176,7 +3183,13 @@ def test_dry_run_judges_as_the_run_after_an_earlier_dry_runs_verdict_file(
     first = tmp_path / "first.json"
     first.write_text(
         json.dumps(
-            {"verdict": "not ready", "head": earlier, "findings": [{**before, "since": None}]}
+            {
+                "verdict": "not ready",
+                "repo": REPO,
+                "pr": 7,
+                "head": earlier,
+                "findings": [{**before, "since": None}],
+            }
         )
     )
     new = finding(file="src/pkg/mod.py", line=1, blocking=True, text="A stray value, still.")
@@ -3221,3 +3234,133 @@ def test_dry_run_refuses_an_earlier_file_without_its_head_before_any_clone(
         "conventions: --earlier names no verdict file with the head it judged and its findings"
         in capsys.readouterr().out
     )
+
+
+# --- the second review of .github#104 ----------------------------------------------------
+
+UNBLOCKED = (
+    "an open one that blocked, carried by a finding that does not block, gives in reason why "
+    "it no longer blocks"
+)
+NO_LONGER = "The heading rule binds release pull requests alone."
+
+
+def test_an_earlier_finding_that_blocked_stops_blocking_only_with_a_reason(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    """Finding 2 of the run before blocked; carried by a finding that does not block, it stops
+    blocking only with the judge's reason, which the comment prints (finding 1)."""
+    with_earlier(workspace, BEFORE, decisions=0)
+    carrier = finding(file="docs/conventions.md", line=None, text="A heading departs.")
+    bad = judged("ready", [carrier], [state(1, "fixed"), state(2, "open", 1), state(3, "fixed")])
+    good = judged(
+        "ready", [carrier], [state(1, "fixed"), state(2, "open", 1, NO_LONGER), state(3, "fixed")]
+    )
+    client = api(message([bad]), message([good]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    answer = client.messages.requests[1]["messages"][-1]["content"][0]
+    assert answer["content"] == f"invalid verdict: {UNBLOCKED}; call submit_verdict again"
+    carried = result["earlier"]["findings"][1]
+    assert carried == {
+        **BEFORE[1],
+        "state": "open",
+        "finding": 1,
+        "reason": NO_LONGER,
+        "unblocked": True,
+    }
+    assert fr.became(carried) == (
+        f"Open: finding 1 above. It blocked before and no longer blocks: {NO_LONGER}"
+    )
+
+
+def test_an_earlier_finding_that_blocked_and_still_blocks_needs_no_reason(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    with_earlier(workspace, BEFORE, decisions=0)
+    carrier = finding(file="docs/conventions.md", line=None, blocking=True, text="Still.")
+    answers = [state(1, "fixed"), state(2, "open", 1), state(3, "fixed")]
+    api(message([judged("not ready", [carrier], answers)]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 1
+    assert "unblocked" not in result["earlier"]["findings"][1]
+
+
+def earlier_file(tmp_path: Path, **fields) -> Path:
+    data = {"verdict": "not ready", "repo": REPO, "pr": 7, "head": EARLIER_HEAD, "findings": []}
+    path = tmp_path / "first.json"
+    path.write_text(json.dumps({**data, **fields}))
+    return path
+
+
+@pytest.mark.parametrize(
+    ("fields", "line"),
+    [
+        (
+            {"verdict": None},
+            "conventions: --earlier names the verdict file of a run that returned no verdict",
+        ),
+        (
+            {"repo": "xippios/sdk-other"},
+            f"conventions: --earlier names the verdict file of another pull request than {REPO}#7",
+        ),
+        (
+            {"pr": 8},
+            f"conventions: --earlier names the verdict file of another pull request than {REPO}#7",
+        ),
+        (
+            {"repo": None, "pr": None},
+            f"conventions: --earlier names the verdict file of another pull request than {REPO}#7",
+        ),
+    ],
+)
+def test_dry_run_refuses_an_earlier_file_without_a_verdict_or_of_another_pull_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys, fields: dict, line: str
+) -> None:
+    """Finding 2: the file stands for this pull request's comment, so it must be a verdict of
+    this pull request; neither costs a clone."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-for-tests")
+    monkeypatch.setattr(fr, "clone_pull_request", lambda *a: pytest.fail("no clone"))
+    first = earlier_file(tmp_path, **fields)
+    assert fr.main(["dry-run", "--repo", REPO, "--pr", "7", "--earlier", str(first)]) == 2
+    assert line in capsys.readouterr().out
+
+
+def test_a_head_whose_tree_the_checkout_does_not_give_is_not_compared(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 3: an unread tree of the head is no empty tree, which would make every file of
+    the head judged before read changed."""
+    ws, base, earlier, head = make_rounds(tmp_path)
+    assert fr.compare_trees(ws, REPO, earlier, "f" * 40) == (None, None)
+    read = fr._local_tree
+    monkeypatch.setattr(fr, "_local_tree", lambda w, c: None if c == head else read(w, c))
+    (fake_gh / "pr.json").write_text(pr_with([check_comment(earlier, BEFORE)]))
+    assert prepare(REPO, ws, base, head) == 0
+    review = ws / ".review"
+    assert json.loads((review / "changed.json").read_text()) == {
+        "head": earlier,
+        "compared": False,
+        "files": [],
+        "head_files": None,
+    }
+    findings = json.loads((review / "earlier.json").read_text())["findings"]
+    assert [f["file_changed"] for f in findings] == [None, None, None]
+    assert (
+        "conventions: the head's tree could not be read; the files are not compared with the "
+        "head the run before judged\n"
+    ) in actions["summary"].read_text()
+
+
+def test_without_the_heads_tree_every_file_a_finding_names_is_not_compared(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    findings = [
+        finding(file="src/pkg/mod.py", line=1),
+        finding(file="src/pkg/gone.py", line=None),
+        finding(file="", line=None, document=""),
+    ]
+    with_earlier(workspace, [], changed=None, head_files=None)
+    api(message([verdict("ready", findings)]))
+    _code, result = run_review(workspace, tmp_path)
+    assert [f.get("since") for f in result["findings"]] == ["not compared"] * 2 + [None]
