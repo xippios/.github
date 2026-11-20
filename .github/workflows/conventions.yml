@@ -6,12 +6,14 @@
 # comment in the form of docs/style/reviews.md#conventions-check, created on the first run that
 # reviews the pull request and edited in place after (.github#36); no verdict (an API error, a
 # refusal, the turn cap of 160) fails it with the cause, the turns and the token usage in the
-# job summary and posts no comment. The documents are never read from the pull request, so a
-# pull request cannot rewrite the rules it is judged by: the repository's own come from the
-# default branch, another repository's from its link's ref or the release the head requires. A
-# document the review cannot read (a private repository's that no token reaches, a missing
-# file) fails the check naming it and the tokens it was read with; a README that links none
-# passes with a notice, and no API call is made.
+# job summary and posts no comment. The job times out after 45 minutes, which leaves a review at
+# effort xhigh the time of its 160 turns; a review the timeout ends returns no verdict and
+# leaves no line of the script in the job summary. The documents are never read from the pull
+# request, so a pull request cannot rewrite the rules it is judged by: the repository's own come
+# from the default branch, another repository's from its link's ref or the release the head
+# requires. A document the review cannot read (a private repository's that no token reaches, a
+# missing file) fails the check naming it and the tokens it was read with; a README that links
+# none passes with a notice, and no API call is made.
 #
 # The read token (.github#62): the caller's optional secret DOCUMENTS_READ_TOKEN, used only
 # where the calling repository is private (`github.event.repository.private`, the caller's
@@ -140,7 +142,7 @@ jobs:
       || (vars.CONVENTIONS_REVIEW != '' && vars.CONVENTIONS_REVIEW != 'release'
       && vars.CONVENTIONS_REVIEW != 'off')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     # A new push or edit supersedes the review of the previous state.
     concurrency:
       group: conventions-${{ github.repository }}-${{ github.event.pull_request.number }}
