@@ -226,7 +226,7 @@ def test_two_tool_calls_then_the_verdict(
 
     line = (
         "conventions: verdict=ready findings=1 blocking=0 turns=3 tool_calls=4 input=160 "
-        "cache_write=1035 cache_read=2030 output=60 model=claude-opus-5-5 effort=high key=1/1"
+        "cache_write=1035 cache_read=2030 output=60 model=claude-opus-5-5 effort=xhigh key=1/1"
     )
     assert code == 0
     assert result["verdict"] == "ready"
@@ -240,7 +240,7 @@ def test_two_tool_calls_then_the_verdict(
     assert result["turns"] == 3
     assert result["tool_calls"] == {"grep": 1, "list_files": 1, "read_file": 1, "submit_verdict": 1}
     assert result["model"] == "claude-opus-5-5"
-    assert result["effort"] == "high"
+    assert result["effort"] == "xhigh"
     assert result["cost_estimate_usd"] == pytest.approx(0.0074, abs=1e-4)
     assert result["summary"] == line
     assert result["range"] == {"release": False, "since": BASE, "tag": None}
@@ -294,6 +294,14 @@ def test_the_summary_line_carries_no_cost_figure(value, reason) -> None:
     assert outcome.as_json()["summary"] == line
 
 
+def test_the_judge_is_the_one_the_question_decided() -> None:
+    """`claude-opus-5-5` stays the judge and its effort is `xhigh` (.github#93); the turn cap
+    rises with the effort, since a review that reaches it ends without a verdict."""
+    assert fr.MODEL == "claude-opus-5-5"
+    assert fr.EFFORT == "xhigh"
+    assert fr.MAX_TURNS == 160
+
+
 def test_the_request_caches_the_prefix_and_forces_nothing(
     workspace: Path, tmp_path: Path, api
 ) -> None:
@@ -308,7 +316,7 @@ def test_the_request_caches_the_prefix_and_forces_nothing(
     assert all("cache_control" not in block for block in system[:-1])
     assert ".claude-pr" not in system[0]["text"]
     assert "the action" not in system[0]["text"]
-    assert "at most 120 turns" in system[0]["text"]
+    assert "at most 160 turns" in system[0]["text"]
     labels = [block["text"].split("\n", 1)[0] for block in system[1:]]
     assert labels == [
         f"The document `{label}`, read from {source}:" for label, source, _ in DOCUMENTS
@@ -316,7 +324,7 @@ def test_the_request_caches_the_prefix_and_forces_nothing(
     assert system[1]["text"].endswith("# sdk-usda-psd: docs/conventions.md\n")
     assert request["model"] == "claude-opus-5-5"
     assert request["max_tokens"] == 64000
-    assert request["output_config"] == {"effort": "high"}
+    assert request["output_config"] == {"effort": "xhigh"}
     for absent in ("thinking", "tool_choice", "betas", "temperature"):
         assert absent not in request
     names = [tool["name"] for tool in request["tools"]]
@@ -788,7 +796,7 @@ def test_a_refused_key_moves_the_review_to_the_next(
     assert code == 0
     assert made == list(KEYS[:2])
     assert result["verdict"] == "ready"
-    assert result["summary"].endswith(" model=claude-opus-5-5 effort=high key=2/3")
+    assert result["summary"].endswith(" model=claude-opus-5-5 effort=xhigh key=2/3")
     assert captured.out == result["summary"] + "\n"
     assert (
         f"conventions: key 1/3 refused ({error_name(error)}); the review starts again on key 2/3\n"
@@ -833,7 +841,7 @@ def test_a_refusal_at_a_later_turn_starts_the_review_again_from_its_first_turn(
     assert result["tool_calls"] == {"submit_verdict": 1}
     assert result["summary"] == (
         "conventions: verdict=ready findings=0 blocking=0 turns=1 tool_calls=1 input=23 "
-        "cache_write=100 cache_read=0 output=9 model=claude-opus-5-5 effort=high key=2/2"
+        "cache_write=100 cache_read=0 output=9 model=claude-opus-5-5 effort=xhigh key=2/2"
     )
 
 

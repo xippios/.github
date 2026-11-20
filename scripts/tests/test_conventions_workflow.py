@@ -451,6 +451,34 @@ def test_the_readme_and_the_header_lay_out_the_keys_of_the_secret() -> None:
         assert "says nothing of keys" in text
 
 
+def test_the_readme_the_header_and_the_docstring_name_the_judge_the_script_runs() -> None:
+    """The README's sentence on the judge and on the turn cap, the header of conventions.yml
+    and the script's docstring name the model, the effort and the turn cap that the script
+    runs with (.github#93)."""
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
+    for text in (section, workflow_header(), fr.__doc__):
+        flat = " ".join(text.replace("`", "").split())
+        assert f"{fr.MODEL}, at effort {fr.EFFORT}" in flat
+        assert f"the turn cap of {fr.MAX_TURNS}" in flat
+
+
+def test_the_job_times_out_after_45_minutes_and_the_texts_say_so() -> None:
+    """The job's timeout leaves a review at effort xhigh the time of 160 turns on one key, since
+    the turns start again on the next, and the header and the README name it beside the turn
+    cap: a review the timeout ends writes no summary line, while `prepare` has written its own
+    lines to the job summary before (findings 1 of the reviews of .github#94)."""
+    assert "    timeout-minutes: 45\n" in WORKFLOW
+    assert "timeout-minutes: 30" not in WORKFLOW
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
+    for text in (" ".join(section.split()), workflow_header()):
+        assert "The job times out after 45 minutes" in text
+        assert "the time of 160 turns on one key" in text
+        assert "a review the timeout ends returns no verdict and writes no summary line" in text
+        assert "no line of the script" not in text
+
+
 def test_the_readme_says_the_sdks_retries_of_a_429_alone() -> None:
     """The SDK retries a 429 status, never a stream it has begun, so a `rate_limit_error` that
     an error event of the stream carries moves the review to the next key at once (finding 1
@@ -813,14 +841,14 @@ def test_no_verdict_fails_with_the_scripts_line(tmp_path: Path) -> None:
         tmp_path,
         {
             "verdict": None,
-            "summary": "conventions: no verdict (the turn cap of 120 was reached)",
+            "summary": "conventions: no verdict (the turn cap of 160 was reached)",
             **KEPT,
         },
     )
     assert code == 1
     assert summary == (
         "## conventions: no verdict\n\n"
-        "conventions: no verdict (the turn cap of 120 was reached)\n\n"
+        "conventions: no verdict (the turn cap of 160 was reached)\n\n"
         "The review returned no verdict; the check fails.\n"
     )
     assert (tmp_path / "stdout.txt").read_text() == summary + "\n"
