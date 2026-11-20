@@ -451,6 +451,17 @@ def test_the_readme_and_the_header_lay_out_the_keys_of_the_secret() -> None:
         assert "says nothing of keys" in text
 
 
+def test_the_readme_says_the_sdks_retries_of_a_429_alone() -> None:
+    """The SDK retries a 429 status, never a stream it has begun, so a `rate_limit_error` that
+    an error event of the stream carries moves the review to the next key at once (finding 1
+    of the review of .github#90)."""
+    flat = " ".join(README.split())
+    assert "A rate limit reaches the script only once" not in flat
+    assert "A 429 reaches the script only once the SDK's own retries are spent" in flat
+    assert "the SDK retries no stream it has begun" in flat
+    assert "moves the review to the next key at once" in flat
+
+
 def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() -> None:
     section = README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(section.split())
