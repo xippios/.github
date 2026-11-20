@@ -36,8 +36,9 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
   writes an empty list, says so, and the step output ``review=false`` tells the workflow to
   pass without a review. With ``--workdir`` it first clones the repository there, at the pull
   request's head.
-- ``review`` runs the review on the Messages API, each turn streamed with ``max_tokens``
-  64,000 (thinking counts against it): the instructions and the documents in the system
+- ``review`` runs the review on the Messages API with ``claude-opus-5-5``, at effort ``xhigh``
+  (.github#93), within the turn cap of 160, each turn streamed with ``max_tokens`` 64,000
+  (thinking counts against it): the instructions and the documents in the system
   prompt, cached and the same for every pull request of the repository (the pull request's
   coordinates and its range are in the first message), the rest read by the model with three
   read-only tools, ``read_file``, ``list_files`` and ``grep``, and the verdict returned by a
@@ -95,10 +96,12 @@ from urllib.parse import quote
 import anthropic
 import httpx2
 
+# The judge and its effort, as .github#93 decided. A review takes more turns at xhigh than at
+# high, so the turn cap rose with the effort: a review that reaches it ends without a verdict.
 MODEL = "claude-opus-5-5"
-EFFORT = "high"
+EFFORT = "xhigh"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-MAX_TURNS = 120
+MAX_TURNS = 160
 # Thinking is always on for Opus 5.5 and counts against it; a max_tokens stop is a lost
 # review. Streamed: the SDK refuses a non-streaming request it expects to run this long.
 MAX_TOKENS = 64000

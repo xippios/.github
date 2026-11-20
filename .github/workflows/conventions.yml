@@ -1,17 +1,17 @@
 # The conventions review (C57 as amended by coordinate-core#364, check `conventions`): this
-# repository's scripts/conventions.py has claude-opus-5-5, at effort high on the Messages API,
-# judge a pull request against its repository's own documents, the ones the README links under
-# `## Documents` on the default branch (C80), and return a verdict. `ready` passes the check
-# and `not ready` fails it; either verdict, with its findings, goes to one sticky PR comment in
-# the form of docs/style/reviews.md#conventions-check, created on the first run that reviews
-# the pull request and edited in place after (.github#36); no verdict (an API error, a refusal,
-# the turn cap) fails it with the cause, the turns and the token usage in the job summary and
-# posts no comment. The documents are never read from the pull request, so a pull request
-# cannot rewrite the rules it is judged by: the repository's own come from the default branch,
-# another repository's from its link's ref or the release the head requires. A document the
-# review cannot read (a private repository's that no token reaches, a missing file) fails the
-# check naming it and the tokens it was read with; a README that links none passes with a
-# notice, and no API call is made.
+# repository's scripts/conventions.py has claude-opus-5-5, at effort xhigh (.github#93) on the
+# Messages API, judge a pull request against its repository's own documents, the ones the README
+# links under `## Documents` on the default branch (C80), and return a verdict. `ready` passes
+# the check and `not ready` fails it; either verdict, with its findings, goes to one sticky PR
+# comment in the form of docs/style/reviews.md#conventions-check, created on the first run that
+# reviews the pull request and edited in place after (.github#36); no verdict (an API error, a
+# refusal, the turn cap of 160) fails it with the cause, the turns and the token usage in the
+# job summary and posts no comment. The documents are never read from the pull request, so a
+# pull request cannot rewrite the rules it is judged by: the repository's own come from the
+# default branch, another repository's from its link's ref or the release the head requires. A
+# document the review cannot read (a private repository's that no token reaches, a missing
+# file) fails the check naming it and the tokens it was read with; a README that links none
+# passes with a notice, and no API call is made.
 #
 # The read token (.github#62): the caller's optional secret DOCUMENTS_READ_TOKEN, used only
 # where the calling repository is private (`github.event.repository.private`, the caller's
