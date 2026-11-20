@@ -191,8 +191,10 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     key. A refusal is the API's authentication, permission or billing error or its rate
     limit, known by the status (401, 403, 402, 429) or by the error type that an error event
     of the stream carries (`authentication_error`, `permission_error`, `billing_error`,
-    `rate_limit_error`), and a 400 whose message names the balance of the account. A rate
-    limit reaches the script only once the SDK's own retries are spent. Any other end without
+    `rate_limit_error`), and a 400 whose message names the balance of the account. A 429
+    reaches the script only once the SDK's own retries are spent, while the SDK retries no
+    stream it has begun, so a `rate_limit_error` that an error event of the stream carries
+    moves the review to the next key at once. Any other end without
     a verdict (a server error, a lost connection, any other 400, a refusal of the model, a
     `max_tokens` stop, the turn cap) tries no other key. The summary line names the key the
     review ended on by its position, `key=2/3`, and counts the tokens of every attempt; its
