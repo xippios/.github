@@ -83,6 +83,18 @@
 # repository itself with the secret empty fails naming it (coordinate-core#368 shares the
 # secret with every repository).
 #
+# The keys (.github#87): ANTHROPIC_API_KEY holds one key or several, one per line, and the
+# script tries them in that order, handing the SDK one key at a time. A review runs on one key
+# from its first turn to its verdict. Where the API refuses the key or its account, at the
+# first request or a later one, the review starts again from its first turn on the next key:
+# an authentication, permission or billing error, a request the API turns down for the
+# balance of the account, and a rate limit that outlasts the SDK's retries. Any other end
+# without a verdict tries no other key. The summary line names the key the review ended on by
+# its position, `key=2/3`, and counts the tokens of every attempt; where the API refused every
+# key, it names each by its position and error class. The script redacts every key of the
+# secret from what it prints and writes, and the PR comment says nothing of keys. A secret
+# with one key reviews as before, and a caller passes the secret as it did.
+#
 # The model judges and runs nothing. Its material is prepared under .review/ before it
 # starts; it reads with three tools the script serves (read_file, list_files, grep) inside
 # the workspace's real path only: `.git/`, `.envrc`, `.env` files, symlinks that lead out and
