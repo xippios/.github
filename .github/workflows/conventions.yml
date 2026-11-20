@@ -104,10 +104,14 @@
 # head descends from no head judged before: the two trees, the checkout's where it holds that
 # commit, else GitHub's, read with the workflow token. The review gives each finding of the run
 # before one state, fixed, decided by the opener or open, on the opener's decisions on the pull
-# request, and the script refuses any other. The comment lists them, and says of each new
+# request, and the script refuses any other. A decision of the opener never settles a finding
+# that blocked by itself: that one is decided only with the judge's reason that no written rule
+# is broken, else open and carried into this run. The comment lists them, and says of each new
 # finding whether its file changed since the head judged before, or that it was not compared
-# where that head could not be read; it never guesses. A first run, and a run that finds no
-# comment of the check or one written before this, judges as a first run and lists nothing. A
+# where that head could not be read; it never guesses, and marks only a file the comparison
+# covers: a changed one or a file the head's tree holds. A first run, and a run that finds no
+# comment of the check or one written before this, judges as a first run and lists nothing; the
+# job summary says that no run before was found, or names it. A
 # finding names a line only where its file has that line at the head, and keeps its file
 # without one where it has not (.github#85). No permission, secret or input is added.
 #
@@ -372,7 +376,6 @@ jobs:
                   "Its file was not compared: the head judged before could not be read."
               ),
           }
-          STATES = {"fixed": "Fixed.", "decided": "Decided by the opener."}
           PR = os.environ["PR"]
           REPO = os.environ["REPO"]
           COMMIT = f"https://github.com/{REPO}/commit/{os.environ['HEAD_SHA']}"
@@ -458,12 +461,27 @@ jobs:
               return f"**the pull request** {text}"
 
 
+          def sentence(value):
+              text = one_line(value or "")
+              return text if not text or text[-1] in ".!?" else text + "."
+
+
           def became(finding):
-              """What became of a finding of the run before, as the review stated it."""
-              carried = finding.get("finding")
-              if finding.get("state") == "open" and isinstance(carried, int):
-                  return f"Open: finding {carried} above."
-              return STATES.get(finding.get("state"), "Open.")
+              """What became of a finding of the run before, as the review stated it, in the
+              words of `became` in scripts/conventions.py. A decision of the opener never
+              settles a finding that blocked by itself: the judge's reason comes with it."""
+              state, carried = finding.get("state"), finding.get("finding")
+              reason = sentence(finding.get("reason"))
+              if state == "fixed":
+                  return "Fixed."
+              if state == "decided":
+                  return f"Decided by the opener: {reason}" if reason else "Decided by the opener."
+              words = "Open."
+              if isinstance(carried, int) and not isinstance(carried, bool):
+                  words = f"Open: finding {carried} above."
+              if reason:
+                  return f"{words} The opener decided otherwise, and the rule stands: {reason}"
+              return words
 
 
           lines = [MARKER, lead, "", f"Judged: {what}{against}."]

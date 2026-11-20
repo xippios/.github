@@ -62,6 +62,8 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
 - ``dry-run`` runs ``prepare`` in a temporary (or given) directory and then ``review``, and
   prints the summary line and the findings, for a terminal. A pull request labeled
   ``release`` or titled as a release is judged on its release's range, as in the workflow.
+  ``--earlier`` takes the verdict file of an earlier dry run, which names the head it judged,
+  as the run before, and the dry run prints the states and the marks as the comment does.
 
 The tools read inside the workspace only: a path is resolved (``realpath``) and must lie
 under the workspace's real path; ``.git`` at any depth, ``.envrc``, ``.env`` and ``.env.*``,
@@ -229,6 +231,13 @@ RUN_LINE = re.compile(r"^<!-- conventions-run: (.*) -->$", re.M)
 DECISIONS_MARKER = re.compile(r"<!-- style: comments/decisions(?: [^>]*)?-->")
 EARLIER_FILE = "earlier.json"
 CHANGED_FILE = "changed.json"
+# Whether a new finding's file changed since the head the run before judged, in the comment's
+# words, which the Verdict step writes alike.
+MARKS = {
+    "unchanged": "Its file is unchanged since the head judged before.",
+    "changed": "Its file changed since the head judged before.",
+    "not compared": "Its file was not compared: the head judged before could not be read.",
+}
 
 INSTRUCTIONS = """\
 You are the `conventions` check of a repository of the xippios organization. You read and
@@ -284,7 +293,12 @@ at most {max_turns} turns, one turn being one response of yours.
    too. Give each of those findings one state in `earlier`: `fixed` where the head no longer
    holds what it names, `decided` where a decision of the opener answers it, `open` where it
    still stands. An open one is judged again: it is also a finding of this review, and
-   `finding` names that finding's number, counted from 1.
+   `finding` names that finding's number, counted from 1. A decision of the opener settles a
+   finding that did not block. It never settles a finding that blocked by itself: that one is
+   `decided` only where the decision shows that no written rule is broken, with that reason
+   in one sentence in `reason`; where the rule is still broken it is `open`, and `reason`
+   says in one sentence why the rule stands against the decision. `reason` is empty where no
+   decision of the opener concerns the finding.
 6. When you are done, call `submit_verdict` once with the verdict, `ready` or `not ready`
    (any blocking finding makes it `not ready`), every finding: the document and the
    section it goes against (empty when none), its file (empty when it concerns the pull
@@ -366,8 +380,15 @@ VERDICT_SCHEMA: dict[str, object] = {
                         "description": "For an open one, the number, from 1, of the finding "
                         "of this review that carries it; null otherwise.",
                     },
+                    "reason": {
+                        "type": "string",
+                        "description": "One sentence where a decision of the opener concerns "
+                        "the finding: for a decided one, why the decision shows that no written "
+                        "rule is broken; for an open one, why the rule stands against it. "
+                        "Empty otherwise.",
+                    },
                 },
-                "required": ["number", "state", "finding"],
+                "required": ["number", "state", "finding", "reason"],
                 "additionalProperties": False,
             },
         },
@@ -1213,10 +1234,14 @@ def write_documents(
 
 @dataclass
 class EarlierRun:
-    """The run before, as the check's comment carries it: the head it judged, its findings."""
+    """The run before, as the check's comment carries it: the head it judged, its findings.
+
+    ``decisions`` counts the opener's decisions on the pull request, which ``decided`` needs.
+    """
 
     head: str
     findings: list[dict[str, object]]
+    decisions: int = 0
 
 
 def finding_problem(finding: object) -> str | None:
@@ -1338,39 +1363,78 @@ def _remote_tree(repo: str, commit: str) -> dict[str, str] | None:
     return tree
 
 
-def changed_files(workspace: Path, repo: str, earlier: str, head: str) -> list[str] | None:
-    """The files whose text or mode differs between ``earlier`` and ``head``, sorted.
+def compare_trees(
+    workspace: Path, repo: str, earlier: str, head: str
+) -> tuple[list[str] | None, list[str]]:
+    """The files whose text or mode differs between ``earlier`` and ``head``, and the head's files.
 
     The two trees are compared, never the history, so a head rebased since compares as one
     pushed on top: the tree of ``earlier`` comes from the checkout where it holds that commit,
-    else from GitHub. None where neither serves it whole.
+    else from GitHub. The changed files are None where neither serves that tree whole. Both
+    lists are sorted.
     """
-    now = _local_tree(workspace, head)
+    now = _local_tree(workspace, head) or {}
     before = _local_tree(workspace, earlier)
     if before is None:
         before = _remote_tree(repo, earlier)
-    if now is None or before is None:
-        return None
-    return sorted(path for path in now.keys() | before.keys() if now.get(path) != before.get(path))
+    if before is None:
+        return None, sorted(now)
+    changed = sorted(
+        path for path in now.keys() | before.keys() if now.get(path) != before.get(path)
+    )
+    return changed, sorted(now)
+
+
+def run_from_verdict(path: Path) -> EarlierRun:
+    """The run that the verdict file of an earlier dry run carries (``dry-run --earlier``).
+
+    The head it judged and its findings; PrepareError where it names neither.
+    """
+    problem = PrepareError(
+        "--earlier names no verdict file with the head it judged and its findings"
+    )
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        head, findings = data["head"], data["findings"]
+        findings = [{key: finding[key] for key in FINDING_KEYS} for finding in findings]
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise problem from exc
+    if not (isinstance(head, str) and SHA.fullmatch(head)):
+        raise problem
+    if any(finding_problem(finding) for finding in findings):
+        raise problem
+    return EarlierRun(head, findings)
 
 
 def write_earlier(
-    workspace: Path, repo: str, review: Path, pr_json: bytes, head: str, summary: str | None
+    workspace: Path,
+    repo: str,
+    review: Path,
+    pr_json: bytes,
+    head: str,
+    summary: str | None,
+    given: EarlierRun | None = None,
 ) -> None:
     """The run before, where the check's last comment on the pull request carries one.
 
-    ``earlier.json`` holds its head, its findings, each with whether its file changed since,
-    and the opener's decisions; ``changed.json`` the files changed since its head, or that they
-    could not be compared. Without a comment of the check nothing is written or said.
+    ``given``, a dry run's ``--earlier``, stands for that comment. ``earlier.json`` holds the
+    run's head, its findings, each with whether its file changed since, and the opener's
+    decisions; ``changed.json`` the files changed since its head, or that they could not be
+    compared, and the head's files. Where no run before is found, the job summary says so.
     """
     try:
         data = json.loads(pr_json)
     except ValueError:
-        return
-    body = check_comment(data)
-    if body is None:
-        return
-    run = run_state(body)
+        data = {}
+    run = given
+    if run is None:
+        body = check_comment(data)
+        if body is None:
+            _notice(
+                "conventions: no run before was found; the review judges as a first run", summary
+            )
+            return
+        run = run_state(body)
     if run is None:
         _notice(
             "conventions: the comment of the run before carries no findings this run reads; "
@@ -1378,7 +1442,7 @@ def write_earlier(
             summary,
         )
         return
-    changed = changed_files(workspace, repo, run.head, head)
+    changed, head_files = compare_trees(workspace, repo, run.head, head)
     count = len(run.findings)
     _notice(
         f"conventions: the run before judged {run.head} and gave {count} "
@@ -1393,12 +1457,23 @@ def write_earlier(
         )
     findings = []
     for number, finding in enumerate(run.findings, 1):
-        file = str(finding["file"])
-        moved = None if changed is None or not file else posixpath.normpath(file) in changed
+        path = posixpath.normpath(str(finding["file"])) if finding["file"] else ""
+        # Only a file the comparison covered: changed, or a file of the head's tree that kept
+        # its text; the review's own material and a path of neither tree are not compared.
+        moved = None
+        if changed is not None and path in changed:
+            moved = True
+        elif changed is not None and path in head_files:
+            moved = False
         findings.append({"number": number, **finding, "file_changed": moved})
     earlier = {"head": run.head, "findings": findings, "decisions": opener_decisions(data)}
     (review / EARLIER_FILE).write_text(json.dumps(earlier, indent=2) + "\n", encoding="utf-8")
-    compared = {"head": run.head, "compared": changed is not None, "files": changed or []}
+    compared = {
+        "head": run.head,
+        "compared": changed is not None,
+        "files": changed or [],
+        "head_files": head_files,
+    }
     (review / CHANGED_FILE).write_text(json.dumps(compared, indent=2) + "\n", encoding="utf-8")
 
 
@@ -1412,6 +1487,7 @@ def prepare(
     main: str = "origin/main",
     release: bool = False,
     summary: str | None = None,
+    earlier: EarlierRun | None = None,
 ) -> int:
     """Write the review material to ``workspace/.review``; PrepareError when it cannot.
 
@@ -1477,8 +1553,6 @@ def prepare(
         (review / "checks.json").write_bytes(checks.stdout)
     else:
         (review / "checks.json").write_text(CHECKS_FALLBACK, encoding="utf-8")
-    # Read before the Verdict step rewrites the check's comment (.github#95).
-    write_earlier(workspace, repo, review, pr_json, head, summary)
     meta = {
         "repo": repo,
         "pr": pr,
@@ -1495,6 +1569,10 @@ def prepare(
         size = (review / name).stat().st_size
         print(f"conventions: {REVIEW_DIR}/{name} {size} bytes", flush=True)
     count = write_documents(workspace, main, repo, review, summary, head)
+    if count:
+        # Read before the Verdict step rewrites the check's comment (.github#95); nothing
+        # to judge needs no run before. ``earlier`` is a dry run's --earlier.
+        write_earlier(workspace, repo, review, pr_json, head, summary, earlier)
     _output("review", "true" if count else "false")
     return count
 
@@ -1812,39 +1890,84 @@ def earlier_problem(args: Mapping[str, object], earlier: EarlierRun | None) -> s
 
     Each finding of the run before gets exactly one state, ``fixed``, ``decided`` or ``open``
     (.github#95), and an open one names the finding of this review that carries it. Where the
-    first message names no run before, ``earlier`` is empty or left out.
+    first message names no run before, ``earlier`` is empty or left out. ``decided`` needs a
+    decision of the opener, and on a finding that blocked the judge's reason why no written rule
+    is broken: the judged party does not switch a required check off by a comment.
     """
     entries = args.get("earlier", [])
     if not isinstance(entries, list):
         return "earlier must be a list"
     count = len(earlier.findings) if earlier is not None else 0
-    if not count:
+    if earlier is None or not count:
         return "earlier must be empty: no run before is named" if entries else None
     findings = args["findings"]
     total = len(findings) if isinstance(findings, list) else 0
     numbers: list[int] = []
     for entry in entries:
-        if not isinstance(entry, Mapping) or set(entry) != {"number", "state", "finding"}:
-            return "each entry of earlier must have exactly number, state and finding"
-        number, state, carried = entry["number"], entry["state"], entry["finding"]
+        if not isinstance(entry, Mapping) or set(entry) != {"number", "state", "finding", "reason"}:
+            return "each entry of earlier must have exactly number, state, finding and reason"
+        number, state, carried, reason = (
+            entry[key] for key in ("number", "state", "finding", "reason")
+        )
         if isinstance(number, bool) or not isinstance(number, int):
             return "number must be an integer"
         if state not in STATES:
             return "state must be fixed, decided or open"
+        if not isinstance(reason, str):
+            return "reason must be a string"
         if state == "open":
             if isinstance(carried, bool) or not isinstance(carried, int):
                 return "an open one names the finding of this review that carries it"
             if not 1 <= carried <= total:
                 return "an open one names the finding of this review that carries it"
+            if reason.strip() and not earlier.decisions:
+                return (
+                    "an open one gives a reason only against a decision of the opener, and the "
+                    "pull request holds none"
+                )
         elif carried is not None:
             return "finding must be null unless the state is open"
+        if state == "decided" and not earlier.decisions:
+            return "decided needs a decision of the opener, and the pull request holds none"
         numbers.append(number)
     if sorted(numbers) != list(range(1, count + 1)):
         return (
             f"earlier must give each of the {count} findings of the run before, numbered 1 to "
             f"{count}, one state"
         )
+    for entry in entries:
+        blocked = earlier.findings[entry["number"] - 1]["blocking"]
+        if entry["state"] == "decided" and blocked and not entry["reason"].strip():
+            return (
+                "a decided one that blocked gives in reason why the opener's decision shows that "
+                "no written rule is broken"
+            )
     return None
+
+
+def _sentence(text: object) -> str:
+    """``text`` on one line, ending with a full stop where it ends with none; empty stays."""
+    flat = " ".join(str(text or "").split())
+    return flat if not flat or flat[-1] in ".!?" else flat + "."
+
+
+def became(finding: Mapping[str, object]) -> str:
+    """What became of a finding of the run before, in the comment's words."""
+    state, carried, reason = (
+        finding.get("state"),
+        finding.get("finding"),
+        _sentence(finding.get("reason")),
+    )
+    if state == "fixed":
+        return "Fixed."
+    if state == "decided":
+        return f"Decided by the opener: {reason}" if reason else "Decided by the opener."
+    words = "Open."
+    if isinstance(carried, int) and not isinstance(carried, bool):
+        words = f"Open: finding {carried} above."
+    return (
+        f"{words} The opener decided otherwise, and the rule stands: {reason}" if reason else words
+    )
 
 
 def earlier_outcome(
@@ -1857,7 +1980,12 @@ def earlier_outcome(
     return {
         "head": earlier.head,
         "findings": [
-            {**finding, "state": states[number]["state"], "finding": states[number]["finding"]}
+            {
+                **finding,
+                "state": states[number]["state"],
+                "finding": states[number]["finding"],
+                "reason": states[number]["reason"],
+            }
             for number, finding in enumerate(earlier.findings, 1)
         ],
     }
@@ -1869,7 +1997,9 @@ def settled(finding: Mapping[str, object], material: Material, sandbox: Sandbox)
     It names its line only where its file has that line at the head, and keeps its file
     without one where it has not (.github#85). After a run before, ``since`` says whether its
     file changed since the head that run judged: by the two trees, or ``not compared`` where
-    that head could not be read (.github#95). A finding that names no file carries no mark.
+    that head could not be read (.github#95). Only a file the comparison covers is marked: a
+    changed one, or one of the head's tree; a finding that names no file, or one of neither
+    tree, such as the review's own material, carries no mark.
     """
     out = dict(finding)
     file = str(out.get("file") or "")
@@ -1887,13 +2017,12 @@ def settled(finding: Mapping[str, object], material: Material, sandbox: Sandbox)
     line = out.get("line")
     if not (isinstance(line, int) and lines is not None and 1 <= line <= lines):
         out["line"] = None
-    if material.earlier is not None and file:
-        if material.changed is None:
-            out["since"] = "not compared"
-        elif relative is not None and Path(relative).as_posix() in material.changed:
+    if material.earlier is not None and relative is not None:
+        path = Path(relative).as_posix()
+        if material.changed is not None and path in material.changed:
             out["since"] = "changed"
-        elif present:
-            out["since"] = "unchanged"
+        elif path in material.head_files:
+            out["since"] = "not compared" if material.changed is None else "unchanged"
     return out
 
 
@@ -1982,6 +2111,8 @@ class Outcome:
     # The run before, for the Verdict step: its head and its findings, each with the state the
     # review gave it (.github#95); None on a first run and without a verdict.
     earlier: dict[str, object] | None = None
+    # The head the review judged, so a later dry run can take this file as its run before.
+    head: str | None = None
 
     @property
     def blocking(self) -> int:
@@ -2052,6 +2183,7 @@ class Outcome:
             "range": self.range,
             "documents": list(self.documents),
             "earlier": self.redacted_earlier(),
+            "head": self.head,
             "summary": self.summary_line(),
         }
 
@@ -2063,6 +2195,7 @@ def _redacted(finding: Mapping[str, object]) -> dict[str, object]:
         "document": redact(str(finding.get("document") or "")),
         "file": redact(str(finding.get("file") or "")),
         "text": redact(str(finding.get("text") or "")),
+        **({"reason": redact(str(finding["reason"]))} if "reason" in finding else {}),
     }
 
 
@@ -2092,6 +2225,8 @@ class Material:
     # could not be read.
     earlier: EarlierRun | None = None
     changed: frozenset[str] | None = None
+    # The files of the head's tree: only one of them is marked unchanged or not compared.
+    head_files: frozenset[str] = frozenset()
 
 
 def _label(path: Path, workspace: Path) -> str:
@@ -2136,7 +2271,7 @@ def load_material(workspace: Path, review: Path) -> Material:
                 f"{review_label}/{file} ({label}) is missing; the review cannot run"
             ) from exc
         documents.append((label, source, text))
-    earlier, changed = _load_earlier(review, review_label)
+    earlier, changed, head_files = _load_earlier(review, review_label)
     return Material(
         workspace,
         repo,
@@ -2152,17 +2287,24 @@ def load_material(workspace: Path, review: Path) -> Material:
         version=version,
         earlier=earlier,
         changed=changed,
+        head_files=head_files,
     )
 
 
-def _load_earlier(review: Path, label: str) -> tuple[EarlierRun | None, frozenset[str] | None]:
-    """The run before from ``earlier.json`` and ``changed.json``; none where prepare wrote none."""
+def _load_earlier(
+    review: Path, label: str
+) -> tuple[EarlierRun | None, frozenset[str] | None, frozenset[str]]:
+    """The run before, the files changed since and the head's files.
+
+    From ``earlier.json`` and ``changed.json``; none where prepare wrote none.
+    """
     if not (review / EARLIER_FILE).exists():
-        return None, None
+        return None, None, frozenset()
     try:
         data = json.loads((review / EARLIER_FILE).read_text(encoding="utf-8"))
         compared = json.loads((review / CHANGED_FILE).read_text(encoding="utf-8"))
-        head, files = data["head"], compared["files"]
+        head, files, head_files = data["head"], compared["files"], compared["head_files"]
+        decisions = data["decisions"]
         findings = [{key: finding[key] for key in FINDING_KEYS} for finding in data["findings"]]
         readable = (
             isinstance(head, str)
@@ -2171,13 +2313,20 @@ def _load_earlier(review: Path, label: str) -> tuple[EarlierRun | None, frozense
             and isinstance(compared["compared"], bool)
             and isinstance(files, list)
             and all(isinstance(path, str) for path in files)
+            and isinstance(head_files, list)
+            and all(isinstance(path, str) for path in head_files)
+            and isinstance(decisions, list)
             and not any(finding_problem(finding) for finding in findings)
         )
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise PrepareError(f"{label}/{EARLIER_FILE} is unreadable") from exc
     if not readable:
         raise PrepareError(f"{label}/{EARLIER_FILE} is unreadable")
-    return EarlierRun(head, findings), frozenset(files) if compared["compared"] else None
+    return (
+        EarlierRun(head, findings, len(decisions)),
+        frozenset(files) if compared["compared"] else None,
+        frozenset(head_files),
+    )
 
 
 def system_prompt(material: Material, max_turns: int) -> list[dict[str, object]]:
@@ -2435,6 +2584,7 @@ def review(
         sandbox = Sandbox(material.workspace, hidden)
         outcome.findings = [settled(f, material, sandbox) for f in outcome.findings]
     outcome.range = {"release": material.release, "since": material.since, "tag": material.tag}
+    outcome.head = material.head
     outcome.documents = [label for label, _, _ in material.documents]
     return outcome
 
@@ -2466,6 +2616,8 @@ def _prepare(args: argparse.Namespace, summary: str | None) -> tuple[Path, int]:
     """Prepare the material: the workspace and how many documents there are to judge by."""
     if not REPO_NAME.fullmatch(args.repo):
         raise PrepareError("--repo must be owner/name")
+    # A bad --earlier costs no clone.
+    earlier = run_from_verdict(args.earlier) if getattr(args, "earlier", None) else None
     base, head, release = _facts(args)
     if args.workdir is None:
         workspace = args.workspace
@@ -2481,24 +2633,45 @@ def _prepare(args: argparse.Namespace, summary: str | None) -> tuple[Path, int]:
         main=args.main,
         release=release,
         summary=summary,
+        earlier=earlier,
     )
     return workspace, count
+
+
+def _listed(finding: Mapping[str, object]) -> str:
+    """A finding on one line for a terminal: its place, whether it blocks, its document, text."""
+    where = printable(str(finding.get("file") or "") or "the pull request")
+    line_no = finding.get("line")
+    if isinstance(line_no, int) and not isinstance(line_no, bool) and line_no > 0:
+        where += f":{line_no}"
+    kind = "blocking" if finding.get("blocking") else "non-blocking"
+    document = printable(str(finding.get("document") or ""))
+    against = f"{document}: " if document else ""
+    return f"{where} [{kind}] {against}{one_line(str(finding.get('text') or ''), 2000)}"
 
 
 def _report(outcome: Outcome, summary: str | None, *, findings: bool = False) -> None:
     line = outcome.summary_line()
     print(line, flush=True)
     _append(summary, line + "\n")
-    if findings:
-        for finding in outcome.redacted_findings():
-            where = printable(str(finding["file"]) or "the pull request")
-            line_no = finding["line"]
-            if isinstance(line_no, int) and line_no > 0:
-                where += f":{line_no}"
-            kind = "blocking" if finding["blocking"] else "non-blocking"
-            document = printable(str(finding.get("document") or ""))
-            against = f"{document}: " if document else ""
-            print(f"{where} [{kind}] {against}{one_line(str(finding['text']), 2000)}")
+    if not findings:
+        return
+    # A dry run prints the marks and the states as the comment shows them (.github#95).
+    for finding in outcome.redacted_findings():
+        mark = MARKS.get(str(finding.get("since")))
+        print(_listed(finding) + (f" {mark}" if mark else ""))
+    earlier = outcome.redacted_earlier()
+    if earlier is None:
+        return
+    before = earlier["findings"]
+    head = printable(str(earlier.get("head") or ""))
+    if not before:
+        print(f"The run before judged {head} and gave no findings.")
+        return
+    noun = "finding" if len(before) == 1 else "findings"
+    print(f"The run before judged {head} and gave {len(before)} {noun}:")
+    for number, finding in enumerate(before, 1):
+        print(f"{number}. {_listed(finding)} {one_line(became(finding), 2000)}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2554,6 +2727,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     dry.add_argument("--pr", required=True, type=int, help="the pull request's number")
     dry.add_argument("--workdir", type=Path, help="a new directory to clone into (kept)")
     dry.add_argument("--out", type=Path, help="also write the verdict file (JSON) here")
+    dry.add_argument(
+        "--earlier",
+        type=Path,
+        help="a verdict file an earlier dry run wrote with --out: judge as the run after it",
+    )
     main_option(dry)
     loop_options(dry)
 
