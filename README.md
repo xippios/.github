@@ -75,8 +75,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   and the job summary carries the script's line with the cause (the SDK's error class and its
   redacted message, a refusal's category), the turns, the tool calls, the token usage and the
   key the review ended on (the keys below). The job times out after 45 minutes, which leaves a
-  review at effort `xhigh` the time of its 160 turns; a review the timeout ends returns no
-  verdict and leaves no line of the script in the job summary.
+  review at effort `xhigh` the time of 160 turns on one key; a review the timeout ends returns
+  no verdict and writes no summary line.
   Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
   - **The release pull request** (https://github.com/xippios/.github/issues/47): one labeled
     `release`, or titled `<version> Release`, and `release: <version>` until every workspace has
