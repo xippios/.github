@@ -438,6 +438,19 @@ def test_the_readmes_caller_runs_on_no_label() -> None:
     assert "counts from the next push or edit" in flat
 
 
+def test_the_readme_and_the_header_lay_out_the_keys_of_the_secret() -> None:
+    """The secret holds one key or several, one per line, tried in order; a refused key starts
+    the review again on the next, and the summary line names the key that served
+    (.github#87)."""
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
+    for text in (" ".join(section.split()), workflow_header()):
+        assert "one key or several, one per line" in text
+        assert "starts again from its first turn on the next key" in text
+        assert "`key=2/3`" in text
+        assert "says nothing of keys" in text
+
+
 def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() -> None:
     section = README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(section.split())
@@ -667,6 +680,17 @@ def test_a_blocked_verdict_fails_and_posts_the_findings_in_the_style(tmp_path: P
     assert (tmp_path / "stdout.txt").read_text() == expected + "\n"
     assert comment == expected
     assert calls[-1].startswith("pr comment 11 --edit-last --create-if-none --body-file -")
+
+
+def test_the_comment_says_nothing_of_keys(tmp_path: Path) -> None:
+    """A review that a later key of the secret served posts the comment of one the first key
+    served (.github#87)."""
+    first = verdict_step(tmp_path, result("ready", []))[3]
+    later = {**result("ready", []), "summary": "conventions: verdict=ready key=2/3"}
+    code, summary, _calls, comment = verdict_step(tmp_path, later)
+    assert code == 0
+    assert comment == first
+    assert "key" not in summary.lower()
 
 
 def test_an_approval_without_findings_passes_and_creates_the_comment(tmp_path: Path) -> None:
