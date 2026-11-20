@@ -693,6 +693,17 @@ def finding(document: str, text: str, file: str = "src/pkg/mod.py", line=2, bloc
     return {"document": document, "file": file, "line": line, "blocking": blocking, "text": text}
 
 
+FIELDS = ("document", "file", "line", "blocking", "text")
+
+
+def block(findings: list[dict], head: str = SHA) -> str:
+    """The hidden last line of the comment, which carries this run to the next (.github#95):
+    the head and the findings, `<` and `>` escaped so no text ends the HTML comment."""
+    run = {"head": head, "findings": [{key: f[key] for key in FIELDS} for f in findings]}
+    blob = json.dumps(run, ensure_ascii=True, separators=(",", ":"))
+    return "<!-- conventions-run: " + blob.replace("<", "\\u003c").replace(">", "\\u003e") + " -->"
+
+
 def test_a_blocked_verdict_fails_and_posts_the_findings_in_the_style(tmp_path: Path) -> None:
     findings = [
         finding(
@@ -713,7 +724,8 @@ def test_a_blocked_verdict_fails_and_posts_the_findings_in_the_style(tmp_path: P
         "1. **sdk-core: docs/conventions.md#tests** The test commit is missing. "
         "`src/pkg/mod.py:2`. Blocks: yes.\n"
         "2. **the pull request** The body has no `## Decisions taken`. Blocks: no.\n"
-        "3. **`src/pkg/cli.py:7`** A stray print. Blocks: no.\n"
+        "3. **`src/pkg/cli.py:7`** A stray print. Blocks: no.\n\n"
+        f"{block(findings)}\n"
     )
     assert summary == expected
     assert (tmp_path / "stdout.txt").read_text() == expected + "\n"
@@ -737,7 +749,8 @@ def test_an_approval_without_findings_passes_and_creates_the_comment(tmp_path: P
     assert code == 0
     assert summary == (
         f"{MARKER}\n**Approved.** No findings at {COMMIT}.\n\n"
-        "Judged: the pull request's own diff, against 2 documents of `README.md` on `main`.\n"
+        "Judged: the pull request's own diff, against 2 documents of `README.md` on `main`.\n\n"
+        f"{block([])}\n"
     )
     assert (tmp_path / "stdout.txt").read_text() == summary + "\n"
     assert comment == summary
@@ -857,3 +870,127 @@ def test_no_verdict_fails_with_the_scripts_line(tmp_path: Path) -> None:
     code, summary, _calls, _comment = verdict_step(tmp_path, None)
     assert code == 1
     assert "the review wrote no result" in summary
+
+
+# --- the run before (.github#95) ---------------------------------------------------------
+
+BEFORE = "e" * 40
+
+
+def test_the_comment_tells_what_became_of_each_finding_of_the_run_before(tmp_path: Path) -> None:
+    """Each new finding says whether its file changed since the head judged before; the
+    findings of the run before follow, each fixed, decided by the opener or open."""
+    new = [
+        {
+            **finding(
+                "sdk-core: docs/conventions.md#tests", "The test commit is missing.", blocking=True
+            ),
+            "since": "unchanged",
+        },
+        {**finding("", "A stray print.", file="src/pkg/cli.py", line=7), "since": "changed"},
+        {**finding("", "Another.", file="src/pkg/x.py", line=None), "since": "not compared"},
+        finding("", "The body has no proof.", file="", line=None),
+    ]
+    earlier = {
+        "head": BEFORE,
+        "findings": [
+            {
+                **finding("sdk-core: docs/conventions.md#names", "A name departs."),
+                "state": "fixed",
+                "finding": None,
+            },
+            {
+                **finding("", "The body cites no row.", file="", line=None),
+                "state": "decided",
+                "finding": None,
+            },
+            {
+                **finding(
+                    "sdk-core: docs/conventions.md#tests",
+                    "The test commit is missing.",
+                    blocking=True,
+                ),
+                "state": "open",
+                "finding": 1,
+            },
+        ],
+    }
+    code, summary, calls, comment = verdict_step(
+        tmp_path, {**result("not ready", new), "earlier": earlier}
+    )
+    assert code == 1
+    expected = (
+        f"{MARKER}\n**Blocked.** 4 findings, 1 blocking, at {COMMIT}.\n\n"
+        "Judged: the pull request's own diff, against 2 documents of `README.md` on `main`.\n\n"
+        "1. **sdk-core: docs/conventions.md#tests** The test commit is missing. "
+        "`src/pkg/mod.py:2`. Blocks: yes. Its file is unchanged since the head judged before.\n"
+        "2. **`src/pkg/cli.py:7`** A stray print. Blocks: no. Its file changed since the head "
+        "judged before.\n"
+        "3. **`src/pkg/x.py`** Another. Blocks: no. Its file was not compared: the head judged "
+        "before could not be read.\n"
+        "4. **the pull request** The body has no proof. Blocks: no.\n\n"
+        f"The run before judged https://github.com/{REPO}/commit/{BEFORE} and gave 3 findings:\n\n"
+        "1. **sdk-core: docs/conventions.md#names** A name departs. `src/pkg/mod.py:2`. Fixed.\n"
+        "2. **the pull request** The body cites no row. Decided by the opener.\n"
+        "3. **sdk-core: docs/conventions.md#tests** The test commit is missing. "
+        "`src/pkg/mod.py:2`. Open: finding 1 above.\n\n"
+        f"{block(new)}\n"
+    )
+    assert comment == expected
+    assert summary == expected
+    assert calls == [VIEW, EDIT]
+
+
+def test_a_run_before_without_findings_is_named_by_its_head(tmp_path: Path) -> None:
+    new = [{**finding("", "A stray print.", file="src/pkg/cli.py", line=7), "since": "unchanged"}]
+    earlier = {"head": BEFORE, "findings": []}
+    _code, _summary, _calls, comment = verdict_step(
+        tmp_path, {**result("ready", new), "earlier": earlier}
+    )
+    assert comment is not None
+    assert comment.endswith(
+        "1. **`src/pkg/cli.py:7`** A stray print. Blocks: no. Its file is unchanged since the "
+        "head judged before.\n\n"
+        f"The run before judged https://github.com/{REPO}/commit/{BEFORE} and gave no findings."
+        f"\n\n{block(new)}\n"
+    )
+
+
+def test_a_first_run_tells_of_no_run_before(tmp_path: Path) -> None:
+    findings = [finding("", "A stray print.", file="src/pkg/cli.py", line=7)]
+    _code, _summary, _calls, comment = verdict_step(tmp_path, result("ready", findings))
+    assert comment is not None
+    assert "run before" not in comment
+    assert "since the head judged before" not in comment
+
+
+def test_the_next_run_reads_the_run_the_comment_carries(tmp_path: Path) -> None:
+    """What the Verdict step writes, the next run's prepare reads: no text of a finding ends the
+    hidden line early, and a key in it stays redacted."""
+    key = "sk-ant-" + "api03-" + "Zx9" * 8
+    findings = [
+        finding("doc#a", "Ends early --> or <b>not</b>.\nOn two lines.", blocking=True),
+        finding("", f"Key {key} here.", file="", line=None),
+    ]
+    _code, _summary, _calls, comment = verdict_step(tmp_path, result("not ready", findings))
+    assert comment is not None
+    last = comment.splitlines()[-1]
+    assert last == block([findings[0], {**findings[1], "text": "Key [redacted] here."}])
+    assert "<" not in last.removeprefix("<!--")
+    run = fr.run_state(comment)
+    assert run is not None
+    assert run.head == SHA
+    assert run.findings == [findings[0], {**findings[1], "text": "Key [redacted] here."}]
+
+
+def test_the_readme_and_the_header_lay_out_the_run_before() -> None:
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
+    for text in (" ".join(section.split()), workflow_header()):
+        assert "the run before" in text
+        assert "fixed, decided by the opener or open" in text
+        assert "whether its file changed since the head judged before" in text
+        assert "by the text of its files, not by ancestry" in text
+        assert "could not be read" in text
+        assert "judges as a first run" in text
+        assert "names a line only where its file has that line at the head" in text

@@ -1374,7 +1374,8 @@ API_CALL = (
 @pytest.fixture
 def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A gh on PATH: `pr view` prints PR_JSON (or the SHAs and the title), `pr checks`
-    CHECKS_JSON or 8, `api repos/…/tags?…` tags.txt or a 502, `api repos/…/contents/
+    CHECKS_JSON or 8, `api repos/…/git/trees/…` tree.json or a 404, `api repos/…/tags?…`
+    tags.txt or a 502, `api repos/…/contents/
     pyproject.toml?…` other-pyproject.toml, or pyproject-fail's error, or a 404 (api-fail, or
     no other-pyproject.toml), and `api repos/…/contents/…?ref=<ref>` at-<ref>.md, else
     DOCUMENT, or a 404 (api-fail, or missing-<ref>), or fail-<ref>'s error. Where `private`
@@ -1406,6 +1407,8 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         '{ cat "$here/pyproject-fail" >&2; exit 1; }; '
         'if [ -f "$here/api-fail" ] || [ ! -f "$here/other-pyproject.toml" ]; then '
         f'{not_found} fi; cat "$here/other-pyproject.toml" ;;\n'
+        '  "api repos/"*"/git/trees/"*) [ -f "$here/tree.json" ] && '
+        f'{{ cat "$here/tree.json"; exit 0; }}; {not_found} ;;\n'
         f'  "api repos/"*) [ -f "$here/api-fail" ] && {{ {not_found} }}; ref=${{2##*ref=}}; '
         f'[ -f "$here/missing-$ref" ] && {{ {not_found} }}; '
         '[ -f "$here/fail-$ref" ] && { cat "$here/fail-$ref" >&2; exit 1; }; '
@@ -2509,7 +2512,8 @@ def test_dry_run_prepares_and_reviews(
         git(workdir, "checkout", "-q", "--detach", sha)
 
     monkeypatch.setattr(fr, "clone_pull_request", clone)
-    leaky = finding(text=f"Key {FAKE_KEY} here.", blocking=True)
+    # The head's src/pkg/mod.py has one line (.github#85).
+    leaky = finding(line=1, text=f"Key {FAKE_KEY} here.", blocking=True)
     client = api(
         message([call("toolu_1", "read_file", {"path": ".review/diff.patch"})]),
         message([verdict("not ready", [leaky, finding(file="", line=None, document="")])]),
@@ -2521,7 +2525,7 @@ def test_dry_run_prepares_and_reviews(
     assert out[-3].startswith("conventions: verdict=not ready findings=2 blocking=1 turns=2 ")
     assert (
         out[-2]
-        == "src/pkg/mod.py:2 [blocking] sdk-core: docs/conventions.md#tests: Key [redacted] here."
+        == "src/pkg/mod.py:1 [blocking] sdk-core: docs/conventions.md#tests: Key [redacted] here."
     )
     assert out[-1] == "the pull request [non-blocking] A finding."
     answer = client.messages.requests[1]["messages"][-1]["content"][0]["content"]
@@ -2601,3 +2605,423 @@ def test_dry_run_without_a_key_clones_nothing(
     assert capsys.readouterr().out.startswith(
         "conventions: no verdict (ANTHROPIC_API_KEY is not set)"
     )
+
+
+# --- the run before (.github#95) ---------------------------------------------------------
+
+CHECK = "<!-- style: reviews/conventions -->"
+DECISIONS = "<!-- style: comments/decisions -->"
+# A head judged before that the checkout does not hold: rebased away.
+EARLIER_HEAD = "e" * 40
+BEFORE = [
+    finding(file="src/pkg/mod.py", line=1, text="A stray value."),
+    finding(file="docs/conventions.md", line=1, blocking=True, text="A heading departs."),
+    finding(file="", line=None, document="", text="The body has no proof."),
+]
+FIRST_RUN_CALLS = [
+    f"pr view 7 --repo {REPO} --json title,body,author,comments,files",
+    (
+        f"pr checks 7 --repo {REPO} --json name,state,bucket,workflow,description,startedAt,"
+        "completedAt,link"
+    ),
+    API_CALL,
+]
+NO_RUN_READ = (
+    "conventions: the comment of the run before carries no findings this run reads; the review "
+    "judges as a first run"
+)
+
+
+def run_block(head: str, findings: list[dict]) -> str:
+    """The hidden line the Verdict step ends the check's comment with."""
+    run = {"head": head, "findings": findings}
+    blob = json.dumps(run, ensure_ascii=True, separators=(",", ":"))
+    return "<!-- conventions-run: " + blob.replace("<", "\\u003c").replace(">", "\\u003e") + " -->"
+
+
+def comment(author: str, body: str, created: str = "2026-11-20T11:00:00Z") -> dict:
+    """A comment as `gh pr view --json comments` gives it."""
+    return {
+        "author": {"login": author},
+        "body": body,
+        "createdAt": created,
+        "viewerDidAuthor": False,
+    }
+
+
+def check_comment(head: str, findings: list[dict], author: str = "github-actions") -> dict:
+    """The check's comment on a run that judged ``head``; gh names its bot `github-actions`."""
+    lead = f"**Findings.** {len(findings)} findings, at https://github.com/{REPO}/commit/{head}."
+    judged = "Judged: the pull request's own diff."
+    body = f"{CHECK}\n{lead}\n\n{judged}\n\n{run_block(head, findings)}\n"
+    return comment(author, body, "2026-11-20T10:00:00Z")
+
+
+def pr_with(comments: list[dict]) -> str:
+    data = {
+        "title": "feat: the change",
+        "body": "Body.",
+        "author": {"login": "johan"},
+        "comments": comments,
+    }
+    return json.dumps(data) + "\n"
+
+
+def make_rounds(root: Path) -> tuple[Path, str, str, str]:
+    """main at the base; the pull request's first head, judged before; then its head, which
+    changes src/pkg/mod.py again and leaves docs/conventions.md as the first head had it."""
+    ws = root / "ws"
+    ws.mkdir()
+    git(ws, "init", "-q", "-b", "main")
+    base = commit(ws, BASE_FILES, "base")
+    git(ws, "checkout", "-q", "-b", "pr")
+    first = {"src/pkg/mod.py": "VALUE = 2\n", "docs/conventions.md": "# conventions, the branch\n"}
+    earlier = commit(ws, first, "feat: the change")
+    head = commit(ws, {"src/pkg/mod.py": "VALUE = 3\nOTHER = 4\n"}, "fix: the finding")
+    git(ws, "checkout", "-q", "--detach", head)
+    return ws, base, earlier, head
+
+
+def test_the_run_before_is_read_from_the_last_comment_of_the_check(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path]
+) -> None:
+    """The last comment the check wrote names the head it judged and its findings; the opener's
+    decisions come with them, and each finding says whether its file changed since."""
+    ws, base, earlier, head = make_rounds(tmp_path)
+    decided = f"{DECISIONS}\n**Decided.** Finding 2: declined, the heading is the family's.\n"
+    comments = [
+        check_comment(base, [finding(text="An older finding.")]),
+        comment("johan", decided),
+        comment("someone", f"{DECISIONS}\n**Decided.** Finding 1: fixed.\n"),
+        comment("johan", "A plain comment."),
+        check_comment(earlier, BEFORE),
+        # Written by a reader, not the check: no run of the check.
+        check_comment(head, [], author="someone"),
+    ]
+    (fake_gh / "pr.json").write_text(pr_with(comments))
+    assert prepare(REPO, ws, base, head) == 0
+    review = ws / ".review"
+    assert json.loads((review / "earlier.json").read_text()) == {
+        "head": earlier,
+        "findings": [
+            {"number": 1, **BEFORE[0], "file_changed": True},
+            {"number": 2, **BEFORE[1], "file_changed": False},
+            {"number": 3, **BEFORE[2], "file_changed": None},
+        ],
+        "decisions": [{"created_at": "2026-11-20T11:00:00Z", "body": decided}],
+    }
+    assert json.loads((review / "changed.json").read_text()) == {
+        "head": earlier,
+        "compared": True,
+        "files": ["src/pkg/mod.py"],
+    }
+    # The head judged before is in the checkout: GitHub is asked nothing more.
+    assert (fake_gh / "calls").read_text().splitlines() == FIRST_RUN_CALLS
+    summary = actions["summary"].read_text()
+    assert f"conventions: the run before judged {earlier} and gave 3 findings\n" in summary
+
+
+def test_a_rebased_head_is_compared_with_the_one_judged_before_by_the_text_of_its_files(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path]
+) -> None:
+    """The head judged before is no ancestor of the head and not in the checkout: its tree comes
+    from GitHub, and a file differs where its blob or its mode does."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    tree = []
+    for line in git(ws, "ls-tree", "-r", head).splitlines():
+        meta, path = line.split("\t", 1)
+        mode, kind, sha = meta.split()
+        if path == "docs/new.md":
+            continue
+        if path == "src/pkg/mod.py":
+            sha = "0" * 40
+        if path == "docs/conventions.md":
+            mode = "100755"
+        tree.append({"path": path, "mode": mode, "type": kind, "sha": sha})
+    tree.append({"path": "docs", "mode": "040000", "type": "tree", "sha": "1" * 40})
+    tree.append({"path": "docs/old.md", "mode": "100644", "type": "blob", "sha": "2" * 40})
+    (fake_gh / "tree.json").write_text(
+        json.dumps({"sha": EARLIER_HEAD, "tree": tree, "truncated": False})
+    )
+    (fake_gh / "pr.json").write_text(pr_with([check_comment(EARLIER_HEAD, BEFORE)]))
+    assert prepare(REPO, ws, base, head) == 0
+    assert json.loads((ws / ".review" / "changed.json").read_text()) == {
+        "head": EARLIER_HEAD,
+        "compared": True,
+        "files": ["docs/conventions.md", "docs/new.md", "docs/old.md", "src/pkg/mod.py"],
+    }
+    calls = (fake_gh / "calls").read_text().splitlines()
+    assert f"api repos/{REPO}/git/trees/{EARLIER_HEAD}?recursive=1" in calls
+    findings = json.loads((ws / ".review" / "earlier.json").read_text())["findings"]
+    assert [f["file_changed"] for f in findings] == [True, True, None]
+
+
+@pytest.mark.parametrize("tree", [None, '{"sha": "e", "tree": [], "truncated": true}', "<html>"])
+def test_a_head_judged_before_that_cannot_be_read_is_not_compared(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], tree: str | None
+) -> None:
+    """GitHub no longer serves the head judged before, or not whole: nothing is guessed."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    if tree is not None:
+        (fake_gh / "tree.json").write_text(tree)
+    (fake_gh / "pr.json").write_text(pr_with([check_comment(EARLIER_HEAD, BEFORE)]))
+    assert prepare(REPO, ws, base, head) == 0
+    review = ws / ".review"
+    assert json.loads((review / "changed.json").read_text()) == {
+        "head": EARLIER_HEAD,
+        "compared": False,
+        "files": [],
+    }
+    findings = json.loads((review / "earlier.json").read_text())["findings"]
+    assert [f["file_changed"] for f in findings] == [None, None, None]
+    assert (
+        f"conventions: the head the run before judged, {EARLIER_HEAD}, could not be read; the "
+        "files are not compared with it\n"
+    ) in actions["summary"].read_text()
+
+
+@pytest.mark.parametrize(
+    "comments",
+    [
+        [],
+        [comment("johan", "Looks good."), comment("johan", f"{DECISIONS}\n**Decided.** No.\n")],
+        [check_comment(EARLIER_HEAD, BEFORE, author="someone")],
+    ],
+)
+def test_a_run_that_finds_no_comment_of_the_check_judges_as_a_first_run(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], comments: list[dict]
+) -> None:
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    (fake_gh / "pr.json").write_text(pr_with(comments))
+    assert prepare(REPO, ws, base, head) == 0
+    assert not (ws / ".review" / "earlier.json").exists()
+    assert not (ws / ".review" / "changed.json").exists()
+    assert (fake_gh / "calls").read_text().splitlines() == FIRST_RUN_CALLS
+    assert "run before" not in actions["summary"].read_text()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        # The form before .github#95: the lead links the head, and no line carries the run.
+        (
+            f"{CHECK}\n**Blocked.** 1 finding, 1 blocking, at https://github.com/{REPO}/commit/"
+            f"{EARLIER_HEAD}.\n\n1. **sdk-core: docs/conventions.md** A finding. Blocks: yes.\n"
+        ),
+        "<!-- conventions -->\n## conventions: `not ready`\n",
+        f"{CHECK}\n**Approved.** No findings.\n\n<!-- conventions-run: {{not json -->\n",
+        f"{CHECK}\n**Approved.** No findings.\n\n{run_block('e' * 7, BEFORE)}\n",
+        f"{CHECK}\n**Approved.** No findings.\n\n{run_block(EARLIER_HEAD, [{'file': 'x'}])}\n",
+        f"{CHECK}\n**Approved.** No findings.\n\n<!-- conventions-run: [] -->\n",
+    ],
+)
+def test_a_comment_of_the_check_without_a_run_it_reads_judges_as_a_first_run(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], body: str
+) -> None:
+    """A comment written before .github#95, or one whose run does not read, says nothing of
+    earlier findings: the review judges as on a first run and the job summary says so."""
+    ws, base, head = make_checkout(tmp_path, HEAD_CHANGES)
+    (fake_gh / "pr.json").write_text(pr_with([comment("github-actions", body)]))
+    assert prepare(REPO, ws, base, head) == 0
+    assert not (ws / ".review" / "earlier.json").exists()
+    assert not (ws / ".review" / "changed.json").exists()
+    assert (fake_gh / "calls").read_text().splitlines() == FIRST_RUN_CALLS
+    assert f"{NO_RUN_READ}\n" in actions["summary"].read_text()
+
+
+def with_earlier(
+    workspace: Path, findings: list[dict], changed: list[str] | None = ("src/pkg/mod.py",)
+) -> None:
+    """The run before as prepare writes it: its findings, and the files changed since, or
+    ``None`` where its head could not be read."""
+    review = workspace / ".review"
+    numbered = [{"number": n, **f, "file_changed": None} for n, f in enumerate(findings, 1)]
+    earlier = {"head": EARLIER_HEAD, "findings": numbered, "decisions": []}
+    (review / "earlier.json").write_text(json.dumps(earlier))
+    compared = {"head": EARLIER_HEAD, "compared": changed is not None, "files": list(changed or [])}
+    (review / "changed.json").write_text(json.dumps(compared))
+
+
+def state(number: int, value: str, carried: int | None = None) -> dict:
+    return {"number": number, "state": value, "finding": carried}
+
+
+def judged(value="ready", findings=(), earlier=()):
+    tool_input = {"verdict": value, "findings": list(findings), "earlier": list(earlier)}
+    return call("toolu_v", "submit_verdict", tool_input)
+
+
+def test_the_first_message_names_the_run_before_and_the_prefix_stays(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    plain = fr.load_material(workspace, workspace / ".review")
+    with_earlier(workspace, BEFORE)
+    answers = [state(1, "fixed"), state(2, "decided"), state(3, "fixed")]
+    client = api(message([judged("ready", [], answers)]))
+    code, _ = run_review(workspace, tmp_path)
+    assert code == 0
+    request = client.messages.requests[0]
+    assert request["messages"][0]["content"] == fr.first_message(plain)["content"] + (
+        f" The run before judged head {EARLIER_HEAD} and gave 3 findings: "
+        "`.review/earlier.json` holds them, numbered from 1, with the opener's decisions on "
+        "the pull request. Give each of them its state in `earlier`."
+    )
+    # The cached prefix is every review's of the repository: the run before is not in it.
+    assert request["system"] == fr.system_prompt(plain, fr.MAX_TURNS)
+    assert request["tools"] == fr.TOOLS
+
+
+def test_a_run_before_without_findings_asks_for_no_state(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    plain = fr.first_message(fr.load_material(workspace, workspace / ".review"))["content"]
+    with_earlier(workspace, [])
+    client = api(message([verdict()]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    assert client.messages.requests[0]["messages"][0]["content"] == plain
+    assert result["earlier"] == {"head": EARLIER_HEAD, "findings": []}
+
+
+def test_each_finding_of_the_run_before_gets_what_became_of_it(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    with_earlier(workspace, BEFORE)
+    new = finding(file="src/pkg/mod.py", line=1, blocking=True, text="A stray value, still.")
+    answers = [state(3, "fixed"), state(1, "open", 1), state(2, "decided")]
+    api(message([judged("not ready", [new], answers)]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 1
+    assert result["earlier"] == {
+        "head": EARLIER_HEAD,
+        "findings": [
+            {**BEFORE[0], "state": "open", "finding": 1},
+            {**BEFORE[1], "state": "decided", "finding": None},
+            {**BEFORE[2], "state": "fixed", "finding": None},
+        ],
+    }
+    # The summary line keeps its end.
+    assert result["summary"].endswith(" key=1/1")
+
+
+COUNTED = "earlier must give each of the 3 findings of the run before, numbered 1 to 3, one state"
+
+
+@pytest.mark.parametrize(
+    ("earlier", "problem"),
+    [
+        (None, COUNTED),
+        ([state(1, "fixed"), state(2, "fixed")], COUNTED),
+        ([state(1, "fixed"), state(1, "fixed"), state(3, "fixed")], COUNTED),
+        ([state(1, "fixed"), state(2, "fixed"), state(4, "fixed")], COUNTED),
+        ("fixed", "earlier must be a list"),
+        (
+            [state(1, "fixed"), state(2, "fixed"), {"number": 3, "state": "fixed"}],
+            "each entry of earlier must have exactly number, state and finding",
+        ),
+        ([state(1, "fixed"), state(2, "fixed"), state(True, "fixed")], "number must be an integer"),
+        (
+            [state(1, "fixed"), state(2, "fixed"), state(3, "dropped")],
+            "state must be fixed, decided or open",
+        ),
+        (
+            [state(1, "fixed"), state(2, "fixed"), state(3, "open")],
+            "an open one names the finding of this review that carries it",
+        ),
+        (
+            [state(1, "fixed"), state(2, "fixed"), state(3, "open", 2)],
+            "an open one names the finding of this review that carries it",
+        ),
+        (
+            [state(1, "fixed"), state(2, "fixed"), state(3, "fixed", 1)],
+            "finding must be null unless the state is open",
+        ),
+    ],
+)
+def test_a_state_outside_the_three_or_a_finding_left_out_is_answered_as_an_error(
+    workspace: Path, tmp_path: Path, api, earlier, problem: str
+) -> None:
+    with_earlier(workspace, BEFORE)
+    tool_input = {"verdict": "ready", "findings": [finding(line=1)]}
+    if earlier is not None:
+        tool_input["earlier"] = earlier
+    bad = call("toolu_bad", "submit_verdict", tool_input)
+    good = judged("ready", [], [state(1, "fixed"), state(2, "decided"), state(3, "fixed")])
+    client = api(message([bad]), message([good]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    answer = client.messages.requests[1]["messages"][-1]["content"][0]
+    assert answer["is_error"] is True
+    assert answer["content"] == f"invalid verdict: {problem}; call submit_verdict again"
+    assert result["tool_calls"] == {"submit_verdict": 2}
+
+
+def test_a_first_run_takes_no_state_of_earlier_findings(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    bad = judged("ready", [], [state(1, "fixed")])
+    client = api(message([bad]), message([judged()]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    answer = client.messages.requests[1]["messages"][-1]["content"][0]
+    assert answer["is_error"] is True
+    assert "earlier must be empty: no run before is named" in answer["content"]
+    assert result["earlier"] is None
+
+
+def test_a_new_finding_says_whether_its_file_changed_since_the_head_judged_before(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    (workspace / "docs").mkdir()
+    (workspace / "docs" / "conventions.md").write_text("# conventions\n")
+    findings = [
+        finding(file="src/pkg/mod.py", line=1),
+        finding(file="./src/pkg/mod.py", line=None),
+        finding(file="docs/conventions.md", line=1),
+        # Deleted since the head judged before.
+        finding(file="src/pkg/gone.py", line=None),
+        # The pull request as a whole names no file.
+        finding(file="", line=None, document=""),
+        # Neither at the head nor changed.
+        finding(file="src/pkg/absent.py", line=None),
+    ]
+    with_earlier(workspace, [], changed=["src/pkg/gone.py", "src/pkg/mod.py"])
+    api(message([verdict("ready", findings)]))
+    _code, result = run_review(workspace, tmp_path)
+    marks = [f.get("since") for f in result["findings"]]
+    assert marks == ["changed", "changed", "unchanged", "changed", None, None]
+    assert [f["file"] for f in result["findings"]] == [f["file"] for f in findings]
+
+    with_earlier(workspace, [], changed=None)
+    api(message([verdict("ready", findings)]))
+    _code, result = run_review(workspace, tmp_path)
+    marks = [f.get("since") for f in result["findings"]]
+    assert marks == ["not compared"] * 4 + [None, "not compared"]
+
+
+def test_a_first_run_marks_no_finding(workspace: Path, tmp_path: Path, api) -> None:
+    api(message([verdict("ready", [finding(line=1), finding(file="", line=None)])]))
+    _code, result = run_review(workspace, tmp_path)
+    assert result["findings"] == [finding(line=1), finding(file="", line=None)]
+    assert result["earlier"] is None
+
+
+def test_a_finding_names_a_line_only_where_its_file_has_it_at_the_head(
+    workspace: Path, tmp_path: Path, api, capsys
+) -> None:
+    """src/pkg/mod.py has two lines at the head (.github#85)."""
+    findings = [
+        finding(file="src/pkg/mod.py", line=2),
+        finding(file="src/pkg/mod.py", line=3),
+        finding(file="src/pkg/gone.py", line=1),
+        finding(file="src/pkg/mod.py", line=0),
+        finding(file=".git/config", line=1),
+        finding(file="../outside.py", line=1),
+        finding(file="", line=4, document=""),
+    ]
+    api(message([verdict("not ready", findings)]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 1
+    assert [f["line"] for f in result["findings"]] == [2, None, None, None, None, None, None]
+    assert [f["file"] for f in result["findings"]] == [f["file"] for f in findings]
+    assert result["summary"].startswith("conventions: verdict=not ready findings=7 blocking=0 ")
