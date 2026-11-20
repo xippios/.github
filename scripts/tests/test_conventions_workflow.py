@@ -88,8 +88,8 @@ def gate(
     title: str = "feat: a change",
     labels: tuple[str, ...] = (),
     key: bool = True,
-    author: str = "johan",
-    actor: str = "johan",
+    author: str = "opener",
+    actor: str = "opener",
     fork: bool = False,
     read_token_unused: bool = False,
 ) -> tuple[int, str, dict[str, str]]:
@@ -912,6 +912,13 @@ def test_the_comment_tells_what_became_of_each_finding_of_the_run_before(tmp_pat
                 ),
                 "state": "open",
                 "finding": 1,
+                "reason": "The commit  holds no test.",
+            },
+            {
+                **finding("sdk-core: docs/conventions.md#ci", "No ci badge.", blocking=True),
+                "state": "decided",
+                "finding": None,
+                "reason": "The rule names release PRs alone",
             },
         ],
     }
@@ -929,11 +936,14 @@ def test_the_comment_tells_what_became_of_each_finding_of_the_run_before(tmp_pat
         "3. **`src/pkg/x.py`** Another. Blocks: no. Its file was not compared: the head judged "
         "before could not be read.\n"
         "4. **the pull request** The body has no proof. Blocks: no.\n\n"
-        f"The run before judged https://github.com/{REPO}/commit/{BEFORE} and gave 3 findings:\n\n"
+        f"The run before judged https://github.com/{REPO}/commit/{BEFORE} and gave 4 findings:\n\n"
         "1. **sdk-core: docs/conventions.md#names** A name departs. `src/pkg/mod.py:2`. Fixed.\n"
         "2. **the pull request** The body cites no row. Decided by the opener.\n"
         "3. **sdk-core: docs/conventions.md#tests** The test commit is missing. "
-        "`src/pkg/mod.py:2`. Open: finding 1 above.\n\n"
+        "`src/pkg/mod.py:2`. Open: finding 1 above. The opener decided otherwise, and the rule "
+        "stands: The commit holds no test.\n"
+        "4. **sdk-core: docs/conventions.md#ci** No ci badge. `src/pkg/mod.py:2`. Decided by the "
+        "opener: The rule names release PRs alone.\n\n"
         f"{block(new)}\n"
     )
     assert comment == expected
@@ -994,3 +1004,14 @@ def test_the_readme_and_the_header_lay_out_the_run_before() -> None:
         assert "could not be read" in text
         assert "judges as a first run" in text
         assert "names a line only where its file has that line at the head" in text
+        # Findings 1, 3 and 8 of the review of .github#104.
+        assert "a file the head's tree holds" in text
+        assert "never settles a finding that blocked" in text
+        assert "no run before was found" in text
+    dry_run = README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0]
+    flat = " ".join(dry_run.split())
+    assert (
+        "`--earlier <file>` takes the verdict file that an earlier dry run wrote with `--out`"
+        in (flat)
+    )
+    assert "prints the states and the marks as the comment shows them" in flat
