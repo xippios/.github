@@ -464,17 +464,19 @@ def test_the_readme_the_header_and_the_docstring_name_the_judge_the_script_runs(
 
 
 def test_the_job_times_out_after_45_minutes_and_the_texts_say_so() -> None:
-    """The job's timeout leaves a review at effort xhigh the time of its 160 turns, and the
-    header and the README name it beside the turn cap: a review the timeout ends leaves no line
-    of the script in the job summary (finding 1 of the review of .github#94)."""
+    """The job's timeout leaves a review at effort xhigh the time of 160 turns on one key, since
+    the turns start again on the next, and the header and the README name it beside the turn
+    cap: a review the timeout ends writes no summary line, while `prepare` has written its own
+    lines to the job summary before (findings 1 of the reviews of .github#94)."""
     assert "    timeout-minutes: 45\n" in WORKFLOW
     assert "timeout-minutes: 30" not in WORKFLOW
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
     for text in (" ".join(section.split()), workflow_header()):
         assert "The job times out after 45 minutes" in text
-        assert "a review the timeout ends returns no verdict" in text
-        assert "no line of the script" in text
+        assert "the time of 160 turns on one key" in text
+        assert "a review the timeout ends returns no verdict and writes no summary line" in text
+        assert "no line of the script" not in text
 
 
 def test_the_readme_says_the_sdks_retries_of_a_429_alone() -> None:
