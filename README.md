@@ -72,7 +72,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   a post that fails leaves its reason in the job summary and a warning annotation. No verdict (an
   API error, a refusal, a `max_tokens` stop, the turn cap of 120, a missing key) fails the check,
   and the job summary carries the script's line with the cause (the SDK's error class and its
-  redacted message, a refusal's category), the turns, the tool calls and the token usage.
+  redacted message, a refusal's category), the turns, the tool calls, the token usage and the
+  key the review ended on (the keys below).
   Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
   - **The release pull request** (https://github.com/xippios/.github/issues/47): one labeled
     `release`, or titled `<version> Release`, and `release: <version>` until every workspace has
@@ -181,6 +182,29 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     secret `ANTHROPIC_API_KEY`, shared with every repository (coordinate-core#368): a pull
     request from a fork never gets it and fails, and one from the repository itself with the
     secret empty fails naming it.
+  - **The keys** (https://github.com/xippios/.github/issues/87): `ANTHROPIC_API_KEY` holds one
+    key or several, one per line, and the script tries them in that order. A blank line and
+    the spaces around a key are dropped, and the SDK gets one key at a time, never the value
+    of several lines. A review runs on one key from its first turn to its verdict. Where the
+    API refuses the key or its account, at the first request or a later one, the review
+    starts again from its first turn on the next key, and no conversation moves to another
+    key. A refusal is the API's authentication, permission or billing error or its rate
+    limit, known by the status (401, 403, 402, 429) or by the error type that an error event
+    of the stream carries (`authentication_error`, `permission_error`, `billing_error`,
+    `rate_limit_error`), and a 400 whose message names the balance of the account. A 429
+    reaches the script only once the SDK's own retries are spent, while the SDK retries no
+    stream it has begun, so a `rate_limit_error` that an error event of the stream carries
+    moves the review to the next key at once. Any other end without
+    a verdict (a server error, a lost connection, any other 400, a refusal of the model, a
+    `max_tokens` stop, the turn cap) tries no other key. The summary line names the key the
+    review ended on by its position, `key=2/3`, and counts the tokens of every attempt; its
+    turns and tool calls are the last attempt's, and the job log names each key the review
+    moved past by its position and error class. Where the API refused every key, the review
+    has no verdict, and its line names each key by its position and the SDK's error class;
+    with one key it carries that key's error as before. No output carries a key: the script
+    redacts every key of the secret, whatever its form, from all it prints and writes, and
+    the PR comment says nothing of keys. A secret with one key reviews as before, and a
+    caller's `gates.yml` passes the secret as it did.
   - **What the model may do**: nothing but read. Before it starts, `conventions.py
     prepare` writes its material to `.review/`: `diff.patch` and `log.txt` of the range,
     `pr.json` (title, body, author, comments, files), `checks.json` (the head's checks, `ci`
@@ -395,8 +419,9 @@ against. A README that links no documents ends it there, green, as in the workfl
 `gh` signed in, whose login stands for the workflow's token, and a `DOCUMENTS_READ_TOKEN` in the
 environment of the command is read as a private caller's workflow reads the secret, whatever the
 repository's visibility, since a dry run posts nothing. It needs the key in the
-environment of that one command, never on disk or in the shell's history: `read -rs` prompts
-for it without echo:
+environment of that one command, never on disk or in the shell's history, and tries a value
+of several lines key by key as the workflow does: `read -rs` prompts for one key without
+echo:
 
 ```sh
 read -rs K && ANTHROPIC_API_KEY="$K" uv run --no-project \

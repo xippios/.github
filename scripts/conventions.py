@@ -43,7 +43,12 @@ whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C5
   read-only tools, ``read_file``, ``list_files`` and ``grep``, and the verdict returned by a
   call of ``submit_verdict`` (Opus 5.5 refuses a forced ``tool_choice``, so the instructions
   ask for it). The verdict, the findings and the usage go to ``--out``, one summary line to
-  stdout and ``$GITHUB_STEP_SUMMARY``.
+  stdout and ``$GITHUB_STEP_SUMMARY``. ``ANTHROPIC_API_KEY`` holds one key or several, one
+  per line, and the review tries them in that order, each on a client of its own (.github#87):
+  it runs on one key from its first turn to its verdict, and where the API refuses the key or
+  its account, at its first request or a later one, it starts again from its first turn on
+  the next key (``refuses_key``). The summary line names the key the review ended on by its
+  position, ``key=2/3``, and counts the tokens of every attempt.
 - ``dry-run`` runs ``prepare`` in a temporary (or given) directory and then ``review``, and
   prints the summary line and the findings, for a terminal. A pull request labeled
   ``release`` or titled as a release is judged on its release's range, as in the workflow.
@@ -59,8 +64,8 @@ inside a regular expression too, as an ``is_error`` result.
 
 The job log is public: the script prints paths, counts, the verdict and redacted error
 text, never a file's content, a tool result, the prompt or the cost estimate, which goes to
-``--out`` alone. Anything that looks like an Anthropic key or a GitHub token is redacted
-from everything it prints or writes.
+``--out`` alone. Every key of ``ANTHROPIC_API_KEY``, and anything that looks like an
+Anthropic key or a GitHub token, is redacted from everything it prints or writes.
 
 Exit status: 0 ``ready``, 1 ``not ready``, 2 no verdict (the review could not run, or ended
 without one: no key, an API error, a refusal, a ``max_tokens`` stop, the turn cap) and, for
@@ -98,6 +103,15 @@ MAX_TURNS = 120
 # review. Streamed: the SDK refuses a non-streaming request it expects to run this long.
 MAX_TOKENS = 64000
 KEY_ENV = "ANTHROPIC_API_KEY"
+# A refusal of the key or its account moves the review to the next key (.github#87): by the
+# status, or by the error type, which an error event in the stream carries under status 200.
+# A RateLimitError reaches the script only once the SDK's own retries are spent.
+REFUSING_STATUSES = frozenset({401, 402, 403, 429})
+REFUSING_TYPES = frozenset(
+    {"authentication_error", "permission_error", "billing_error", "rate_limit_error"}
+)
+# A 400 refuses the account too where its message names the balance.
+BALANCE = re.compile(r"credit balance", re.IGNORECASE)
 # The caller's optional read token (.github#62): another repository's file that GitHub does
 # not find with the workflow's token, a private repository's included, is read again with it.
 # No subprocess gets the variable; the one read that needs the token gets it as its GH_TOKEN.
@@ -410,11 +424,36 @@ class GrepTimeout(Exception):
     """grep's time budget ran out; raised by the SIGALRM handler, inside a regex too."""
 
 
+class KeyRefused(Exception):
+    """The API refused the review's key or its account; the next key may serve."""
+
+    def __init__(self, error: anthropic.APIStatusError) -> None:
+        """Keep the SDK's ``error``; the message is its class alone."""
+        super().__init__(type(error).__name__)
+        self.error = error
+
+
 # --- output ------------------------------------------------------------------------------
 
 
+def keys_of(value: str | None) -> list[str]:
+    """The keys a value of ANTHROPIC_API_KEY holds, in order: one per line, stripped."""
+    return [line.strip() for line in (value or "").splitlines() if line.strip()]
+
+
+def no_key() -> str:
+    """Why the review has no key: the variable unset or empty, or holding blank lines only."""
+    return f"{KEY_ENV} holds no key" if os.environ.get(KEY_ENV) else f"{KEY_ENV} is not set"
+
+
 def redact(text: str) -> str:
-    """``text`` with anything that looks like a key or a token replaced."""
+    """``text`` with every key of the secret and anything that looks like a key replaced.
+
+    The secret's own keys go first, whatever their form, then the patterns of a key or a
+    token.
+    """
+    for key in sorted(keys_of(os.environ.get(KEY_ENV)), key=len, reverse=True):
+        text = text.replace(key, REDACTED)
     return KEY.sub(REDACTED, text)
 
 
@@ -1541,9 +1580,13 @@ class Client(Protocol):
         ...
 
 
-def make_client() -> Client:
-    """The API client: the key from ANTHROPIC_API_KEY, the SDK's default retries."""
-    return anthropic.Anthropic()
+def make_client(key: str) -> Client:
+    """The API client for one key of the secret, with the SDK's default retries.
+
+    The key is given explicitly, so the SDK never reads ANTHROPIC_API_KEY, whose value can
+    hold several keys.
+    """
+    return anthropic.Anthropic(api_key=key)
 
 
 @dataclass
@@ -1584,6 +1627,10 @@ class Outcome:
     usage: Usage = field(default_factory=Usage)
     turns: int = 0
     tool_calls: dict[str, int] = field(default_factory=dict)
+    # The key the review ended on, by its position among the keys of the secret, from 1; the
+    # summary line names it where the secret holds any.
+    key: int = 0
+    key_count: int = 0
     # The range judged and the documents judged by, from the material, for the Verdict step.
     range: dict[str, object] | None = None
     documents: list[str] = field(default_factory=list)
@@ -1602,7 +1649,7 @@ class Outcome:
         """The one line for the log and the step summary, redacted.
 
         It carries the token counts, the model and the effort, and no cost estimate, for
-        every caller (.github#65).
+        every caller (.github#65), then the position of the key the review ended on.
         """
         usage = self.usage
         counts = (
@@ -1611,6 +1658,8 @@ class Outcome:
             f"cache_read={usage.cache_read} output={usage.output} "
             f"model={self.model} effort={self.effort}"
         )
+        if self.key_count:
+            counts += f" key={self.key}/{self.key_count}"
         if self.verdict is None:
             return redact(f"conventions: no verdict ({self.reason}) {counts}")
         return redact(
@@ -1772,22 +1821,39 @@ def first_message(material: Material) -> dict[str, object]:
     return {"role": "user", "content": text}
 
 
-def api_error(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
-    """``API error: <class>: <message>``, the message from the error body where it has one."""
-    message = None
+def _error_message(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
+    """The message of the error body where it has one, else the SDK's."""
     body = getattr(exc, "body", None)
     if isinstance(body, dict) and isinstance(body.get("error"), dict):
         inner = body["error"].get("message")
-        message = inner if isinstance(inner, str) else None
-    if message is None:
-        message = getattr(exc, "message", None) or str(exc)
+        if isinstance(inner, str):
+            return inner
+    return getattr(exc, "message", None) or str(exc)
+
+
+def api_error(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
+    """``API error: <class>: <message>``, the message from the error body where it has one."""
     request_id = getattr(exc, "request_id", None)
     suffix = f" (request {one_line(request_id)})" if request_id else ""
-    return f"API error: {type(exc).__name__}: {one_line(message)}{suffix}"
+    return f"API error: {type(exc).__name__}: {one_line(_error_message(exc))}{suffix}"
+
+
+def refuses_key(exc: anthropic.APIStatusError) -> bool:
+    """Whether the API refused the key or its account (.github#87).
+
+    An authentication, permission or billing error, a rate limit, or a 400 whose message names
+    the balance; any other error ends the review on its key.
+    """
+    body = exc.body if isinstance(exc.body, dict) else {}
+    error = body.get("error") if isinstance(body.get("error"), dict) else {}
+    kind = error.get("type")
+    if exc.status_code in REFUSING_STATUSES or (isinstance(kind, str) and kind in REFUSING_TYPES):
+        return True
+    return exc.status_code == 400 and BALANCE.search(_error_message(exc)) is not None
 
 
 def run_review(
-    client: Client,
+    keys: Sequence[str],
     material: Material,
     *,
     model: str = MODEL,
@@ -1795,17 +1861,42 @@ def run_review(
     max_turns: int = MAX_TURNS,
     hidden: Sequence[Path] = (),
 ) -> Outcome:
-    """The tool loop, until ``submit_verdict``, a stop without a verdict, or the turn cap.
+    """The review on the keys of the secret, in order (.github#87).
 
-    An unexpected error is no verdict too, with the counters so far and the error's class
-    only: the job log is public.
+    Each attempt is the tool loop on one key, from the first turn until ``submit_verdict``, a
+    stop without a verdict, or the turn cap. Where the API refuses the key or its account, the
+    review starts again from its first turn on the next key; no conversation moves to another
+    key. The outcome is the last attempt's, with the tokens of every attempt. Where the API
+    refused every key, its reason names each by its position and error class, or with one key
+    gives that key's error as before. An unexpected error is no verdict too, with the counters
+    so far and the error's class only: the job log is public.
     """
-    outcome = Outcome(model=model, effort=effort)
-    try:
-        _loop(client, material, outcome, max_turns=max_turns, hidden=hidden)
-    except Exception as exc:
-        outcome.reason = f"internal error: {type(exc).__name__}"
-    return outcome
+    count = len(keys)
+    usage = Usage()
+    refusals: list[str] = []
+    for position, key in enumerate(keys, 1):
+        outcome = Outcome(model=model, effort=effort, usage=usage, key=position, key_count=count)
+        try:
+            _loop(make_client(key), material, outcome, max_turns=max_turns, hidden=hidden)
+        except KeyRefused as refused:
+            name = type(refused.error).__name__
+            refusals.append(f"key {position} {name}")
+            if position < count:
+                print(
+                    f"conventions: key {position}/{count} refused ({name}); "
+                    f"the review starts again on key {position + 1}/{count}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                continue
+            if count == 1:
+                outcome.reason = api_error(refused.error)
+            else:
+                outcome.reason = f"API error on every key: {', '.join(refusals)}"
+        except Exception as exc:
+            outcome.reason = f"internal error: {type(exc).__name__}"
+        return outcome
+    return Outcome(model=model, effort=effort, reason=no_key())
 
 
 def _loop(
@@ -1839,8 +1930,11 @@ def _loop(
         # The SDK's classes, most specific first, are subclasses of AnthropicError; the
         # summary names the class the SDK raised (AuthenticationError, BadRequestError, ...).
         # An error event in the stream arrives as one of them; a connection lost while the
-        # stream is read arrives as an httpx2 error.
+        # stream is read arrives as an httpx2 error. A refusal of the key or its account
+        # leaves this attempt for the next key.
         except (anthropic.AnthropicError, httpx2.HTTPError) as exc:
+            if isinstance(exc, anthropic.APIStatusError) and refuses_key(exc):
+                raise KeyRefused(exc) from exc
             outcome.reason = api_error(exc)
             return
         outcome.turns += 1
@@ -1913,15 +2007,16 @@ def review(
     effort: str = EFFORT,
     max_turns: int = MAX_TURNS,
 ) -> Outcome:
-    """The review of the prepared material; no verdict when it cannot run."""
-    if not os.environ.get(KEY_ENV):
-        return Outcome(model=model, effort=effort, reason=f"{KEY_ENV} is not set")
+    """The review of the prepared material on the secret's keys; no verdict where it cannot run."""
+    keys = keys_of(os.environ.get(KEY_ENV))
+    if not keys:
+        return Outcome(model=model, effort=effort, reason=no_key())
     try:
         material = load_material(workspace, review_dir)
     except PrepareError as exc:
         return Outcome(model=model, effort=effort, reason=one_line(str(exc)))
     outcome = run_review(
-        make_client(),
+        keys,
         material,
         model=model,
         effort=effort,
@@ -2072,8 +2167,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             _report(outcome, summary)
             return outcome.exit_code
         # dry-run: the key first, so a missing one costs no clone.
-        if not os.environ.get(KEY_ENV):
-            outcome = Outcome(model=args.model, effort=args.effort, reason=f"{KEY_ENV} is not set")
+        if not keys_of(os.environ.get(KEY_ENV)):
+            outcome = Outcome(model=args.model, effort=args.effort, reason=no_key())
         else:
             with contextlib.ExitStack() as stack:
                 if args.workdir is None:

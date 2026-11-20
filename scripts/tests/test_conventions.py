@@ -132,8 +132,8 @@ class FakeClient:
         self.messages = FakeMessages(script)
 
 
-def status_error(cls, status, text):
-    body = {"type": "error", "error": {"type": "error_type", "message": text}}
+def status_error(cls, status, text, kind="error_type"):
+    body = {"type": "error", "error": {"type": kind, "message": text}}
     response = httpx2.Response(status, request=REQUEST, headers={"request-id": "req_test1"})
     return cls(f"Error code: {status} - {body}", response=response, body=body)
 
@@ -173,12 +173,12 @@ def workspace(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def api(monkeypatch: pytest.MonkeyPatch):
-    """Install a fake client for a script of responses; the key is a dummy."""
+    """Install a fake client for a script of responses; the secret holds one dummy key."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-for-tests")
 
     def install(*script):
         client = FakeClient(script)
-        monkeypatch.setattr(fr, "make_client", lambda: client)
+        monkeypatch.setattr(fr, "make_client", lambda *key: client)
         return client
 
     return install
@@ -226,7 +226,7 @@ def test_two_tool_calls_then_the_verdict(
 
     line = (
         "conventions: verdict=ready findings=1 blocking=0 turns=3 tool_calls=4 input=160 "
-        "cache_write=1035 cache_read=2030 output=60 model=claude-opus-5-5 effort=high"
+        "cache_write=1035 cache_read=2030 output=60 model=claude-opus-5-5 effort=high key=1/1"
     )
     assert code == 0
     assert result["verdict"] == "ready"
@@ -562,12 +562,13 @@ def test_no_key_is_no_verdict_and_no_client(
     workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.setattr(fr, "make_client", lambda: pytest.fail("no client without a key"))
+    monkeypatch.setattr(fr, "make_client", lambda *key: pytest.fail("no client without a key"))
     code, result = run_review(workspace, tmp_path)
     assert code == 2
     assert result["verdict"] is None
     out = capsys.readouterr().out
     assert out.startswith("conventions: no verdict (ANTHROPIC_API_KEY is not set) turns=0 ")
+    assert " key=" not in out
 
 
 def test_missing_material_is_no_verdict(workspace: Path, tmp_path: Path, api) -> None:
@@ -713,6 +714,271 @@ def test_a_key_in_a_finding_is_redacted(
 def test_redact_covers_the_verdict_steps_patterns() -> None:
     text = f"{FAKE_KEY} {FAKE_TOKEN} gho_abc ghs_abc github_pat_11AB_cd"
     assert fr.redact(text) == " ".join(["[redacted]"] * 5)
+
+
+# --- the keys of the secret (.github#87) -------------------------------------------------
+
+# Built at run time, as FAKE_KEY. The third has no form the patterns know, so only the
+# redaction of the secret's own keys hides it.
+KEYS = ("sk-ant-" + "api03-" + "Ka1" * 8, "sk-ant-" + "api03-" + "Kb2" * 8, "plain" + "Kc3" * 8)
+REFUSED = status_error(
+    anthropic.AuthenticationError, 401, "invalid x-api-key", "authentication_error"
+)
+
+
+@pytest.fixture
+def keyed(monkeypatch: pytest.MonkeyPatch):
+    """Install one fake client per key of KEYS, each playing its script, and the secret that
+    holds those keys, one per line, or ``secret``; ``made`` lists the keys a client was made
+    for, in order."""
+
+    def install(*scripts, secret=None):
+        keys = KEYS[: len(scripts)]
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "\n".join(keys) if secret is None else secret)
+        clients = {key: FakeClient(script) for key, script in zip(keys, scripts, strict=True)}
+        made = []
+
+        def make(key):
+            made.append(key)
+            return clients[key]
+
+        monkeypatch.setattr(fr, "make_client", make)
+        return clients, made
+
+    return install
+
+
+def error_name(error) -> str:
+    return type(error.error if isinstance(error, MidStream) else error).__name__
+
+
+def test_the_secret_holds_its_keys_one_per_line_in_order() -> None:
+    assert fr.keys_of(f"{KEYS[1]}\n\n  {KEYS[0]}  \r\n{KEYS[2]}\n") == [KEYS[1], KEYS[0], KEYS[2]]
+    assert fr.keys_of(KEYS[0]) == [KEYS[0]]
+    assert fr.keys_of("\n \n") == []
+    assert fr.keys_of("") == []
+    assert fr.keys_of(None) == []
+
+
+def test_a_client_gets_one_key_and_the_sdks_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SDK gets each key alone, never the value of several lines, and retries as it does."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "\n".join(KEYS))
+    client = fr.make_client(KEYS[1])
+    assert client.api_key == KEYS[1]
+    assert client.max_retries == anthropic.DEFAULT_MAX_RETRIES
+
+
+REFUSALS = [
+    REFUSED,
+    status_error(anthropic.PermissionDeniedError, 403, "not allowed", "permission_error"),
+    status_error(anthropic.APIStatusError, 402, "payment required", "billing_error"),
+    MidStream(status_error(anthropic.APIStatusError, 200, "refused", "billing_error")),
+    status_error(anthropic.BadRequestError, 400, CREDIT, "invalid_request_error"),
+    status_error(anthropic.RateLimitError, 429, "rate limited", "rate_limit_error"),
+]
+
+
+@pytest.mark.parametrize("error", REFUSALS, ids=lambda error: error_name(error))
+def test_a_refused_key_moves_the_review_to_the_next(
+    workspace: Path, tmp_path: Path, keyed, capsys, error
+) -> None:
+    _, made = keyed([error], [message([verdict()], usage=(5, 2, 0, 0))], [])
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert made == list(KEYS[:2])
+    assert result["verdict"] == "ready"
+    assert result["summary"].endswith(" model=claude-opus-5-5 effort=high key=2/3")
+    assert captured.out == result["summary"] + "\n"
+    assert (
+        f"conventions: key 1/3 refused ({error_name(error)}); the review starts again on key 2/3\n"
+    ) in captured.err
+
+
+def test_the_keys_are_tried_in_the_secrets_order(workspace: Path, tmp_path: Path, keyed) -> None:
+    _, made = keyed([], [REFUSED], [message([verdict()])], secret="\n".join(KEYS[1:] + KEYS[:1]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    assert made == list(KEYS[1:])
+    assert result["summary"].endswith(" key=2/3")
+
+
+def test_a_refusal_at_a_later_turn_starts_the_review_again_from_its_first_turn(
+    workspace: Path, tmp_path: Path, keyed
+) -> None:
+    first = [
+        message([call("toolu_1", "list_files", {"pattern": "**"})], usage=(7, 3, 0, 0)),
+        message([call("toolu_2", "read_file", {"path": "src/pkg/mod.py"})], usage=(11, 4, 100, 0)),
+        status_error(anthropic.RateLimitError, 429, "rate limited", "rate_limit_error"),
+    ]
+    clients, made = keyed(first, [message([verdict()], usage=(5, 2, 0, 0))])
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    assert made == list(KEYS[:2])
+    # The second key gets the review's first request, never the turns of the first key.
+    opening = clients[KEYS[0]].messages.requests[0]
+    again = clients[KEYS[1]].messages.requests
+    assert len(again) == 1
+    assert again[0]["messages"] == opening["messages"]
+    assert len(again[0]["messages"]) == 1
+    assert again[0]["system"] == opening["system"]
+    # The tokens of every attempt; the turns and the tool calls of the attempt that served.
+    assert result["usage"] == {
+        "input_tokens": 23,
+        "cache_creation_input_tokens": 100,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 9,
+    }
+    assert result["turns"] == 1
+    assert result["tool_calls"] == {"submit_verdict": 1}
+    assert result["summary"] == (
+        "conventions: verdict=ready findings=0 blocking=0 turns=1 tool_calls=1 input=23 "
+        "cache_write=100 cache_read=0 output=9 model=claude-opus-5-5 effort=high key=2/2"
+    )
+
+
+NOT_REFUSALS = [
+    status_error(anthropic.InternalServerError, 500, "internal", "api_error"),
+    status_error(anthropic.OverloadedError, 529, "overloaded", "overloaded_error"),
+    status_error(anthropic.BadRequestError, 400, "prompt is too long", "invalid_request_error"),
+    status_error(anthropic.NotFoundError, 404, "model not found", "not_found_error"),
+    anthropic.APIConnectionError(request=REQUEST),
+    MidStream(status_error(anthropic.APIStatusError, 200, "Overloaded", "overloaded_error")),
+    MidStream(httpx2.RemoteProtocolError("peer closed connection", request=REQUEST)),
+]
+
+
+@pytest.mark.parametrize("error", NOT_REFUSALS, ids=lambda error: error_name(error))
+def test_an_api_error_that_refuses_no_key_tries_no_other(
+    workspace: Path, tmp_path: Path, keyed, capsys, error
+) -> None:
+    _, made = keyed([error], [])
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert made == [KEYS[0]]
+    assert result["reason"].startswith(f"API error: {error_name(error)}: ")
+    assert result["summary"].endswith(" key=1/2")
+    assert "refused" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("script", "extra", "reason"),
+    [
+        (
+            [message([], "refusal", stop_details={"type": "refusal", "category": "cyber"})],
+            (),
+            "the model refused, category cyber",
+        ),
+        (
+            [message([call("toolu_1", "read_file", {"path": "x"})], "max_tokens")],
+            (),
+            "the response reached max_tokens (64000)",
+        ),
+        (
+            [message([call("toolu_1", "read_file", {"path": "src/pkg/mod.py"})])],
+            ("--max-turns", "1"),
+            "the turn cap of 1 was reached",
+        ),
+    ],
+    ids=["refusal", "max_tokens", "turn cap"],
+)
+def test_an_end_without_a_verdict_tries_no_other_key(
+    workspace: Path, tmp_path: Path, keyed, script, extra, reason
+) -> None:
+    _, made = keyed(script, [])
+    code, result = run_review(workspace, tmp_path, *extra)
+    assert code == 2
+    assert made == [KEYS[0]]
+    assert result["reason"] == reason
+    assert result["summary"].endswith(" key=1/2")
+
+
+def test_one_key_refused_ends_as_before_on_key_1_of_1(
+    workspace: Path, tmp_path: Path, api, capsys
+) -> None:
+    api(REFUSED)
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert result["reason"] == (
+        "API error: AuthenticationError: invalid x-api-key (request req_test1)"
+    )
+    assert result["summary"].endswith(" key=1/1")
+    assert "refused" not in capsys.readouterr().err
+
+
+def test_every_key_refused_is_no_verdict_naming_each_by_position_and_class(
+    workspace: Path, tmp_path: Path, keyed, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    named = " ".join(KEYS)
+    _, made = keyed(
+        [status_error(anthropic.AuthenticationError, 401, named, "authentication_error")],
+        [
+            message([call("toolu_1", "list_files", {"pattern": "**"})], usage=(7, 3, 0, 0)),
+            status_error(anthropic.BadRequestError, 400, CREDIT, "invalid_request_error"),
+        ],
+        [status_error(anthropic.RateLimitError, 429, named, "rate_limit_error")],
+    )
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert made == list(KEYS)
+    assert result["verdict"] is None
+    assert result["reason"] == (
+        "API error on every key: key 1 AuthenticationError, key 2 BadRequestError, "
+        "key 3 RateLimitError"
+    )
+    assert result["usage"]["input_tokens"] == 7
+    assert result["summary"].startswith(f"conventions: no verdict ({result['reason']}) turns=0 ")
+    assert result["summary"].endswith(" key=3/3")
+    written = (tmp_path / "verdict.json").read_text()
+    for key in KEYS:
+        assert key not in captured.out + captured.err + written + summary.read_text()
+
+
+def test_a_blank_line_in_the_secret_is_no_key(workspace: Path, tmp_path: Path, keyed) -> None:
+    secret = f"\n{KEYS[0]}\n\n   \n  {KEYS[1]}  \r\n"
+    _, made = keyed([REFUSED], [message([verdict()])], secret=secret)
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    assert made == list(KEYS[:2])
+    assert result["summary"].endswith(" key=2/2")
+
+
+def test_a_secret_of_blank_lines_holds_no_key(
+    workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "\n  \n")
+    monkeypatch.setattr(fr, "make_client", lambda *key: pytest.fail("no client without a key"))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert result["reason"] == "ANTHROPIC_API_KEY holds no key"
+    assert " key=" not in result["summary"]
+
+
+def test_every_key_of_the_secret_is_redacted_whatever_its_form(
+    workspace: Path, tmp_path: Path, keyed, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    plain = KEYS[2]
+    assert not fr.KEY.search(plain)
+    echoed = f"echo {plain} and {KEYS[0]}"
+    _, made = keyed(
+        [REFUSED], [status_error(anthropic.InternalServerError, 500, echoed, "api_error")], []
+    )
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert made == list(KEYS[:2])
+    assert result["reason"] == (
+        "API error: InternalServerError: echo [redacted] and [redacted] (request req_test1)"
+    )
+    written = (tmp_path / "verdict.json").read_text()
+    for key in KEYS:
+        assert key not in captured.out + captured.err + written + summary.read_text()
+    assert fr.redact(f"a {plain} b") == "a [redacted] b"
 
 
 # --- the sandbox -------------------------------------------------------------------------
