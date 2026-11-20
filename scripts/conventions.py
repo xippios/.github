@@ -1365,15 +1365,18 @@ def _remote_tree(repo: str, commit: str) -> dict[str, str] | None:
 
 def compare_trees(
     workspace: Path, repo: str, earlier: str, head: str
-) -> tuple[list[str] | None, list[str]]:
+) -> tuple[list[str] | None, list[str] | None]:
     """The files whose text or mode differs between ``earlier`` and ``head``, and the head's files.
 
     The two trees are compared, never the history, so a head rebased since compares as one
     pushed on top: the tree of ``earlier`` comes from the checkout where it holds that commit,
-    else from GitHub. The changed files are None where neither serves that tree whole. Both
-    lists are sorted.
+    else from GitHub. The changed files are None where neither serves that tree whole. Where
+    the checkout does not give the head's tree, nothing is compared and both are None: an
+    unread tree is no empty one. The lists are sorted.
     """
-    now = _local_tree(workspace, head) or {}
+    now = _local_tree(workspace, head)
+    if now is None:
+        return None, None
     before = _local_tree(workspace, earlier)
     if before is None:
         before = _remote_tree(repo, earlier)
@@ -1385,10 +1388,11 @@ def compare_trees(
     return changed, sorted(now)
 
 
-def run_from_verdict(path: Path) -> EarlierRun:
+def run_from_verdict(path: Path, repo: str, pr: int) -> EarlierRun:
     """The run that the verdict file of an earlier dry run carries (``dry-run --earlier``).
 
-    The head it judged and its findings; PrepareError where it names neither.
+    The head it judged and its findings; PrepareError where it names neither, where that run
+    returned no verdict, or where it judged another pull request than ``repo``#``pr``.
     """
     problem = PrepareError(
         "--earlier names no verdict file with the head it judged and its findings"
@@ -1403,6 +1407,12 @@ def run_from_verdict(path: Path) -> EarlierRun:
         raise problem
     if any(finding_problem(finding) for finding in findings):
         raise problem
+    if data.get("verdict") not in VERDICTS:
+        raise PrepareError("--earlier names the verdict file of a run that returned no verdict")
+    if data.get("repo") != repo or data.get("pr") != pr:
+        raise PrepareError(
+            f"--earlier names the verdict file of another pull request than {repo}#{pr}"
+        )
     return EarlierRun(head, findings)
 
 
@@ -1449,7 +1459,13 @@ def write_earlier(
         f"finding{'' if count == 1 else 's'}",
         summary,
     )
-    if changed is None:
+    if head_files is None:
+        _notice(
+            "conventions: the head's tree could not be read; the files are not compared with "
+            "the head the run before judged",
+            summary,
+        )
+    elif changed is None:
         _notice(
             f"conventions: the head the run before judged, {run.head}, could not be read; the "
             "files are not compared with it",
@@ -1463,7 +1479,7 @@ def write_earlier(
         moved = None
         if changed is not None and path in changed:
             moved = True
-        elif changed is not None and path in head_files:
+        elif changed is not None and head_files is not None and path in head_files:
             moved = False
         findings.append({"number": number, **finding, "file_changed": moved})
     earlier = {"head": run.head, "findings": findings, "decisions": opener_decisions(data)}
@@ -1920,11 +1936,6 @@ def earlier_problem(args: Mapping[str, object], earlier: EarlierRun | None) -> s
                 return "an open one names the finding of this review that carries it"
             if not 1 <= carried <= total:
                 return "an open one names the finding of this review that carries it"
-            if reason.strip() and not earlier.decisions:
-                return (
-                    "an open one gives a reason only against a decision of the opener, and the "
-                    "pull request holds none"
-                )
         elif carried is not None:
             return "finding must be null unless the state is open"
         if state == "decided" and not earlier.decisions:
@@ -1935,12 +1946,28 @@ def earlier_problem(args: Mapping[str, object], earlier: EarlierRun | None) -> s
             f"earlier must give each of the {count} findings of the run before, numbered 1 to "
             f"{count}, one state"
         )
+    # An earlier finding that blocked stops blocking only as fixed, or with the judge's
+    # reason, which the comment prints: decided, or open on a finding that does not block.
     for entry in entries:
         blocked = earlier.findings[entry["number"] - 1]["blocking"]
-        if entry["state"] == "decided" and blocked and not entry["reason"].strip():
+        reason = entry["reason"].strip()
+        if entry["state"] == "decided" and blocked and not reason:
             return (
                 "a decided one that blocked gives in reason why the opener's decision shows that "
                 "no written rule is broken"
+            )
+        if entry["state"] != "open":
+            continue
+        if blocked and not findings[entry["finding"] - 1]["blocking"]:
+            if not reason:
+                return (
+                    "an open one that blocked, carried by a finding that does not block, gives "
+                    "in reason why it no longer blocks"
+                )
+        elif reason and not earlier.decisions:
+            return (
+                "an open one gives a reason only against a decision of the opener, and the "
+                "pull request holds none"
             )
     return None
 
@@ -1965,18 +1992,33 @@ def became(finding: Mapping[str, object]) -> str:
     words = "Open."
     if isinstance(carried, int) and not isinstance(carried, bool):
         words = f"Open: finding {carried} above."
-    return (
-        f"{words} The opener decided otherwise, and the rule stands: {reason}" if reason else words
-    )
+    if not reason:
+        return words
+    if finding.get("unblocked"):
+        return f"{words} It blocked before and no longer blocks: {reason}"
+    return f"{words} The opener decided otherwise, and the rule stands: {reason}"
 
 
 def earlier_outcome(
-    earlier: EarlierRun | None, entries: Sequence[Mapping[str, object]]
+    earlier: EarlierRun | None,
+    entries: Sequence[Mapping[str, object]],
+    findings: Sequence[Mapping[str, object]] = (),
 ) -> dict[str, object] | None:
-    """The run before for the comment: its head, and its findings each with its state."""
+    """The run before for the comment: its head, and its findings each with its state.
+
+    ``unblocked`` marks one that blocked and is carried by a finding of ``findings`` that
+    does not block, so the comment says it blocked before.
+    """
     if earlier is None:
         return None
     states = {entry["number"]: entry for entry in entries}
+    unblocked = {
+        number
+        for number, finding in enumerate(earlier.findings, 1)
+        if finding["blocking"]
+        and states[number]["state"] == "open"
+        and not findings[states[number]["finding"] - 1]["blocking"]
+    }
     return {
         "head": earlier.head,
         "findings": [
@@ -1985,6 +2027,7 @@ def earlier_outcome(
                 "state": states[number]["state"],
                 "finding": states[number]["finding"],
                 "reason": states[number]["reason"],
+                **({"unblocked": True} if number in unblocked else {}),
             }
             for number, finding in enumerate(earlier.findings, 1)
         ],
@@ -2021,6 +2064,8 @@ def settled(finding: Mapping[str, object], material: Material, sandbox: Sandbox)
         path = Path(relative).as_posix()
         if material.changed is not None and path in material.changed:
             out["since"] = "changed"
+        elif material.head_files is None:
+            out["since"] = "not compared"
         elif path in material.head_files:
             out["since"] = "not compared" if material.changed is None else "unchanged"
     return out
@@ -2111,7 +2156,10 @@ class Outcome:
     # The run before, for the Verdict step: its head and its findings, each with the state the
     # review gave it (.github#95); None on a first run and without a verdict.
     earlier: dict[str, object] | None = None
-    # The head the review judged, so a later dry run can take this file as its run before.
+    # The pull request and the head the review judged, so a later dry run can take this file
+    # as its run before, and only on that pull request.
+    repo: str | None = None
+    pr: int | None = None
     head: str | None = None
 
     @property
@@ -2183,6 +2231,8 @@ class Outcome:
             "range": self.range,
             "documents": list(self.documents),
             "earlier": self.redacted_earlier(),
+            "repo": self.repo,
+            "pr": self.pr,
             "head": self.head,
             "summary": self.summary_line(),
         }
@@ -2226,7 +2276,8 @@ class Material:
     earlier: EarlierRun | None = None
     changed: frozenset[str] | None = None
     # The files of the head's tree: only one of them is marked unchanged or not compared.
-    head_files: frozenset[str] = frozenset()
+    # None where the checkout did not give that tree: every file named is then not compared.
+    head_files: frozenset[str] | None = frozenset()
 
 
 def _label(path: Path, workspace: Path) -> str:
@@ -2293,7 +2344,7 @@ def load_material(workspace: Path, review: Path) -> Material:
 
 def _load_earlier(
     review: Path, label: str
-) -> tuple[EarlierRun | None, frozenset[str] | None, frozenset[str]]:
+) -> tuple[EarlierRun | None, frozenset[str] | None, frozenset[str] | None]:
     """The run before, the files changed since and the head's files.
 
     From ``earlier.json`` and ``changed.json``; none where prepare wrote none.
@@ -2313,8 +2364,8 @@ def _load_earlier(
             and isinstance(compared["compared"], bool)
             and isinstance(files, list)
             and all(isinstance(path, str) for path in files)
-            and isinstance(head_files, list)
-            and all(isinstance(path, str) for path in head_files)
+            and (head_files is None or isinstance(head_files, list))
+            and all(isinstance(path, str) for path in head_files or [])
             and isinstance(decisions, list)
             and not any(finding_problem(finding) for finding in findings)
         )
@@ -2325,7 +2376,7 @@ def _load_earlier(
     return (
         EarlierRun(head, findings, len(decisions)),
         frozenset(files) if compared["compared"] else None,
-        frozenset(head_files),
+        None if head_files is None else frozenset(head_files),
     )
 
 
@@ -2531,7 +2582,7 @@ def _loop(
                     blocked = any(f["blocking"] for f in outcome.findings)
                     outcome.verdict = "not ready" if blocked else str(call.input["verdict"])
                     outcome.earlier = earlier_outcome(
-                        material.earlier, call.input.get("earlier") or []
+                        material.earlier, call.input.get("earlier") or [], outcome.findings
                     )
                     return
                 answer, is_error = f"invalid verdict: {problem}; call submit_verdict again", True
@@ -2584,7 +2635,7 @@ def review(
         sandbox = Sandbox(material.workspace, hidden)
         outcome.findings = [settled(f, material, sandbox) for f in outcome.findings]
     outcome.range = {"release": material.release, "since": material.since, "tag": material.tag}
-    outcome.head = material.head
+    outcome.repo, outcome.pr, outcome.head = material.repo, material.pr, material.head
     outcome.documents = [label for label, _, _ in material.documents]
     return outcome
 
@@ -2617,7 +2668,11 @@ def _prepare(args: argparse.Namespace, summary: str | None) -> tuple[Path, int]:
     if not REPO_NAME.fullmatch(args.repo):
         raise PrepareError("--repo must be owner/name")
     # A bad --earlier costs no clone.
-    earlier = run_from_verdict(args.earlier) if getattr(args, "earlier", None) else None
+    earlier = (
+        run_from_verdict(args.earlier, args.repo, args.pr)
+        if getattr(args, "earlier", None)
+        else None
+    )
     base, head, release = _facts(args)
     if args.workdir is None:
         workspace = args.workspace

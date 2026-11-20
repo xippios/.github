@@ -479,9 +479,12 @@ jobs:
               words = "Open."
               if isinstance(carried, int) and not isinstance(carried, bool):
                   words = f"Open: finding {carried} above."
-              if reason:
-                  return f"{words} The opener decided otherwise, and the rule stands: {reason}"
-              return words
+              if not reason:
+                  return words
+              # One that blocked, carried by a finding that does not block: the judge's reason.
+              if finding.get("unblocked"):
+                  return f"{words} It blocked before and no longer blocks: {reason}"
+              return f"{words} The opener decided otherwise, and the rule stands: {reason}"
 
 
           lines = [MARKER, lead, "", f"Judged: {what}{against}."]

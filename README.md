@@ -233,7 +233,10 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     which the comment prints with it; where the rule is still broken it is open, carried into
     this run as a finding, and the comment says that the opener decided otherwise and why the
     rule stands. The script refuses `decided` on a finding that blocked without that reason,
-    so the judged party does not switch a required check off by a comment. The comment lists
+    so the judged party does not switch a required check off by a comment. A finding that
+    blocked stops blocking only as fixed or with the judge's reason: carried by a finding
+    that does not block, it needs one too, and the comment says that it blocked before and
+    why it no longer does. The comment lists
     them under the new findings and says of each new finding whether its file changed since
     the head judged before; where GitHub no longer serves that head whole, it says the file
     was not compared, since that head could not be read, and never guesses. Only a file the
@@ -463,9 +466,10 @@ prints the summary line and the findings, each with the document it goes
 against. A README that links no documents ends it there, green, as in the workflow. It reads
 the run before from the check's last comment as the workflow does, since that comment is the
 workflow token's whatever `gh`'s login, and posts nothing. `--earlier <file>` takes the verdict
-file that an earlier dry run wrote with `--out`, which names the head that run judged, and
-stands for the check's comment, so a dry run judges as a later run before any comment carries
-the hidden line. It prints the states and the marks as the comment shows them, after the
+file that an earlier dry run wrote with `--out`, which names the pull request and the head
+that run judged, and stands for the check's comment, so a dry run judges as a later run before
+any comment carries the hidden line. It refuses, before any clone, the file of a run that
+returned no verdict and that of another pull request. It prints the states and the marks as the comment shows them, after the
 findings. It needs
 `gh` signed in, whose login stands for the workflow's token, and a `DOCUMENTS_READ_TOKEN` in the
 environment of the command is read as a private caller's workflow reads the secret, whatever the
