@@ -188,14 +188,10 @@ RAW_ACCEPT = "Accept: application/vnd.github.raw+json"
 
 REPO_NAME = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
-# A release PR by its label, or by its title (docs/style/pulls.md#release-pr): `<version>
-# Release`, and `release: <version>` until every workspace has adopted coordinate-core 0.7.4
-# (coordinate-core#791, coordinate-core#805), as the core's `RELEASE_TITLE` reads them; the
-# workflow's gate matches the same forms.
+# A release PR by its label, or by its title (docs/style/pulls.md#release-pr), `<version>
+# Release` alone: the job's condition admits a title by its end, and the gate matches it whole.
 RELEASE_LABEL = "release"
-RELEASE_TITLE = re.compile(
-    r"release: v?(?P<old>\d+\.\d+\.\d+(?:[-+.][0-9A-Za-z.+-]*)?)|(?P<new>\d+\.\d+\.\d+) Release"
-)
+RELEASE_TITLE = re.compile(r"(?P<version>\d+\.\d+\.\d+) Release")
 # A version as the review names it: a version's characters only, so neither a title nor a
 # `pyproject.toml` brings other text into the first message.
 VERSION = re.compile(r"\d[0-9A-Za-z.+!-]{0,63}")
@@ -229,8 +225,8 @@ FINDING_KEYS = ("document", "file", "line", "blocking", "text")
 STATES = ("fixed", "decided", "open")
 # The check's comment (docs/style/reviews.md#conventions-check), as the Verdict step finds the
 # comment it edits: the workflow token's, which gh names `github-actions`, opening with the
-# marker, the old form's too.
-CHECK_MARKERS = ("<!-- style: reviews/conventions -->", "<!-- conventions -->")
+# marker of the style.
+CHECK_MARKERS = ("<!-- style: reviews/conventions -->",)
 CHECK_AUTHORS = frozenset({"github-actions", "github-actions[bot]"})
 # The comment's hidden last line, which the Verdict step writes: the head the run judged and its
 # findings, as JSON with `<` and `>` escaped, so no text ends the HTML comment early.
@@ -668,14 +664,15 @@ def pull_request_facts(repo: str, pr: int) -> tuple[str, str, str, list[str]]:
 def release_version(title: str) -> str | None:
     """The version ``title`` names as a release PR's; None for any other title.
 
-    Either form of ``RELEASE_TITLE`` (docs/style/pulls.md#release-pr), without its ``v``.
+    The one form of ``RELEASE_TITLE`` (docs/style/pulls.md#release-pr), matched by the whole
+    title stripped of white space at its ends.
     """
     found = RELEASE_TITLE.fullmatch(title.strip())
-    return (found.group("old") or found.group("new")) if found else None
+    return found.group("version") if found else None
 
 
 def is_release_title(title: str) -> bool:
-    """Whether ``title`` names a release PR, ``<version> Release`` or ``release: <version>``."""
+    """Whether ``title`` names a release PR: ``<version> Release``."""
     return release_version(title) is not None
 
 
@@ -2704,7 +2701,7 @@ def gate(summary: str | None) -> int:
     if mode == "release" and not release:
         _say(
             "conventions: not a release PR; with WORKFLOW_CONVENTIONS_MODE release the review runs "
-            "on a PR labeled `release` or titled `<version> Release` or `release: <version>`",
+            "on a PR labeled `release` or titled `<version> Release`",
             summary,
         )
         _output("run", "false")
@@ -2863,7 +2860,7 @@ def verdict(summary: str | None) -> int:
     verdict: the job summary carries the script's line, and the check fails with no comment.
     A verdict, ``ready`` included, goes to the job summary, the log and one sticky comment
     (C57 as amended by coordinate-core#364, .github#36): the last comment the token wrote is
-    edited where it is the check's, by its marker, the old form's too, and the comment is
+    edited where it is the check's, by the marker of the style, and the comment is
     created where the token wrote none; after another workflow's comment, or where the
     comments could not be read, a new one is posted, so another workflow's comment is never
     overwritten. A failed post leaves its reason, redacted, in the job summary and a warning

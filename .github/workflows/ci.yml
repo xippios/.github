@@ -1,7 +1,3 @@
-# CI of xippios/.github. The job `ci` is the check the organization's `GitHub Main` ruleset
-# requires on this repository's main (README.md, Rulesets). It fails as well when the spelling
-# check (spelling.yml over this repository's files, C79) did not pass, so the ruleset needs no
-# second required check.
 name: CI
 
 on:
@@ -21,8 +17,6 @@ jobs:
   ci:
     name: ci
     needs: spelling
-    # Runs when the spelling check failed too, and fails at its last step: a job skipped because
-    # a need failed would count as passed for the ruleset.
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -34,13 +28,9 @@ jobs:
         with:
           version: "0.13.5"
           enable-cache: false
-      # The family's ruff (the rev of the template's ruff-pre-commit hook).
       - run: uvx ruff@0.17.1 check scripts
       - run: uvx ruff@0.17.1 format --check scripts
-      # The review script's SDK at the version conventions.yml runs it with, and the codespell
-      # spelling.yml pins.
       - run: uv run --no-project --with pytest==9.1.1 --with anthropic==2.3.0 --with codespell==2.4.3 pytest scripts/tests -q
-      # actionlint runs the runner's shellcheck on every `run:` script.
       - run: uvx --from actionlint-py==1.7.12.25 actionlint
       - name: spelling
         if: ${{ needs.spelling.result != 'success' }}
