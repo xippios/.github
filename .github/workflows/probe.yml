@@ -1,0 +1,76 @@
+name: Probe
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+permissions:
+  contents: read
+
+env:
+  MILESTONE_QUERY: >-
+    query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) { milestone(number: $number) { title
+    issues(states: OPEN, first: 100) { totalCount pageInfo { hasNextPage }
+    nodes { number title issueType { name } } } } } }
+  SEARCH_QUERY: >-
+    query($q: String!, $type: SearchType!) { search(query: $q, type: $type, first: 100) {
+    issueCount nodes { ... on Issue { number title issueType { name } } } } }
+  SEARCH_TEXT: 'repo:xippios/.github milestone:".github 0.5.0" type:step state:open'
+  PULL_QUERY: >-
+    query($owner: String!, $name: String!, $number: Int!) {
+    repository(owner: $owner, name: $name) { pullRequest(number: $number) { title merged
+    mergeCommit { oid } milestone { number title } labels(first: 20) { nodes { name } }
+    closingIssuesReferences(first: 50) { nodes { number state issueType { name } } } } } }
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      checks: read
+      issues: read
+    steps:
+      - name: calls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "== 1 graphql milestone issues"
+          gh api graphql --include -f query="$MILESTONE_QUERY" -f owner=xippios -f name=.github -F number=5 || echo "== 1 exit $?"
+          echo "== 2 graphql search ISSUE"
+          gh api graphql --include -f query="$SEARCH_QUERY" -f q="$SEARCH_TEXT" -f type=ISSUE || echo "== 2 exit $?"
+          echo "== 2b graphql search ISSUE_ADVANCED"
+          gh api graphql --include -f query="$SEARCH_QUERY" -f q="$SEARCH_TEXT" -f type=ISSUE_ADVANCED || echo "== 2b exit $?"
+          echo "== 3 rest milestone issues"
+          gh api --include "repos/xippios/.github/issues?milestone=5&state=open&per_page=100" || echo "== 3 exit $?"
+          echo "== 4 rest pulls of a commit"
+          gh api --include repos/xippios/.github/commits/817ace637416e2a3ae83cc19ed1d2959ea7f1cc0/pulls || echo "== 4 exit $?"
+          echo "== 5 graphql pull request"
+          gh api graphql --include -f query="$PULL_QUERY" -f owner=xippios -f name=.github -F number=124 || echo "== 5 exit $?"
+          echo "== end"
+
+  control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: calls
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "== 1 graphql milestone issues"
+          gh api graphql --include -f query="$MILESTONE_QUERY" -f owner=xippios -f name=.github -F number=5 || echo "== 1 exit $?"
+          echo "== 2 graphql search ISSUE"
+          gh api graphql --include -f query="$SEARCH_QUERY" -f q="$SEARCH_TEXT" -f type=ISSUE || echo "== 2 exit $?"
+          echo "== 2b graphql search ISSUE_ADVANCED"
+          gh api graphql --include -f query="$SEARCH_QUERY" -f q="$SEARCH_TEXT" -f type=ISSUE_ADVANCED || echo "== 2b exit $?"
+          echo "== 3 rest milestone issues"
+          gh api --include "repos/xippios/.github/issues?milestone=5&state=open&per_page=100" || echo "== 3 exit $?"
+          echo "== 4 rest pulls of a commit"
+          gh api --include repos/xippios/.github/commits/817ace637416e2a3ae83cc19ed1d2959ea7f1cc0/pulls || echo "== 4 exit $?"
+          echo "== 5 graphql pull request"
+          gh api graphql --include -f query="$PULL_QUERY" -f owner=xippios -f name=.github -F number=124 || echo "== 5 exit $?"
+          echo "== end"
