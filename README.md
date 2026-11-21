@@ -189,7 +189,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     `job.workflow_sha`, the commit of the workflow file that defines the job: for a caller,
     the commit its `uses:` resolved to (`@main`). The review no longer runs on this
     repository's own pull requests (C58). actionlint 1.7.12 does not know the property yet, so
-    `.github/actionlint.yaml` ignores that one error in `conventions.yml`.
+    `.github/actionlint.yaml` ignores that one error in `conventions.yml` and in
+    `conventions-range.yml`, whose gate checks the script out the same way.
   - **Identity**: the review runs on the workflow token (`github.token`), so its comment
     comes from `github-actions[bot]`. It did so under the action too, whose Claude GitHub
     App token exchange skips every pull request whose calling workflow differs from the
@@ -302,17 +303,50 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     result or the prompt, and `conventions.py verdict` redacts anything that looks like a key
     or a GitHub token from the summary and the comment.
 - **`.github/workflows/conventions-range.yml`**, the conventions review of a range of commits,
-  judges no range yet, check `range / range`: its one job, `range`, has a false condition, so
-  no runner starts and its check reports as skipped on every run. It runs on a push to `main`
-  and on a dispatch, the events of the trigger file `conventions.yml` that are no pull
-  request's (the trigger files, under the wiring below). The calling file hands over the secrets
-  `ANTHROPIC_API_KEY` and `DOCUMENTS_READ_TOKEN`, both optional, as to `conventions.yml`, and
-  no input. Permissions: `contents: read`, `pull-requests: write`, `checks: read`,
-  `issues: read`. The variable `WORKFLOW_CONVENTIONS` switches it (the switch, under the wiring
-  below).
+  judges no range yet, check `range / range`, which reports as skipped on every run, and tells
+  first whether the merge that made a commit completes a package, check `range / gate`. It runs
+  on a push to `main` and on a dispatch, the events of the trigger file `conventions.yml` that
+  are no pull request's (the trigger files, under the wiring below). The calling file hands over
+  the secrets `ANTHROPIC_API_KEY` and `DOCUMENTS_READ_TOKEN`, both optional, as to
+  `conventions.yml`, and no input. Permissions: `contents: read`, `pull-requests: write`,
+  `checks: read`, `issues: read`. The variable `WORKFLOW_CONVENTIONS` switches it (the switch,
+  under the wiring below).
 
   A trigger file grants these permissions from its start, since a caller that grants less than
-  a called workflow asks for fails at its start.
+  a called workflow asks for fails at its start. The job `range` has a false condition, so no
+  runner starts for it until it gets its logic.
+  - **The gate** (`conventions.py range-gate`): the job `gate` runs on a push and on a dispatch
+    alone, by its own condition, and needs no key and makes no model call. It checks the script
+    out as `conventions.yml` does and runs it on the runner's `python3` with `-I`, on the
+    standard library and `gh`, with the workflow's token, which the job narrows to
+    `contents: read`, `pull-requests: read` and `issues: read`. The job times out after 5
+    minutes. It writes `run`, `true` where the range is to be judged, and `pr`, the number of
+    the pull request whose merge made the commit or nothing, to its outputs, and one sentence
+    of what it decided and why to the log and the job summary.
+  - **A dispatch** always lets the range be judged, on any branch, and `pr` names the pull
+    request whose merge made the commit where there is one.
+  - **A push** is judged where the merge that made it completes a package, read in this order.
+    A push to a branch other than the default branch is not judged. The pull request is the
+    merged one among the commit's pull requests whose merge commit is the pushed commit, and
+    a push without one is not judged. A release pull request, labeled `release` or titled
+    `<version> Release`, is not judged, since its own review judged it, and neither is a pull
+    request without a milestone. Then the gate reads the open issues of the milestone, keeps
+    its steps and takes out those that the pull request closes: a step left holds the range,
+    and the sentence names it; with none left, or none open at all, the range is judged.
+  - **A step** is an open issue of the milestone whose type is `step`, compared without case.
+    An issue that carries no type is a step where its title has the step form of a coordinate
+    repository's issues, a version, the word `Step`, a number or a number and one follow-up
+    number such as `3.1`, and a colon, so a package never looks complete because the types
+    could not be read.
+  - **The closing issues**: GitHub closes the issues that a merged pull request closes seconds
+    after the merge, so a step that the pull request closes counts as closed though the answer
+    still shows it open, and the gate waits for nothing. Only the closing issues of the calling
+    repository count, and the gate reads every page of them.
+  - **The reads**: the open issues are read from the milestone itself, page by page, never by
+    a search, whose index can lag just after a merge. An error fails closed: a call of `gh`
+    that fails, an answer that does not parse or one of another shape, and a GraphQL answer
+    with errors end the job red with a line that names the call and the class of the error,
+    never its message, and `run` is never `true` then.
 - **`.github/workflows/site-tests.yml`** runs a site's suite through the host xippios-web, the
   only test harness of the web platform, check `tests / tests`. It runs on a pull request and
   on a push to `main`, the events of the `ci.yml` that web-template renders into a site, which
@@ -448,6 +482,7 @@ skipped and passing on a pull request that condition skips
 | `spelling.yml` | `spelling` | `spelling / spelling` |
 | `conventions.yml` | `conventions` | `conventions / conventions` |
 | `conventions-range.yml` | `range` | `range / range` |
+| `conventions-range.yml` | `range` | `range / gate` |
 | `adr-index.yml` | `adr-index` | `adr-index / adr-index` |
 | `site-tests.yml` | `tests` | `tests / tests` |
 
