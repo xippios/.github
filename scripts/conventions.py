@@ -110,6 +110,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
@@ -2752,6 +2753,14 @@ MAX_PAGES = 50
 HTTP_STATUS = re.compile(r"\(HTTP ([0-9]{3})\)")
 GRAPHQL_TYPE = re.compile(r"[A-Z][A-Z_]{0,63}")
 DISPATCH = "workflow_dispatch"
+# The gate's time (finding 2 of the review of .github#130): a call of gh gets at most
+# GATE_CALL_SECONDS and all of them together GATE_SECONDS, so the gate ends with its line a minute
+# before the job's timeout of five minutes, its checkout included. A test shortens either by its
+# variable, and no value lengthens them.
+GATE_CALL_SECONDS = 30
+GATE_SECONDS = 240
+CALL_LIMIT_ENV = "RANGE_GATE_CALL_SECONDS"
+TOTAL_LIMIT_ENV = "RANGE_GATE_SECONDS"
 MILESTONE_ISSUES = """\
 query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
@@ -2798,23 +2807,65 @@ def _string(value: object) -> str:
     return value
 
 
-def _answer(what: str, args: Sequence[str], *, graphql: bool) -> object:
-    """The parsed answer of one call of ``gh`` reading ``what``.
+def gate_limit(name: str, default: float) -> float:
+    """The limit in seconds that the variable ``name`` sets, never above ``default``.
 
-    A call that does not run or ends with an error, an answer that does not parse and a GraphQL
-    answer with errors raise GateError naming ``what`` and the class of the error alone: its
-    HTTP status, the type of the GraphQL error, or how the answer failed, never the message of
-    the upstream, since the job log is public.
+    A value that is no positive number, or one above ``default``, counts as ``default``, so no
+    environment lets the gate outlast its job.
     """
+    try:
+        value = float(os.environ.get(name, ""))
+    except ValueError:
+        return float(default)
+    return value if 0 < value <= default else float(default)
+
+
+class Budget:
+    """The time of the gate's reads, counted from the gate's start.
+
+    Each call takes at most ``call`` seconds, and all of them together at most ``total``.
+    """
+
+    def __init__(self, call: float, total: float) -> None:
+        """Start the clock of ``total`` seconds now."""
+        self.call = call
+        self.total = total
+        self.deadline = time.monotonic() + total
+
+    def ran_out(self) -> str:
+        """The class of the error where the gate's time ran out."""
+        return f"the gate's time ran out after {self.total:g} seconds"
+
+    def seconds(self, what: str) -> float:
+        """The time the next call reading ``what`` may take; GateError where none is left."""
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise GateError(f"reading {what} failed: {self.ran_out()}")
+        return min(self.call, left)
+
+
+def _answer(what: str, args: Sequence[str], *, graphql: bool, budget: Budget) -> object:
+    """The parsed answer of one call of ``gh`` reading ``what``, within the time of ``budget``.
+
+    A call that does not run, does not come back in its time or ends with an error, an answer
+    that does not parse and a GraphQL answer with errors raise GateError naming ``what`` and the
+    class of the error alone: its HTTP status, the type of the GraphQL error, or how the call or
+    the answer failed, never the message of the upstream, since the job log is public.
+    """
+    seconds = budget.seconds(what)
     try:
         proc = subprocess.run(
             ["gh", *args],
             capture_output=True,
             check=False,
             env=_env(),
-            timeout=SUBPROCESS_TIMEOUT,
+            timeout=seconds,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        late = budget.ran_out() if seconds < budget.call else None
+        late = late or f"gh gave no answer within {seconds:g} seconds"
+        raise GateError(f"reading {what} failed: {late}") from exc
+    except OSError as exc:
         raise GateError(f"reading {what} failed: gh did not run ({type(exc).__name__})") from exc
     try:
         data = json.loads(proc.stdout)
@@ -2848,7 +2899,7 @@ class MergedPull(NamedTuple):
     milestone: tuple[int, str] | None
 
 
-def merged_pull(repo: str, sha: str) -> MergedPull | None:
+def merged_pull(repo: str, sha: str, budget: Budget) -> MergedPull | None:
     """The merged pull request whose merge commit is ``sha``; None where no merge made it.
 
     The pull requests of a commit include the open ones that hold it, so only a merged one whose
@@ -2858,7 +2909,7 @@ def merged_pull(repo: str, sha: str) -> MergedPull | None:
     found: list[object] = []
     for page in range(1, MAX_PAGES + 1):
         endpoint = f"repos/{repo}/commits/{sha}/pulls?per_page={PAGE_SIZE}&page={page}"
-        data = _answer(what, ["api", endpoint], graphql=False)
+        data = _answer(what, ["api", endpoint], graphql=False, budget=budget)
         if not isinstance(data, list):
             raise _shape(what)
         found += data
@@ -2884,7 +2935,7 @@ def merged_pull(repo: str, sha: str) -> MergedPull | None:
 
 
 def _connection(
-    what: str, query: str, repo: str, number: int, path: Sequence[str]
+    what: str, query: str, repo: str, number: int, path: Sequence[str], budget: Budget
 ) -> list[dict[str, object]]:
     """Every node of a GraphQL connection under ``data.repository`` and ``path``, page by page.
 
@@ -2899,7 +2950,7 @@ def _connection(
         args += ["-f", f"name={name}", "-F", f"number={number}"]
         if cursor is not None:
             args += ["-f", f"cursor={cursor}"]
-        data: object = _answer(what, args, graphql=True)
+        data: object = _answer(what, args, graphql=True, budget=budget)
         for key in ("data", "repository", *path):
             data = data.get(key) if isinstance(data, dict) else None
         info = data.get("pageInfo") if isinstance(data, dict) else None
@@ -2931,7 +2982,7 @@ def is_step(title: str, issue_type: object) -> bool:
     return _string(issue_type.get("name")).lower() == STEP_TYPE
 
 
-def open_steps(repo: str, milestone: int) -> list[int]:
+def open_steps(repo: str, milestone: int, budget: Budget) -> list[int]:
     """The numbers of the milestone's open steps, read from the milestone itself.
 
     Never by a search, whose index can lag just after a merge.
@@ -2939,7 +2990,8 @@ def open_steps(repo: str, milestone: int) -> list[int]:
     what = "the open issues of the milestone"
     steps: set[int] = set()
     try:
-        for node in _connection(what, MILESTONE_ISSUES, repo, milestone, ("milestone", "issues")):
+        path = ("milestone", "issues")
+        for node in _connection(what, MILESTONE_ISSUES, repo, milestone, path, budget):
             number = _number(node.get("number"))
             if is_step(_string(node.get("title")), node.get("issueType")):
                 steps.add(number)
@@ -2948,7 +3000,7 @@ def open_steps(repo: str, milestone: int) -> list[int]:
     return sorted(steps)
 
 
-def closing_issues(repo: str, pr: int) -> set[int]:
+def closing_issues(repo: str, pr: int, budget: Budget) -> set[int]:
     """The numbers of the issues of ``repo`` that the pull request closes, every page read.
 
     A pull request may close an issue of another repository, whose number does not count here.
@@ -2957,7 +3009,7 @@ def closing_issues(repo: str, pr: int) -> set[int]:
     path = ("pullRequest", "closingIssuesReferences")
     closed: set[int] = set()
     try:
-        for node in _connection(what, CLOSING_ISSUES, repo, pr, path):
+        for node in _connection(what, CLOSING_ISSUES, repo, pr, path, budget):
             owner = node.get("repository")
             if not isinstance(owner, dict):
                 raise ShapeError
@@ -2983,18 +3035,18 @@ NOT_JUDGED = "range gate: no run, since"
 
 
 def range_decision(
-    event: str, repo: str, sha: str, ref: str, default: str
+    event: str, repo: str, sha: str, ref: str, default: str, budget: Budget
 ) -> tuple[bool, str, str]:
     """Whether the range is judged, the pull request that made ``sha``, and the sentence why.
 
     The pull request is its number, or ``''`` where no merge made the commit. A read that fails
-    raises GateError.
+    or outlasts ``budget`` raises GateError.
     """
     if not (REPO_NAME.fullmatch(repo) and SHA.fullmatch(sha)):
         raise GateError("the event names no repository and commit that the gate can read")
     short = f"the commit {sha[:7]}"
     if event == DISPATCH:
-        pull = merged_pull(repo, sha)
+        pull = merged_pull(repo, sha, budget)
         if pull is None:
             why = f"a dispatch always judges it; no pull request's merge made {short}"
             return True, "", f"{JUDGED} {why}."
@@ -3009,7 +3061,7 @@ def range_decision(
             f"`{printable(default)}`"
         )
         return False, "", f"{NOT_JUDGED} {why}."
-    pull = merged_pull(repo, sha)
+    pull = merged_pull(repo, sha, budget)
     if pull is None:
         return False, "", f"{NOT_JUDGED} no pull request's merge made {short}."
     pr = str(pull.number)
@@ -3019,10 +3071,10 @@ def range_decision(
         return False, pr, f"{NOT_JUDGED} #{pr} carries no milestone."
     number, title = pull.milestone
     milestone = f"the milestone `{printable(title)}`"
-    steps = open_steps(repo, number)
+    steps = open_steps(repo, number, budget)
     if not steps:
         return True, pr, f"{JUDGED} {milestone} of #{pr} has no open step."
-    closed = closing_issues(repo, pull.number)
+    closed = closing_issues(repo, pull.number, budget)
     left = [step for step in steps if step not in closed]
     if left:
         why = f"{milestone} keeps the open {_steps(left)}, which #{pr} does not close"
@@ -3045,7 +3097,15 @@ def range_gate(summary: str | None) -> int:
     ``is_step``): GitHub closes the issues that a merged pull request closes seconds after the
     merge, so a step that the pull request closes counts as closed though the answer still shows
     it open (``closing_issues``).
+
+    A call of gh gets at most GATE_CALL_SECONDS and all of them together GATE_SECONDS
+    (``Budget``). ``run`` is written last, after the sentence and ``pr``, so an error after the
+    decision fails the job and never leaves ``run`` as ``true``; where the gate cannot decide,
+    ``run`` is ``false`` before anything else is written.
     """
+    budget = Budget(
+        gate_limit(CALL_LIMIT_ENV, GATE_CALL_SECONDS), gate_limit(TOTAL_LIMIT_ENV, GATE_SECONDS)
+    )
     try:
         run, pr, line = range_decision(
             os.environ.get("EVENT", ""),
@@ -3053,15 +3113,16 @@ def range_gate(summary: str | None) -> int:
             os.environ.get("SHA", ""),
             os.environ.get("REF", ""),
             os.environ.get("DEFAULT_BRANCH", ""),
+            budget,
         )
     except GateError as exc:
         _output("run", "false")
         _output("pr", "")
-        _say(f"range gate: no run, since {exc}.", summary)
+        _say(f"{NOT_JUDGED} {exc}.", summary)
         return 1
-    _output("run", "true" if run else "false")
-    _output("pr", pr)
     _say(line, summary)
+    _output("pr", pr)
+    _output("run", "true" if run else "false")
     return 0
 
 
@@ -3392,7 +3453,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         try:
             return range_gate(summary)
         except Exception as exc:  # The log is public: the class only.
-            _notice(f"range gate: internal error: {type(exc).__name__}", summary)
+            # The summary itself may be what failed: the line reaches the log at least.
+            with contextlib.suppress(OSError):
+                _notice(f"range gate: internal error: {type(exc).__name__}", summary)
             return 1
     if args.command in ("gate", "verdict"):
         try:

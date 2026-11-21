@@ -322,7 +322,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     `contents: read`, `pull-requests: read` and `issues: read`. The job times out after 5
     minutes. It writes `run`, `true` where the range is to be judged, and `pr`, the number of
     the pull request whose merge made the commit or nothing, to its outputs, and one sentence
-    of what it decided and why to the log and the job summary.
+    of what it decided and why to the log and the job summary. `run` is written last, after
+    the sentence and `pr`, so an error after the decision fails the job and never leaves it
+    `true`.
   - **A dispatch** always lets the range be judged, on any branch, and `pr` names the pull
     request whose merge made the commit where there is one.
   - **A push** is judged where the merge that made it completes a package, read in this order.
@@ -343,10 +345,13 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     still shows it open, and the gate waits for nothing. Only the closing issues of the calling
     repository count, and the gate reads every page of them.
   - **The reads**: the open issues are read from the milestone itself, page by page, never by
-    a search, whose index can lag just after a merge. An error fails closed: a call of `gh`
-    that fails, an answer that does not parse or one of another shape, and a GraphQL answer
-    with errors end the job red with a line that names the call and the class of the error,
-    never its message, and `run` is never `true` then.
+    a search, whose index can lag just after a merge. A call of `gh` gets at most 30 seconds
+    and all of them together 240 seconds, so the gate ends with its line a minute before the
+    job's timeout, and each read stops at its fiftieth page. An error fails closed: a call of
+    `gh` that fails, does not run or does not come back in its time, an answer that does not
+    parse or one of another shape, a GraphQL answer with errors and a read past its fiftieth
+    page end the job red with a line that names the call and the class of the error, never
+    its message, and `run` is never `true` then.
 - **`.github/workflows/site-tests.yml`** runs a site's suite through the host xippios-web, the
   only test harness of the web platform, check `tests / tests`. It runs on a pull request and
   on a push to `main`, the events of the `ci.yml` that web-template renders into a site, which
