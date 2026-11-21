@@ -168,8 +168,16 @@ jobs:
       group: conventions-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
     steps:
-      # The mode, the label and the title decide first, so a pull request that no mode reviews
-      # costs no checkout, no key and no API call (C57 as amended by coordinate-core#364).
+      - name: Check out the script for the gate from xippios/.github
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: xippios/.github
+          ref: ${{ job.workflow_sha }}
+          path: .sdk-gates
+          persist-credentials: false
+
+      # The mode, the label and the title decide first, so a pull request that no mode reviews costs
+      # no checkout of its head, no key and no API call (C57 as amended by coordinate-core#364).
       - name: Gate
         id: gate
         env:
@@ -184,63 +192,7 @@ jobs:
           # Whether a public caller passed the read token, which its check does not use
           # (.github#83): a boolean, never the token.
           READ_TOKEN_UNUSED: ${{ secrets.DOCUMENTS_READ_TOKEN != '' && github.event.repository.private != true }}
-        run: |
-          # A GitHub App's login ends in [bot]; Dependabot has its own branch below.
-          app() {
-            case "$1" in
-              "dependabot[bot]") return 1 ;;
-              *"[bot]") return 0 ;;
-              *) return 1 ;;
-            esac
-          }
-          # The caller's WORKFLOW_CONVENTIONS_MODE, `release` when neither the repository nor the
-          # organization sets it, read without case as the job's condition reads it, so `All`
-          # is `all` in both. The backticks below are Markdown for the summary, not command
-          # substitutions.
-          mode="${MODE:-release}"
-          mode="${mode,,}"
-          case "$mode" in
-            release|all) ;;
-            *)
-              echo "conventions: WORKFLOW_CONVENTIONS_MODE is \`$MODE\`; it is \`release\` or \`all\` (C57)" | tee -a "$GITHUB_STEP_SUMMARY"
-              exit 1
-              ;;
-          esac
-          # A release PR by its label `release`, or by its title (docs/style/pulls.md#release-pr):
-          # `<version> Release`, and `release: <version>` until every workspace has adopted
-          # coordinate-core 0.7.4 (coordinate-core#805), on any branch. scripts/conventions.py
-          # reads the title alike.
-          release=false
-          if [ "$LABELED" = "true" ]; then
-            release=true
-          elif printf '%s\n' "$TITLE" | grep -Eq '^(release: v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.+-]*)?|[0-9]+\.[0-9]+\.[0-9]+ Release)$'; then
-            release=true
-          fi
-          echo "mode=$mode" >> "$GITHUB_OUTPUT"
-          echo "release=$release" >> "$GITHUB_OUTPUT"
-          if [ "$AUTHOR" = "dependabot[bot]" ] && [ "$ACTOR" = "dependabot[bot]" ]; then
-            # shellcheck disable=SC2016
-            echo 'conventions: Dependabot PR, reviewed by `ci` only' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          elif [ "$mode" = "release" ] && [ "$release" != "true" ]; then
-            # shellcheck disable=SC2016
-            echo 'conventions: not a release PR; with WORKFLOW_CONVENTIONS_MODE release the review runs on a PR labeled `release` or titled `<version> Release` or `release: <version>`' | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
-          elif app "$AUTHOR" || app "$ACTOR"; then
-            echo "conventions: a pull request opened or updated by a GitHub App gets no review" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          elif [ "$HAS_KEY" = "true" ]; then
-            echo "run=true" >> "$GITHUB_OUTPUT"
-            if [ "$READ_TOKEN_UNUSED" = "true" ]; then
-              echo "conventions: DOCUMENTS_READ_TOKEN is not used in a public repository, whose review comment and job summary would show what the review quotes from a private document (.github#83)" | tee -a "$GITHUB_STEP_SUMMARY"
-            fi
-          elif [ "$HEAD_REPO" != "$REPO" ]; then
-            echo "conventions: a pull request from a fork gets no secrets; the review cannot run" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          else
-            echo "conventions: ANTHROPIC_API_KEY is empty; the review cannot run. Share the organization secret with this repository (G4)." | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
+        run: python3 -I "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" gate
 
       # The full history brings every branch and tag: the default branch, where the README
       # and its documents are read, and the release tags, where a release's range starts.
@@ -350,199 +302,4 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          python3 -I - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
-          import sys
-
-          MARKER = "<!-- style: reviews/conventions -->"
-          # The marker of the comments before coordinate-core 0.6.4: still the review's.
-          OLD_MARKER = "<!-- conventions -->"
-          # An Anthropic key, a GitHub token of any kind.
-          KEY = re.compile(r"sk-ant-[A-Za-z0-9_-]+|gh[opsur]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+")
-          SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
-          # The hidden last line carries this run's head and findings to the next run, which
-          # scripts/conventions.py reads (`run_state`, .github#95).
-          FIELDS = ("document", "file", "line", "blocking", "text")
-          # Whether a new finding's file changed since the head the run before judged.
-          MARKS = {
-              "unchanged": "Its file is unchanged since the head judged before.",
-              "changed": "Its file changed since the head judged before.",
-              "not compared": (
-                  "Its file was not compared: the head judged before could not be read."
-              ),
-          }
-          PR = os.environ["PR"]
-          REPO = os.environ["REPO"]
-          COMMIT = f"https://github.com/{REPO}/commit/{os.environ['HEAD_SHA']}"
-
-
-          def summary(text):
-              with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as handle:
-                  handle.write(text)
-
-
-          def one_line(value):
-              return " ".join(str(value).split())
-
-
-          def plain(value):
-              return one_line(value).replace("`", "'")
-
-
-          def count(number, noun="finding"):
-              return f"{number} {noun}{'' if number == 1 else 's'}"
-
-
-          def gh(*args, body=None):
-              return subprocess.run(
-                  ["gh", *args, "--repo", REPO], input=body, text=True, capture_output=True,
-                  check=False,
-              )
-
-
-          try:
-              with open(os.environ["RESULT_FILE"], encoding="utf-8") as handle:
-                  result = json.load(handle)
-          except (OSError, ValueError):
-              result = None
-          if not isinstance(result, dict) or result.get("verdict") not in ("ready", "not ready"):
-              line = result.get("summary") if isinstance(result, dict) else None
-              if not isinstance(line, str) or not line.strip():
-                  line = (
-                      "conventions: no verdict (the review wrote no result; see the Prepare "
-                      "and Review steps)"
-                  )
-              text = (
-                  "## conventions: no verdict\n\n"
-                  + KEY.sub("[redacted]", one_line(line))
-                  + "\n\nThe review returned no verdict; the check fails.\n"
-              )
-              summary(text)
-              print(text)
-              sys.exit(1)
-          findings = [f for f in result.get("findings") or [] if isinstance(f, dict)]
-          blocking = sum(1 for f in findings if f.get("blocking"))
-          verdict = "ready" if result.get("verdict") == "ready" and not blocking else "not ready"
-          if verdict != "ready":
-              lead = f"**Blocked.** {count(len(findings))}, {blocking} blocking, at {COMMIT}."
-          elif findings:
-              lead = f"**Findings.** {count(len(findings))}, none blocking, at {COMMIT}."
-          else:
-              lead = f"**Approved.** No findings at {COMMIT}."
-          judged = result.get("range") if isinstance(result.get("range"), dict) else {}
-          documents = result.get("documents") if isinstance(result.get("documents"), list) else None
-          if judged.get("release") and judged.get("tag"):
-              what = f"the release's range from `{plain(judged['tag'])}` to the head"
-          elif judged.get("release"):
-              what = "the pull request's own diff, since no release tag is reachable from the base"
-          else:
-              what = "the pull request's own diff"
-          against = ""
-          if documents is not None:
-              against = f", against {count(len(documents), 'document')} of `README.md` on `main`"
-          def described(finding):
-              """The finding as an item of a list: the document or the place, the text."""
-              document = plain(finding.get("document") or "")
-              where = plain(finding.get("file") or "")
-              line = finding.get("line")
-              if where and isinstance(line, int) and not isinstance(line, bool) and line > 0:
-                  where += f":{line}"
-              text = one_line(finding.get("text", ""))
-              if document:
-                  place = f" `{where}`." if where else ""
-                  return f"**{document}** {text}{place}"
-              if where:
-                  return f"**`{where}`** {text}"
-              return f"**the pull request** {text}"
-
-
-          def sentence(value):
-              text = one_line(value or "")
-              return text if not text or text[-1] in ".!?" else text + "."
-
-
-          def became(finding):
-              """What became of a finding of the run before, as the review stated it, in the
-              words of `became` in scripts/conventions.py. A decision of the opener never
-              settles a finding that blocked by itself: the judge's reason comes with it."""
-              state, carried = finding.get("state"), finding.get("finding")
-              reason = sentence(finding.get("reason"))
-              if state == "fixed":
-                  return "Fixed."
-              if state == "decided":
-                  return f"Decided by the opener: {reason}" if reason else "Decided by the opener."
-              words = "Open."
-              if isinstance(carried, int) and not isinstance(carried, bool):
-                  words = f"Open: finding {carried} above."
-              if not reason:
-                  return words
-              # One that blocked, carried by a finding that does not block: the judge's reason.
-              if finding.get("unblocked"):
-                  return f"{words} It blocked before and no longer blocks: {reason}"
-              return f"{words} The opener decided otherwise, and the rule stands: {reason}"
-
-
-          lines = [MARKER, lead, "", f"Judged: {what}{against}."]
-          if findings:
-              lines.append("")
-          for number, finding in enumerate(findings, 1):
-              blocks = "yes" if finding.get("blocking") else "no"
-              mark = MARKS.get(finding.get("since"))
-              mark = f" {mark}" if mark else ""
-              lines.append(f"{number}. {described(finding)} Blocks: {blocks}.{mark}")
-          # The run before (.github#95): each of its findings with what became of it. A first
-          # run, and one that found no comment of the check, has none.
-          earlier = result.get("earlier") if isinstance(result.get("earlier"), dict) else {}
-          head = earlier.get("head")
-          if isinstance(head, str) and SHA.fullmatch(head):
-              before = [f for f in earlier.get("findings") or [] if isinstance(f, dict)]
-              judged_before = f"https://github.com/{REPO}/commit/{head}"
-              lines.append("")
-              if before:
-                  lines += [f"The run before judged {judged_before} and gave {count(len(before))}:", ""]
-              else:
-                  lines.append(f"The run before judged {judged_before} and gave no findings.")
-              for number, finding in enumerate(before, 1):
-                  lines.append(f"{number}. {described(finding)} {became(finding)}")
-          run = {
-              "head": os.environ["HEAD_SHA"],
-              "findings": [{field: finding.get(field) for field in FIELDS} for finding in findings],
-          }
-          run_line = json.dumps(run, ensure_ascii=True, separators=(",", ":"))
-          run_line = run_line.replace("<", "\\u003c").replace(">", "\\u003e")
-          lines += ["", f"<!-- conventions-run: {run_line} -->"]
-          body = KEY.sub("[redacted]", "\n".join(lines) + "\n")
-          summary(body)
-          print(body)
-
-          # One sticky comment on every run that reviewed the pull request, `ready` included,
-          # since the reviewer cites the verdict there (C57 as amended by coordinate-core#364,
-          # .github#36). The last comment this token wrote is edited when it is the review's (by
-          # its marker, the old form's too), and the comment is created when the token wrote
-          # none. After another workflow's comment, or when the comments could not be read, a
-          # new comment is posted, so another workflow's comment is never overwritten.
-          last = gh("pr", "view", PR, "--json", "comments",
-                    "--jq", '[.comments[] | select(.viewerDidAuthor)] | last | .body // ""')
-          known = last.returncode == 0
-          ours = known and (last.stdout.startswith(MARKER) or last.stdout.startswith(OLD_MARKER))
-          none = known and not last.stdout.strip()
-          if ours or none:
-              posted = gh("pr", "comment", PR, "--edit-last", "--create-if-none",
-                          "--body-file", "-", body=body)
-          else:
-              posted = gh("pr", "comment", PR, "--body-file", "-", body=body)
-          # A failed post leaves the pull request without the verdict while the check still
-          # follows it, so the run says why: a line in the summary and a warning annotation,
-          # redacted as the comment is (.github#40).
-          if posted.returncode != 0:
-              reason = KEY.sub("[redacted]", one_line(posted.stderr))
-              reason = reason or f"gh exited {posted.returncode}"
-              line = f"conventions: posting the PR comment failed: {reason}"
-              summary(f"\n{line}\n")
-              print("::warning::" + line.replace("%", "%25"))
-          sys.exit(0 if verdict == "ready" else 1)
-          PY
+        run: python3 -I "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" verdict
