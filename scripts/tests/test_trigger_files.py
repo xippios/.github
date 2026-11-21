@@ -190,11 +190,14 @@ def test_the_conventions_trigger_file_passes_both_secrets_to_each_job() -> None:
 
 @pytest.mark.parametrize("name", NAMES)
 def test_each_job_keeps_the_check_context_of_the_table(name: str) -> None:
+    """Each job of the called workflow is a check context of its own: `conventions-range.yml`
+    reports `range / gate` and `range / range` (step 3 of .github 0.5.0)."""
     for job_id, job in trigger_file(name)["jobs"].items():
         called = USES.fullmatch(job["uses"]).group(1)
-        [job_name] = job_names(called)
-        row = f"| `{called}` | `{job_id}` | `{job_id} / {job_name}` |"
-        assert row in WIRING, row
+        for job_name in job_names(called):
+            row = f"| `{called}` | `{job_id}` | `{job_id} / {job_name}` |"
+            assert row in WIRING, row
+    assert job_names("conventions-range.yml") == ["gate", "range"]
     if name != "conventions.yml":
         assert list(trigger_file(name)["jobs"]) == [name.removesuffix(".yml")]
 
