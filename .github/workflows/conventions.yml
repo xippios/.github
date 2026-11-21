@@ -154,11 +154,13 @@ jobs:
     # passing. GitHub's functions compare without case and know no regular expression, so a
     # title passes here by its ends and the Gate matches it exactly.
     if: >-
-      contains(github.event.pull_request.labels.*.name, 'release')
+      github.event_name == 'pull_request'
+      && contains(fromJSON('["opened", "synchronize", "reopened", "edited"]'), github.event.action)
+      && (contains(github.event.pull_request.labels.*.name, 'release')
       || startsWith(github.event.pull_request.title, 'release: ')
       || endsWith(github.event.pull_request.title, ' Release')
       || (vars.CONVENTIONS_REVIEW != '' && vars.CONVENTIONS_REVIEW != 'release'
-      && vars.CONVENTIONS_REVIEW != 'off')
+      && vars.CONVENTIONS_REVIEW != 'off'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # A new push or edit supersedes the review of the previous state.

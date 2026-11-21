@@ -62,9 +62,9 @@ def test_the_readme_names_the_ruleset_of_this_repository_alone() -> None:
 
 
 def test_the_callers_paths_are_the_roots() -> None:
-    """Both caller examples give `spelling.yml` the paths of a coordinate root's caller, as the
-    root's `gates.yml` names them at coordinate-core 0.7.6 (finding 2 of the review of
-    .github#76)."""
+    """The caller of the spelling entry and the trigger file `spelling.yml` of the wiring give
+    `spelling.yml` the paths of a coordinate root's caller, as the root's `gates.yml` names them
+    at coordinate-core 0.7.6 (finding 2 of the review of .github#76)."""
     lines = [line.strip() for line in README.splitlines() if line.strip().startswith("paths: ")]
     assert lines == [ROOT_PATHS, ROOT_PATHS]
 
@@ -113,7 +113,8 @@ def test_the_readme_names_no_price() -> None:
 
 @pytest.mark.parametrize("name", sorted(p.name for p in WORKFLOWS.glob("*.yml")))
 def test_no_workflow_header_states_a_known_gap_a_bypass_or_a_cost(name: str) -> None:
+    """A workflow file may open without a comment, since it carries none but the version after a
+    pinned action (.github#111), as `conventions-range.yml` does from its start."""
     flat = " ".join(header(name).split()).lower()
-    assert flat, name
     for text in UNSTATED:
         assert text not in flat, text

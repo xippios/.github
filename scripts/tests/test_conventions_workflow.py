@@ -1,7 +1,9 @@
 """The conventions review runs by mode on any repository's documents (C57 as amended by
 coordinate-core#364, .github#32). The job's own `if:` skips a pull request that is no release's
 and that no other mode could review, so the caller's check reports as skipped and passing
-(.github#47). The step `Gate` of conventions.yml then decides from the caller's
+(.github#47), and any event of the caller that is not a pull request's opening, push, reopening
+or edit, so a caller that also runs on a push to `main` or on a dispatch changes nothing for it
+(step 1 of .github 0.5.0). The step `Gate` of conventions.yml then decides from the caller's
 `CONVENTIONS_REVIEW` variable, the pull request's label `release` and its title whether the
 review runs, before any checkout or API call; the step `Verdict` writes the check's comment in
 the style of docs/style/reviews.md on every run that reviewed the pull request, `ready` included
@@ -9,6 +11,7 @@ the style of docs/style/reviews.md on every run that reviewed the pull request, 
 
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -34,14 +37,39 @@ OTHER_TITLES = [
     "0.7.4 Release notes",
     "Plan the Release",
 ]
-# The job's own condition (.github#47), its folded lines joined as YAML folds them.
+# The types of a pull request's event that the review runs on: its opening, a push, its reopening
+# and an edit (step 1 of .github 0.5.0).
+FOUR = ["opened", "synchronize", "reopened", "edited"]
+# The job's own condition (.github#47), its folded lines joined as YAML folds them: the caller's
+# event first, then the release PR or the mode as before.
 CONDITION = (
-    "contains(github.event.pull_request.labels.*.name, 'release') "
+    "github.event_name == 'pull_request' "
+    f"&& contains(fromJSON('{json.dumps(FOUR)}'), github.event.action) "
+    "&& (contains(github.event.pull_request.labels.*.name, 'release') "
     "|| startsWith(github.event.pull_request.title, 'release: ') "
     "|| endsWith(github.event.pull_request.title, ' Release') "
     "|| (vars.CONVENTIONS_REVIEW != '' && vars.CONVENTIONS_REVIEW != 'release' "
-    "&& vars.CONVENTIONS_REVIEW != 'off')"
+    "&& vars.CONVENTIONS_REVIEW != 'off'))"
 )
+# The events of a caller that the condition skips, each with its action: a push to `main`, a
+# dispatch, the other types of a pull request's event and the events that are no pull request's.
+OTHER_EVENTS = [
+    ("push", ""),
+    ("workflow_dispatch", ""),
+    ("schedule", ""),
+    ("pull_request", "closed"),
+    ("pull_request", "labeled"),
+    ("pull_request", "unlabeled"),
+    ("pull_request", "assigned"),
+    ("pull_request", "ready_for_review"),
+    ("pull_request", "converted_to_draft"),
+    ("pull_request", "review_requested"),
+    ("pull_request_target", "opened"),
+    ("merge_group", "checks_requested"),
+    ("issue_comment", "created"),
+]
+# The expression functions that the condition may call: actionlint knows them all.
+FUNCTIONS = {"contains", "startsWith", "endsWith", "fromJSON"}
 REPO = "xippios/sdk-usda-psd"
 SHA = "c" * 40
 COMMIT = f"https://github.com/{REPO}/commit/{SHA}"
@@ -287,15 +315,35 @@ def job_condition() -> str:
     return " ".join(folded)
 
 
-def admitted(mode: str, title: str, labels: tuple[str, ...]) -> bool:
-    """CONDITION as GitHub evaluates it: `contains`, `startsWith`, `endsWith` and `!=` compare
-    strings without case, and an unset variable reads as the empty string."""
+def kept_types() -> list[str]:
+    """The types of a pull request's event that the job's condition keeps, read from its own
+    `fromJSON` list."""
+    match = re.search(r"fromJSON\('(\[[^']*\])'\), github\.event\.action\)", job_condition())
+    assert match, job_condition()
+    return json.loads(match.group(1))
+
+
+def admitted(
+    mode: str,
+    title: str,
+    labels: tuple[str, ...],
+    *,
+    event: str = "pull_request",
+    action: str = "opened",
+) -> bool:
+    """CONDITION as GitHub evaluates it: `==`, `contains`, `startsWith`, `endsWith` and `!=`
+    compare strings without case, and an unset variable or a missing property reads as the empty
+    string. A called workflow reads its caller's `github.event_name` and `github.event.action`."""
     mode, title = mode.lower(), title.lower()
     return (
-        labeled(labels)
-        or title.startswith("release: ")
-        or title.endswith(" release")
-        or mode not in ("", "release", "off")
+        event == "pull_request"
+        and action.lower() in [kept.lower() for kept in kept_types()]
+        and (
+            labeled(labels)
+            or title.startswith("release: ")
+            or title.endswith(" release")
+            or mode not in ("", "release", "off")
+        )
     )
 
 
@@ -304,6 +352,31 @@ def test_the_job_holds_its_condition() -> None:
     # The job's `if:` reads what a job's condition may: no secret, no step.
     assert "secrets." not in CONDITION
     assert "steps." not in CONDITION
+
+
+def test_the_condition_calls_only_the_functions_actionlint_knows() -> None:
+    assert set(re.findall(r"([A-Za-z]+)\(", job_condition())) == FUNCTIONS
+
+
+@pytest.mark.parametrize("action", FOUR)
+@pytest.mark.parametrize("title", RELEASE_TITLES)
+def test_the_job_runs_on_the_four_types_of_a_pull_request(action: str, title: str) -> None:
+    """A caller of today runs on exactly these four, so it sees no change."""
+    assert kept_types() == FOUR
+    assert admitted("", title, (), action=action)
+    assert admitted("all", "feat: a change", (), action=action)
+
+
+@pytest.mark.parametrize(("event", "action"), OTHER_EVENTS)
+@pytest.mark.parametrize("mode", ["", "release", "all", "ALL", "off", "relase"])
+@pytest.mark.parametrize("labels", [(), ("release",)])
+def test_the_job_skips_every_other_event_of_its_caller(
+    event: str, action: str, mode: str, labels: tuple[str, ...]
+) -> None:
+    """A caller that also runs on a push to `main` or on a dispatch starts no review there, and
+    its check reports as skipped, whatever the mode, the title and the label."""
+    for title in ("feat: a change", *RELEASE_TITLES):
+        assert not admitted(mode, title, labels, event=event, action=action), title
 
 
 def test_a_pr_labeled_release_gets_the_release_review(tmp_path: Path) -> None:
@@ -392,6 +465,14 @@ def test_the_readme_describes_the_review_by_mode() -> None:
     assert "read without case" in flat
     assert "sdk-core" not in section
     assert "`--docs`" not in README
+    # The events the job runs on, and that a caller on more events changes nothing for it.
+    assert (
+        "the job runs on a pull request's opening, push, reopening and edit alone, the event "
+        "`pull_request` with the types `opened`, `synchronize`, `reopened` and `edited`, and is "
+        "skipped on any other event of its caller" in flat
+    )
+    assert "`github.event_name` and `github.event.action`" in flat
+    assert "a caller that runs on those four alone sees no change" in flat
 
 
 def workflow_header() -> str:
@@ -421,19 +502,23 @@ def test_the_workflows_header_lays_out_a_caller_on_no_label() -> None:
     assert "a label set after the opening counts from the next push or edit" in header
 
 
-def test_the_readmes_caller_runs_on_no_label() -> None:
-    """The wiring's text and its caller give the four types a caller of coordinate-core 0.7.6
-    runs on, without `labeled` and with no `if:` on a job, and say that a label set after the
-    opening counts from the next push or edit (.github#68, C57 as amended by
-    coordinate-core#1059)."""
+def test_the_readmes_callers_run_on_no_label() -> None:
+    """The wiring's text gives the four types a caller of coordinate-core 0.7.6 runs on, and the
+    trigger file `conventions.yml` runs on them, while `spelling.yml` and `adr-index.yml` run on
+    the first three, since an edit starts the review only (finding 1 of the review of
+    .github#115); none runs on `labeled`, and the text says that a label set after the opening
+    counts from the next push or edit (.github#68, C57 as amended by coordinate-core#1059). The
+    conditions of the trigger file `conventions.yml` are held by test_trigger_files.py."""
     section = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(section.split())
-    caller = section.split("```yaml\n", 1)[1].split("```", 1)[0]
+    callers = [block.split("```", 1)[0] for block in section.split("```yaml\n")[1:]]
+    assert len(callers) == 3
     assert "`opened`, `synchronize`, `reopened` and `edited`" in flat
-    assert "    types: [opened, synchronize, reopened, edited]\n" in caller
+    assert "    types: [opened, synchronize, reopened, edited]\n" in callers[0]
+    for caller in callers[1:]:
+        assert "    types: [opened, synchronize, reopened]\n" in caller
     assert "labeled" not in section
-    assert "if:" not in caller
-    assert "uses: xippios/.github/.github/workflows/conventions.yml@main" in caller
+    assert "uses: xippios/.github/.github/workflows/conventions.yml@main" in callers[0]
     assert "A label set after the opening" in flat
     assert "counts from the next push or edit" in flat
 
@@ -586,11 +671,16 @@ def test_the_readme_lays_out_the_read_token_and_its_caller() -> None:
     assert "the organization's setting" in flat
     wiring = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
     caller = wiring.split("```yaml\n", 1)[1].split("```", 1)[0]
-    assert "      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n" in caller
-    assert "      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}\n" in caller
+    # The trigger file `conventions.yml` passes both by name to each of its two jobs.
+    assert caller.count("      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n") == 2
+    assert caller.count("      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}\n") == 2
     assert "inherit" not in caller
     assert "exactly one secret" not in " ".join(wiring.split())
-    assert "      # Only in a private repository whose README.md lists " in caller
+    # Where the read token is needed is prose, since a trigger file carries no comment.
+    assert "#" not in caller
+    assert "only in a private repository whose README lists a private repository's document" in (
+        " ".join(wiring.split())
+    )
 
 
 # --- the verdict -------------------------------------------------------------------------

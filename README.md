@@ -79,6 +79,13 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   review at effort `xhigh` the time of 160 turns on one key; a review the timeout ends returns
   no verdict and writes no summary line.
   Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
+  - **The events**: the job runs on a pull request's opening, push, reopening and edit alone,
+    the event `pull_request` with the types `opened`, `synchronize`, `reopened` and `edited`,
+    and is skipped on any other event of its caller, such as a push to `main`, a dispatch or the
+    closing of a pull request. A called workflow reads its caller's event, `github.event_name`
+    and `github.event.action`, so a caller that also runs on a push to `main` or on a dispatch
+    starts no review there and its check reports as skipped, and a caller that runs on those
+    four alone sees no change.
   - **The release pull request** (https://github.com/xippios/.github/issues/47): one labeled
     `release`, or titled `<version> Release`, and `release: <version>` until every workspace has
     adopted coordinate-core 0.7.4 (`docs/style/pulls.md#release-pr` of a coordinate root), on
@@ -278,6 +285,15 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     paths, counts, the verdict and redacted error text, never a file's content, a tool
     result or the prompt, and the verdict step redacts anything that looks like a key or a
     GitHub token from the summary and the comment.
+- **`.github/workflows/conventions-range.yml`**, the conventions review of a range of commits
+  (https://github.com/xippios/.github/issues/96, check `range / range`): the trigger file
+  `conventions.yml` of a repository calls it on every event that is not a pull request's, a push
+  to `main` or a dispatch (the trigger files, under the wiring below). Its one job, `range`,
+  holds no review yet: its condition is false, so no runner starts and its check reports as
+  skipped on every run. It takes the caller's `ANTHROPIC_API_KEY` and `DOCUMENTS_READ_TOKEN`,
+  both optional, as `conventions.yml` takes them. Permissions: `contents: read`,
+  `pull-requests: write`, `checks: read`, `issues: read`, which a trigger file grants from its
+  start, since a caller that grants less than a called workflow asks for fails at its start.
 - **`.github/workflows/site-tests.yml`** (https://github.com/xippios/.github/issues/30 as
   amended by https://github.com/xippios/.github/issues/37) runs a site's suite through the host
   xippios-web, the only test harness of the web platform.
@@ -382,34 +398,102 @@ From coordinate-core 0.7.6 and sdk-template 0.3.4 on, the caller of `spelling.ym
 `conventions.yml` and `adr-index.yml` runs on `pull_request` with the types `opened`,
 `synchronize`, `reopened` and `edited`. A caller's `on: pull_request` without `types` runs on the
 first three only, and `edited` matters to the review, since the description is judged and a
-change of the title or of the base arrives as `edited`. A caller runs on no label (C57):
+change of the title or of the base arrives as `edited`. An edit starts the review only, so the
+trigger files `spelling.yml` and `adr-index.yml` below run on the first three types and the
+trigger file `conventions.yml` on all four. A caller runs on no label (C57):
 GitHub starts a workflow on a label of any name and reports a head's checks from its newest
 run, so the run of a label could stand for the head. A label set
-after the opening, `release` among them, counts from the next push or edit. The caller's jobs
-carry no `if:`, so each run reports every check: the review's job decides in its own condition,
-under `conventions.yml` above, and its check reports skipped and passing on a pull request that
-condition skips (https://github.com/xippios/.github/issues/47).
+after the opening, `release` among them, counts from the next push or edit. The jobs of a
+`gates.yml` or an `organization.yml` carry no `if:`, so each run reports every check: the
+review's job decides in its own condition, under `conventions.yml` above, and its check reports
+skipped and passing on a pull request that condition skips
+(https://github.com/xippios/.github/issues/47).
 
 | Workflow | Caller job | Check context |
 | --- | --- | --- |
 | `spelling.yml` | `spelling` | `spelling / spelling` |
 | `conventions.yml` | `conventions` | `conventions / conventions` |
+| `conventions-range.yml` | `range` | `range / range` |
 | `adr-index.yml` | `adr-index` | `adr-index / adr-index` |
 | `site-tests.yml` | `tests` | `tests / tests` |
 
 A context joins the caller's job id and the callee's job name, so a ruleset requires the
 slash-joined context and a caller keeps the job ids above. The caller passes the review its
-secrets by name, never `secrets: inherit`: `ANTHROPIC_API_KEY`, and `DOCUMENTS_READ_TOKEN` in a
-private repository whose README lists a private repository's document (the read token under
-`conventions.yml` above). It grants the permissions the review asks; a caller that grants less
-fails at the start:
+secrets by name, never `secrets: inherit`: `ANTHROPIC_API_KEY`, and `DOCUMENTS_READ_TOKEN`,
+which the review needs only in a private repository whose README lists a private repository's
+document (the read token under `conventions.yml` above). A trigger file passes both, and a
+repository without the read token passes the empty string, which reads as none. A caller grants
+the permissions the workflow it calls asks for; a caller that grants less fails at the start.
+
+### The trigger files
+
+A repository takes part in a check by one small workflow file of its own, its trigger file,
+named as the central workflow of its check (https://github.com/xippios/.github/issues/102,
+https://github.com/xippios/.github/issues/107). It names the events, the permissions and the
+secrets and calls this repository at `main`, so the logic stays here and a change of it reaches
+every caller with its merge. The presence of a trigger file switches its check on. Where a
+repository requires a check, the requirement goes before the file does. A `gates.yml` and an
+`organization.yml` call the workflows as before until their repository takes the trigger files
+with an adoption, and both wirings report the check contexts of the table above.
+
+The trigger file `conventions.yml` runs on a pull request's four types, on a push to `main` and
+on a dispatch. Its job `conventions` calls `conventions.yml` on a pull request, and its job
+`range` calls `conventions-range.yml` on every other event. Each job carries one condition, the
+name of the event and the switch `WORKFLOW_CONVENTIONS`, which is on unless the variable is
+`off`: GitHub reads the repository's variable over the organization's and compares without
+case. So a pull request shows one skipped `range`, a push or a dispatch one skipped
+`conventions`, and on `off` neither job calls its workflow. Both jobs pass `ANTHROPIC_API_KEY`
+and `DOCUMENTS_READ_TOKEN` by name. A repository's `.github/workflows/conventions.yml`:
 
 ```yaml
-name: gates
+name: Conventions
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conventions:
+    if: github.event_name == 'pull_request' && vars.WORKFLOW_CONVENTIONS != 'off'
+    uses: xippios/.github/.github/workflows/conventions.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: read
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
+
+  range:
+    if: github.event_name != 'pull_request' && vars.WORKFLOW_CONVENTIONS != 'off'
+    uses: xippios/.github/.github/workflows/conventions-range.yml@main
+    permissions:
+      contents: read
+      pull-requests: write
+      checks: read
+      issues: read
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
+```
+
+The trigger files `spelling.yml` and `adr-index.yml` run on a pull request's opening, push and
+reopening, the types `opened`, `synchronize` and `reopened`, since an edit starts the review
+only. Each has its one job under the job id that keeps its check context and carries no
+condition. A root's `.github/workflows/spelling.yml`:
+
+```yaml
+name: Spelling
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -419,17 +503,23 @@ jobs:
     uses: xippios/.github/.github/workflows/spelling.yml@main
     with:
       paths: rules docs/style docs/adr docs/adr.md docs/adr.json docs/reports README.md CLAUDE.md .claude workspace.toml labels.yml
+```
 
-  conventions:
-    uses: xippios/.github/.github/workflows/conventions.yml@main
-    permissions:
-      contents: read
-      pull-requests: write
-      checks: read
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      # Only in a private repository whose README.md lists a private repository's document.
-      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
+A repository's `.github/workflows/adr-index.yml`:
+
+```yaml
+name: ADR index
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  adr-index:
+    uses: xippios/.github/.github/workflows/adr-index.yml@main
 ```
 
 ## Rulesets
