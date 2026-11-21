@@ -27,41 +27,112 @@ PINNED = re.compile(
 )
 
 
-def unquoted_hashes(line: str) -> list[int]:
-    """The positions of each `#` of ``line`` outside a string in single or double quotes; a
-    backslash escapes the next character inside double quotes, as in YAML and in the shell."""
-    found = []
-    quote = None
+# A key whose value is a block scalar, `|` or `>` with its indicators, and what may follow it.
+BLOCK = re.compile(r" *(?:- )?([A-Za-z0-9_.-]+): *[|>][-+0-9]*(?: +#.*)?")
+# What ends a word for the shell, so that a `#` after it starts one.
+WORD_END = " \t;&|()<>"
+
+
+def closing(line: str, start: int) -> int:
+    """Where the quoted value that opens at ``start`` of ``line`` ends, past its closing quote:
+    `''` stands for a quote in single quotes, a backslash escapes in double quotes. A value that
+    the line does not close runs to the line's end."""
+    quote = line[start]
+    position = start + 1
+    while position < len(line):
+        char = line[position]
+        if quote == '"' and char == "\\":
+            position += 2
+            continue
+        if char == quote:
+            if quote == "'" and line.startswith("''", position):
+                position += 2
+                continue
+            return position + 1
+        position += 1
+    return len(line)
+
+
+def yaml_comment(line: str) -> bool:
+    """Whether ``line``, read as YAML, carries a comment: a `#` after white space or at the line's
+    start that no quoted value holds. A quote opens a quoted value only where a value starts: at
+    the line's start, after `- `, after `: `, and in a flow collection after `[`, `{` or `,`."""
+    position = len(line) - len(line.lstrip(" "))
+    start = True
+    depth = 0
+    while position < len(line):
+        char = line[position]
+        if start and char in "'\"":
+            position, start = closing(line, position), False
+        elif char == "#" and (position == 0 or line[position - 1] in " \t"):
+            return True
+        elif char in " \t":
+            position += 1
+        elif start and line.startswith("- ", position):
+            position += 2
+        elif char == ":" and line[position + 1 : position + 2] in ("", " "):
+            position, start = position + 1, True
+        elif char in "[{" and (start or depth):
+            position, depth, start = position + 1, depth + 1, True
+        elif char == "," and depth:
+            position, start = position + 1, True
+        elif char in "]}" and depth:
+            position, depth, start = position + 1, depth - 1, False
+        else:
+            position, start = position + 1, False
+    return False
+
+
+def shell_comment(line: str, quote: str | None) -> tuple[bool, str | None]:
+    """Whether ``line`` of a script carries a comment, a `#` that starts a word outside the
+    shell's quotes, and the quote still open at its end. ``quote`` is the one the line before
+    left open."""
     escaped = False
-    for position, char in enumerate(line):
+    previous = " "
+    for char in line:
         if escaped:
             escaped = False
-        elif quote == '"' and char == "\\":
+        elif quote == "'":
+            if char == "'":
+                quote = None
+        elif char == "\\":
             escaped = True
-        elif quote is not None:
-            if char == quote:
+        elif quote == '"':
+            if char == '"':
                 quote = None
         elif char in "'\"":
             quote = char
-        elif char == "#":
-            found.append(position)
-    return found
+        elif char == "#" and previous in WORD_END:
+            return True, quote
+        previous = char
+    return False, quote
 
 
-def comment_of(line: str) -> str | None:
-    """What makes ``line`` a comment of the kind no file keeps, or None where it is none."""
-    if line.lstrip().startswith("#"):
-        return "a comment line"
-    if unquoted_hashes(line) and not PINNED.fullmatch(line):
-        return "a comment after a value"
-    return None
+def indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
 
 
 def comment_lines(text: str) -> list[int]:
-    """The numbers of the lines of ``text`` that carry a comment of the kind no file keeps."""
-    return [
-        number for number, line in enumerate(text.splitlines(), 1) if comment_of(line) is not None
-    ]
+    """The numbers of the lines of ``text`` that carry a comment of the kind no file keeps: a line
+    that opens with `#`, and else a comment by YAML's rule outside a block scalar, or by the
+    shell's inside one, but for the version after a pinned action."""
+    found = []
+    # The column a line of the open block scalar stands right of, and the shell's open quote.
+    block: int | None = None
+    quote: str | None = None
+    for number, line in enumerate(text.splitlines(), 1):
+        if block is not None and (not line.strip() or indent(line) > block):
+            comment, quote = shell_comment(line, quote)
+            if line.lstrip().startswith("#") or comment:
+                found.append(number)
+            continue
+        block, quote = None, None
+        if line.lstrip().startswith("#") or (yaml_comment(line) and not PINNED.fullmatch(line)):
+            found.append(number)
+        opened = BLOCK.fullmatch(line)
+        if opened:
+            block = opened.start(1)
+    return found
 
 
 PIN = "3d3c42e5aac5ba805825da76410c181273ba90b1"
