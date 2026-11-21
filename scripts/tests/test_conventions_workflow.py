@@ -503,17 +503,20 @@ def test_the_workflows_header_lays_out_a_caller_on_no_label() -> None:
 
 
 def test_the_readmes_callers_run_on_no_label() -> None:
-    """The wiring's text and each trigger file give the four types a caller of coordinate-core
-    0.7.6 runs on, without `labeled`, and say that a label set after the opening counts from the
-    next push or edit (.github#68, C57 as amended by coordinate-core#1059). The conditions of
-    the trigger file `conventions.yml` are held by test_trigger_files.py."""
+    """The wiring's text gives the four types a caller of coordinate-core 0.7.6 runs on, and the
+    trigger file `conventions.yml` runs on them, while `spelling.yml` and `adr-index.yml` run on
+    the first three, since an edit starts the review only (finding 1 of the review of
+    .github#115); none runs on `labeled`, and the text says that a label set after the opening
+    counts from the next push or edit (.github#68, C57 as amended by coordinate-core#1059). The
+    conditions of the trigger file `conventions.yml` are held by test_trigger_files.py."""
     section = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(section.split())
     callers = [block.split("```", 1)[0] for block in section.split("```yaml\n")[1:]]
     assert len(callers) == 3
     assert "`opened`, `synchronize`, `reopened` and `edited`" in flat
-    for caller in callers:
-        assert "    types: [opened, synchronize, reopened, edited]\n" in caller
+    assert "    types: [opened, synchronize, reopened, edited]\n" in callers[0]
+    for caller in callers[1:]:
+        assert "    types: [opened, synchronize, reopened]\n" in caller
     assert "labeled" not in section
     assert "uses: xippios/.github/.github/workflows/conventions.yml@main" in callers[0]
     assert "A label set after the opening" in flat

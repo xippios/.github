@@ -21,6 +21,7 @@ README = (ROOT / "README.md").read_text()
 WIRING = README.split("\n## Wiring and check contexts\n", 1)[1].split("\n## ", 1)[0]
 NAMES = ["conventions.yml", "spelling.yml", "adr-index.yml"]
 FOUR = ["opened", "synchronize", "reopened", "edited"]
+THREE = FOUR[:3]
 USES = re.compile(r"xippios/\.github/\.github/workflows/([a-z-]+\.yml)@main")
 # The condition of each job of the trigger file `conventions.yml`.
 CONDITIONS = {
@@ -89,6 +90,8 @@ def test_the_reader_reads_the_subset() -> None:
         "a: |\n  b\n",
         "a: [b, 'c']\n",
         "a: b: c\n",
+        "a:  b\n",
+        "a: b:\n",
         "- a: b\n",
         "a:\n- b: c\n",
     ],
@@ -124,9 +127,11 @@ def test_each_trigger_file_bears_the_title_of_the_workflow_it_is_named_after(nam
 
 
 @pytest.mark.parametrize("name", NAMES)
-def test_each_trigger_file_runs_on_the_four_types_of_a_pull_request(name: str) -> None:
+def test_each_trigger_file_runs_on_the_types_of_a_pull_request_its_check_reads(name: str) -> None:
+    """An edit starts the review only, since the review judges the description: the trigger file
+    `conventions.yml` runs on the four types, and `spelling.yml` and `adr-index.yml`, which read
+    no description, on the first three (finding 1 of the review of .github#115)."""
     on = trigger_file(name)["on"]
-    assert on["pull_request"] == {"types": FOUR}
     if name == "conventions.yml":
         assert on == {
             "pull_request": {"types": FOUR},
@@ -134,7 +139,18 @@ def test_each_trigger_file_runs_on_the_four_types_of_a_pull_request(name: str) -
             "workflow_dispatch": None,
         }
     else:
-        assert list(on) == ["pull_request"]
+        assert on == {"pull_request": {"types": THREE}}
+
+
+def test_the_readme_says_that_an_edit_starts_the_review_only() -> None:
+    flat = " ".join(WIRING.split())
+    assert "An edit starts the review only" in flat
+    assert (
+        "The trigger files `spelling.yml` and `adr-index.yml` run on a pull request's opening, "
+        "push and reopening, the types `opened`, `synchronize` and `reopened`, since an edit "
+        "starts the review only" in flat
+    )
+    assert "`spelling.yml` and `adr-index.yml` run on a pull request's four types" not in flat
 
 
 @pytest.mark.parametrize("name", NAMES)
