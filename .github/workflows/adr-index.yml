@@ -25,6 +25,7 @@ permissions:
 jobs:
   adr-index:
     name: adr-index
+    if: vars.WORKFLOW_ADR_INDEX != 'off'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -34,7 +35,7 @@ jobs:
       - name: index
         run: |
           script=scripts/adr_index.py
-          run="python3 $script"
+          run="python3 -I $script"
           # A record's name is the caller's data: %, CR and LF escaped in an annotation, so no name
           # starts a workflow command of its own.
           escape() {

@@ -5,7 +5,7 @@ The verdict is ``ready`` or ``not ready``.
 
 The check ``conventions`` (README.md, "The workflows") runs two commands of this script;
 a dry run runs both in a temporary directory. The workflow's gate decides before either
-whether the pull request is reviewed at all (the mode ``CONVENTIONS_REVIEW``, C57).
+whether the pull request is reviewed at all (the mode ``WORKFLOW_CONVENTIONS_MODE``, C57).
 
 - ``prepare`` writes the material the review judges to ``.review/`` in the checkout of the
   pull request's head, after emptying it: ``diff.patch`` and ``log.txt`` of the range (merge

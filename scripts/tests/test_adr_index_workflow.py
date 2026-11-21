@@ -6,7 +6,9 @@ and its pins, as test_spelling.py holds those of spelling.yml, and run the workf
 caller's checkout whose script stands in for the template's: it writes the list of the records,
 and with `--check` writes nothing and exits 1 when the index differs. Like the template's, it
 writes nothing and exits 1 in both modes while a record's first line does not read. It checks no
-number twice, as an older script might not, and it runs only under `python -I`."""
+number twice, as an older script might not, and it runs only under `python -I`. The failure names
+the command as the script of coordinate-core 0.8.1 names it, `python3 -I scripts/adr_index.py`,
+the way the workflow runs the script (.github#103)."""
 
 import json
 import os
@@ -22,7 +24,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 SCRIPT = "scripts/adr_index.py"
-RUN = f"python3 {SCRIPT}"
+RUN = f"python3 -I {SCRIPT}"
 
 STAND_IN = """\
 import json
@@ -164,6 +166,46 @@ def test_the_workflow_runs_the_callers_own_script() -> None:
     # the caller's checkout alone, and no copy of the script here
     assert "repository:" not in workflow()
     assert not (ROOT / SCRIPT).exists()
+
+
+def test_the_failure_names_the_command_the_workflow_runs_the_script_by() -> None:
+    """The command of every failure line is the one the `--check` call runs, with -I."""
+    script = step("index")
+    assert 'run="python3 -I $script"\n' in script
+    assert script.count("python3 -I ") == 2
+    assert "\\`$run\\`" in script
+    assert "\\`$run --check\\`" in script
+    assert f"`{RUN}`" not in script
+    assert "python3 $script" not in script
+
+
+@pytest.mark.parametrize(
+    "plant",
+    [
+        {"docs/adr/0003-a-third.md": "# ADR-0003: A third\n"},
+        {"docs/adr/0003-wrong.md": "# Wrong title\n"},
+        {"docs/adr/0002-another-cap.md": "# ADR-0002: Another cap\n"},
+    ],
+)
+def test_every_failure_line_names_the_command_with_dash_i(
+    tmp_path: Path, caller: Path, plant: dict[str, str]
+) -> None:
+    for name, text in plant.items():
+        (caller / name).write_text(text)
+    code, out = check(tmp_path)
+    assert code != 0, out
+    assert errors(out), out
+    for line in errors(out):
+        assert f"`{RUN}" in line, line
+        assert "`python3 scripts/adr_index.py" not in line, line
+
+
+def test_the_readme_names_the_command_with_dash_i() -> None:
+    readme = " ".join((ROOT / "README.md").read_text().split())
+    section = readme.split("**`.github/workflows/adr-index.yml`**", 1)[1]
+    section = section.split("**`.github/workflows/ci.yml`**", 1)[0]
+    assert f"each error annotation names `{RUN}`, which writes both files" in section
+    assert "`python3 scripts/adr_index.py`" not in readme
 
 
 def test_a_current_index_passes(tmp_path: Path, caller: Path) -> None:
