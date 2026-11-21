@@ -8,18 +8,23 @@ or edit, so a caller that also runs on a push to `main` or on a dispatch changes
 request's label `release` and its title whether the review runs, before any checkout or API
 call; the step `Verdict` writes the check's comment in
 the style of docs/style/reviews.md on every run that reviewed the pull request, `ready` included
-(.github#36). The tests run the steps' own scripts."""
+(.github#36). Both steps call the script, `gate` and `verdict`, from its checkout in `.sdk-gates`
+(step 2 of .github 0.5.0). The tests run the steps' own scripts, as the workflow holds them, in
+the environment the runner gives a step."""
 
 import json
 import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import conventions as fr
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
+SCRIPT = ROOT / "scripts" / "conventions.py"
 WORKFLOW = (ROOT / ".github" / "workflows" / "conventions.yml").read_text()
 README = (ROOT / "README.md").read_text()
 MODES = ("release", "all")
@@ -84,14 +89,17 @@ VIEW = (
 )
 EDIT = f"pr comment 11 --edit-last --create-if-none --body-file - --repo {REPO}"
 CREATE = f"pr comment 11 --body-file - --repo {REPO}"
+# A stub `gh` that logs its calls and answers none: the Gate makes no call.
+GH_LOG = '#!/bin/sh\nprintf "%s\\n" "$*" >> "$(dirname "$0")/calls"\nexit 1\n'
 
 
 def step(name: str) -> str:
-    """The `run:` script of the step `name` of conventions.yml."""
-    block = WORKFLOW.split(f"- name: {name}\n", 1)[1]
-    lines = block.split("        run: |\n", 1)[1].splitlines()
+    """The `run:` script of the step `name` of conventions.yml: a block scalar or one line."""
+    run = ("\n" + step_block(name)).split("\n        run: ", 1)[1]
+    if not run.startswith("|\n"):
+        return run.split("\n", 1)[0] + "\n"
     script = []
-    for line in lines:
+    for line in run[2:].splitlines():
         if line.strip() and not line.startswith("          "):
             break
         script.append(line[10:])
@@ -102,6 +110,52 @@ def step_block(name: str) -> str:
     """The whole step `name`, up to the next step."""
     block = WORKFLOW.split(f"- name: {name}\n", 1)[1]
     return block.split("\n      - name: ", 1)[0]
+
+
+def job_env(tmp_path: Path, gh: str) -> dict[str, str]:
+    """The environment a step of the job runs in, as the runner gives it: the workspace with the
+    script's checkout in `.sdk-gates`, the runner's temporary directory, the files of the step's
+    outputs and summary, emptied, and the stub `gh` first on the path."""
+    workspace = tmp_path / "workspace"
+    script = workspace / ".sdk-gates" / "scripts" / "conventions.py"
+    if not script.exists():
+        script.parent.mkdir(parents=True)
+        shutil.copyfile(SCRIPT, script)
+    temp = tmp_path / "temp"
+    temp.mkdir(exist_ok=True)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "calls").unlink(missing_ok=True)
+    (bin_dir / "gh").write_text(gh)
+    (bin_dir / "gh").chmod(0o755)
+    (tmp_path / "summary.md").write_text("")
+    (tmp_path / "output.txt").write_text("")
+    return {
+        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+        "GITHUB_WORKSPACE": str(workspace),
+        "RUNNER_TEMP": str(temp),
+        "GITHUB_OUTPUT": str(tmp_path / "output.txt"),
+        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary.md"),
+    }
+
+
+def run_step(name: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    """Run the `run:` script of the step `name` as the runner's default shell runs it, in the
+    workspace."""
+    return subprocess.run(
+        ["bash", "-e", "-o", "pipefail", "-c", step(name)],
+        env=env,
+        cwd=env["GITHUB_WORKSPACE"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def gh_calls(tmp_path: Path) -> list[str]:
+    """The calls the stub `gh` logged."""
+    calls = tmp_path / "bin" / "calls"
+    return calls.read_text().splitlines() if calls.exists() else []
 
 
 # --- the gate ----------------------------------------------------------------------------
@@ -128,13 +182,43 @@ def gate(
     """Run the Gate step: the exit code, what it printed and summarized, and its outputs.
 
     ``read_token_unused``: a public caller passed DOCUMENTS_READ_TOKEN, which its check does
-    not use (.github#83)."""
-    summary = tmp_path / "summary.md"
-    output = tmp_path / "output.txt"
-    summary.write_text("")
-    output.write_text("")
-    env = {
-        "PATH": os.environ["PATH"],
+    not use (.github#83). The Gate makes no call of `gh`."""
+    done = run_step(
+        "Gate",
+        gate_env(
+            tmp_path,
+            mode=mode,
+            title=title,
+            labels=labels,
+            key=key,
+            author=author,
+            actor=actor,
+            fork=fork,
+            read_token_unused=read_token_unused,
+        ),
+    )
+    assert gh_calls(tmp_path) == []
+    output = (tmp_path / "output.txt").read_text()
+    outputs = dict(line.split("=", 1) for line in output.splitlines())
+    summary = (tmp_path / "summary.md").read_text()
+    return done.returncode, summary + done.stdout + done.stderr, outputs
+
+
+def gate_env(
+    tmp_path: Path,
+    *,
+    mode: str = "",
+    title: str = "feat: a change",
+    labels: tuple[str, ...] = (),
+    key: bool = True,
+    author: str = "opener",
+    actor: str = "opener",
+    fork: bool = False,
+    read_token_unused: bool = False,
+) -> dict[str, str]:
+    """The environment of the Gate step: the job's, and the values its `env:` block gives."""
+    return {
+        **job_env(tmp_path, GH_LOG),
         "HAS_KEY": "true" if key else "false",
         "MODE": mode,
         "TITLE": title,
@@ -144,18 +228,7 @@ def gate(
         "HEAD_REPO": "someone/fork" if fork else REPO,
         "REPO": REPO,
         "READ_TOKEN_UNUSED": "true" if read_token_unused else "false",
-        "GITHUB_STEP_SUMMARY": str(summary),
-        "GITHUB_OUTPUT": str(output),
     }
-    done = subprocess.run(
-        ["bash", "-e", "-o", "pipefail", "-c", step("Gate")],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    outputs = dict(line.split("=", 1) for line in output.read_text().splitlines())
-    return done.returncode, summary.read_text() + done.stdout + done.stderr, outputs
 
 
 @pytest.mark.parametrize("mode", ["", "release"])
@@ -194,6 +267,89 @@ def test_release_passes_any_other_pr_with_a_notice(tmp_path: Path, title: str) -
 def test_the_gate_and_the_script_read_a_title_alike(tmp_path: Path, title: str) -> None:
     _code, _out, outputs = gate(tmp_path, mode="all", title=title)
     assert outputs["release"] == ("true" if fr.is_release_title(title) else "false")
+
+
+# The pattern of a release PR's title that the Gate matched with `grep -E` until step 2 of
+# .github 0.5.0, when the script's `is_release_title` took its place.
+GATE_PATTERN = (
+    r"^(release: v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.+-]*)?|[0-9]+\.[0-9]+\.[0-9]+ Release)$"
+)
+
+
+@pytest.mark.parametrize("title", ["feat: a change", "Ship the next version", *RELEASE_TITLES])
+@pytest.mark.parametrize("more", [False, True])
+def test_the_script_reads_a_title_as_the_gates_grep_did(title: str, more: bool) -> None:
+    """The rule that tells a release PR by its title stands once, in the script, and gives the
+    Gate's answers of before for the titles these tests use."""
+    titles = OTHER_TITLES if more else [title]
+    for each in titles:
+        done = subprocess.run(
+            ["grep", "-Eq", GATE_PATTERN], input=f"{each}\n", text=True, check=False
+        )
+        assert done.returncode in (0, 1)
+        assert fr.is_release_title(each) == (done.returncode == 0), each
+
+
+def test_the_gate_and_the_verdict_each_call_the_script_once() -> None:
+    """The Gate and the Verdict are one call each of the script from its checkout, on the
+    runner's `python3` with `-I`, before and without uv; neither holds a pattern of a title."""
+    for name, command in (("Gate", "gate"), ("Verdict", "verdict")):
+        call = f'python3 -I "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" {command}\n'
+        assert step(name) == call
+        assert "uv " not in step_block(name)
+    assert "grep -E" not in WORKFLOW
+
+
+def test_the_workflow_holds_no_inline_code() -> None:
+    """No `run:` feeds Python a here-document or a `-c` program: the code is the script's."""
+    assert "<<" not in WORKFLOW
+    assert re.search(r"python3?( -[A-Za-z]+)* -( |$)", WORKFLOW, re.M) is None
+    assert re.search(r"python3?( -[A-Za-z]+)* -c\b", WORKFLOW) is None
+
+
+# The Python of the job's steps, where neither the SDK nor its HTTP client can be imported: the
+# program runs the script as `python3 -I <script> <command>` does.
+WITHOUT_SDK = (
+    "import runpy, sys\n"
+    "sys.modules['anthropic'] = None\n"
+    "sys.modules['httpx2'] = None\n"
+    "sys.argv = sys.argv[1:]\n"
+    "runpy.run_path(sys.argv[0], run_name='__main__')\n"
+)
+
+
+def test_the_gate_and_the_verdict_run_where_the_sdk_cannot_be_imported(tmp_path: Path) -> None:
+    """The runner's `python3` has no `anthropic`: the script imports it where the review needs
+    it, so `gate` and `verdict` load on the standard library alone."""
+    blocked = subprocess.run(
+        [sys.executable, "-I", "-c", WITHOUT_SDK.split("sys.argv")[0] + "import anthropic\n"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert blocked.returncode == 1
+    assert "ModuleNotFoundError" in blocked.stderr
+    env = gate_env(tmp_path, mode="all")
+    script = f"{env['GITHUB_WORKSPACE']}/.sdk-gates/scripts/conventions.py"
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", WITHOUT_SDK, script, "gate"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (done.returncode, done.stderr) == (0, "")
+    assert (tmp_path / "output.txt").read_text() == "mode=all\nrelease=false\nrun=true\n"
+    env = verdict_env(tmp_path, result("ready", []))
+    done = subprocess.run(
+        [sys.executable, "-I", "-c", WITHOUT_SDK, script, "verdict"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert (done.returncode, done.stderr) == (0, "")
+    assert (tmp_path / "bin" / "comment.md").read_text().startswith(f"{MARKER}\n**Approved.**")
 
 
 def test_all_reviews_every_pr(tmp_path: Path) -> None:
@@ -419,12 +575,13 @@ def test_a_skipped_job_hides_no_review_and_no_failure(
     """Whatever the condition skips, the Gate would have passed without a review: a mode other
     than `release`, in any case, always starts the job, so a wrong value, `off` among them, still
     fails naming the two; a value that differs from `release` by case alone is that mode in the
-    Gate too; and a title the condition admits only by its looser reading ends at the Gate."""
+    Gate too; and a title the condition admits only by its looser reading ends at the Gate. The
+    Gate runs where the condition skips the job, the pull requests this test holds it to."""
     skipped = 0
     for title in ("feat: a change", *RELEASE_TITLES, *OTHER_TITLES):
-        code, _out, outputs = gate(tmp_path, mode=mode, title=title, labels=labels, **who)
         if not admitted(mode, title, labels):
             skipped += 1
+            code, _out, outputs = gate(tmp_path, mode=mode, title=title, labels=labels, **who)
             assert (code, outputs.get("run")) == (0, "false"), title
     # The condition skips some pull request exactly where no label and no other mode admits it.
     assert bool(skipped) == (mode.lower() in ("", "release") and not labeled(labels))
@@ -445,6 +602,69 @@ def test_the_review_and_the_verdict_wait_for_the_documents() -> None:
     assert "--docs" not in WORKFLOW
     assert "sdk-core" not in WORKFLOW
     assert "fetch-depth: 0" in step_block("Check out the pull request head with full history")
+
+
+def job_steps() -> list[tuple[str, str]]:
+    """The job's steps in order, each its name and its block up to the next step."""
+    steps = WORKFLOW.split("\n    steps:\n", 1)[1]
+    blocks = re.split(r"^      - name: ", steps, flags=re.M)[1:]
+    return [(block.split("\n", 1)[0], block) for block in blocks]
+
+
+def condition_of(block: str) -> str | None:
+    """The `if:` of a step, or None where it has none."""
+    found = re.search(r"^        if: (.*)$", block, re.M)
+    return found.group(1) if found else None
+
+
+def checkout_of(block: str) -> list[str]:
+    """What a checkout step runs: its `uses:` line and its `with:` lines."""
+    lines = block.split("\n        uses: ", 1)[1].splitlines()
+    kept = [lines[0]]
+    if len(lines) > 1 and lines[1] == "        with:":
+        kept += [line.strip() for line in lines[2:] if line.startswith("          ")]
+    return kept
+
+
+SCRIPT_STEP = "Check out the review script from xippios/.github"
+HEAD_STEP = "Check out the pull request head with full history"
+
+
+def test_the_script_is_checked_out_before_the_gate_with_no_condition() -> None:
+    """The Gate calls the script, so a first step checks it out, as the checkout after the
+    head's does, into a workspace that holds nothing of the pull request yet (step 2 of
+    .github 0.5.0)."""
+    (first, block), (second, _gate) = job_steps()[:2]
+    assert second == "Gate"
+    assert first.startswith("Check out")
+    assert condition_of(block) is None
+    assert checkout_of(block) == checkout_of(step_block(SCRIPT_STEP))
+    for setting in (
+        "repository: xippios/.github",
+        "ref: ${{ job.workflow_sha }}",
+        "path: .sdk-gates",
+        "persist-credentials: false",
+    ):
+        assert setting in checkout_of(block)
+
+
+def test_everything_after_the_gate_waits_for_its_output() -> None:
+    """A pull request that the Gate turns away costs one checkout of the script, and no
+    checkout of the head, no key and no model call. The head's checkout empties the workspace,
+    so the script is checked out again after it, where Prepare's check of a link reads it."""
+    names = [name for name, _block in job_steps()]
+    assert names[2:5] == [HEAD_STEP, SCRIPT_STEP, "Install uv"]
+    assert names[-3:] == ["Prepare the review material", "Review", "Verdict"]
+    for name, block in job_steps()[2:]:
+        assert "steps.gate.outputs.run == 'true'" in str(condition_of(block)), name
+
+
+def test_the_readme_names_the_gate_and_the_verdict_of_the_script() -> None:
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    section = section.split("**`.github/workflows/conventions-range.yml`**", 1)[0]
+    flat = " ".join(section.split())
+    assert "`conventions.py gate`" in flat
+    assert "`conventions.py verdict`" in flat
 
 
 def test_the_readme_describes_the_review_by_mode() -> None:
@@ -519,11 +739,8 @@ def test_the_header_the_gate_and_the_docstring_name_the_mode_and_its_two_values(
     job = WORKFLOW.split("\njobs:\n", 1)[1].split("\n    if: >-\n", 1)[0]
     flat = " ".join(line.strip().removeprefix("# ") for line in job.splitlines())
     assert "a mode other than `release`, which reviews every PR or fails naming the two" in flat
-    gate_comment = " ".join(
-        line.strip().removeprefix("# ")
-        for line in step("Gate").splitlines()
-        if line.strip().startswith("#")
-    )
+    # The Gate's comment went into the script with its code (step 2 of .github 0.5.0).
+    gate_comment = " ".join(str(fr.gate.__doc__).replace("``", "`").split())
     assert "The caller's WORKFLOW_CONVENTIONS_MODE, `release` when neither" in gate_comment
     assert "`Off`" not in gate_comment
     assert "WORKFLOW_CONVENTIONS_MODE" in " ".join(fr.__doc__.split())
@@ -736,17 +953,37 @@ def verdict_step(
     comment it posted, if any; the step's stdout is left in ``stdout.txt``. ``last_comment``
     is the body of the last comment the token wrote on the pull request, empty when it wrote
     none; ``view_fails`` makes reading it fail, ``comment_fails`` posting the comment."""
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
-    (bin_dir / "last.txt").write_text(last_comment)
-    (bin_dir / "calls").unlink(missing_ok=True)
-    (bin_dir / "comment.md").unlink(missing_ok=True)
-    gh = bin_dir / "gh"
+    env = verdict_env(
+        tmp_path,
+        result,
+        last_comment=last_comment,
+        view_fails=view_fails,
+        comment_fails=comment_fails,
+    )
+    done = run_step("Verdict", env)
+    (tmp_path / "stdout.txt").write_text(done.stdout)
+    comment_file = tmp_path / "bin" / "comment.md"
+    comment = comment_file.read_text() if comment_file.exists() else None
+    summary = (tmp_path / "summary.md").read_text()
+    return done.returncode, summary + done.stderr, gh_calls(tmp_path), comment
+
+
+def verdict_env(
+    tmp_path: Path,
+    result: dict | None,
+    *,
+    last_comment: str = "",
+    view_fails: bool = False,
+    comment_fails: bool = False,
+) -> dict[str, str]:
+    """The environment of the Verdict step: the job's, with ``result`` as the verdict file in
+    the runner's temporary directory, and the values its `env:` block gives. The stub `gh`
+    answers the view of the last comment and keeps the comment it is given."""
     view = "exit 1" if view_fails else 'cat "$here/last.txt"'
     post = 'cat > "$here/comment.md"'
     if comment_fails:
         post = "echo 'HTTP 403: Resource not accessible by integration (ghs_abc123)' >&2; exit 1"
-    gh.write_text(
+    gh = (
         "#!/bin/sh\n"
         'here=$(dirname "$0")\n'
         'printf "%s\\n" "$*" >> "$here/calls"\n'
@@ -756,33 +993,22 @@ def verdict_step(
         "  *) exit 1 ;;\n"
         "esac\n"
     )
-    gh.chmod(0o755)
-    result_file = tmp_path / "verdict.json"
+    env = job_env(tmp_path, gh)
+    bin_dir = tmp_path / "bin"
+    (bin_dir / "last.txt").write_text(last_comment)
+    (bin_dir / "comment.md").unlink(missing_ok=True)
+    result_file = Path(env["RUNNER_TEMP"]) / "verdict.json"
     result_file.unlink(missing_ok=True)
     if result is not None:
         result_file.write_text(json.dumps(result))
-    summary = tmp_path / "summary.md"
-    summary.write_text("")
-    env = {
-        "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
+    return {
+        **env,
         "RESULT_FILE": str(result_file),
         "GH_TOKEN": "dummy",
         "REPO": REPO,
         "PR": "11",
         "HEAD_SHA": SHA,
-        "GITHUB_STEP_SUMMARY": str(summary),
     }
-    done = subprocess.run(
-        ["bash", "-e", "-o", "pipefail", "-c", step("Verdict")],
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    (tmp_path / "stdout.txt").write_text(done.stdout)
-    calls = (bin_dir / "calls").read_text().splitlines() if (bin_dir / "calls").exists() else []
-    comment = (bin_dir / "comment.md").read_text() if (bin_dir / "comment.md").exists() else None
-    return done.returncode, summary.read_text() + done.stderr, calls, comment
 
 
 # The two fields of the script's `--out` document that no output shows (.github#65), as
