@@ -39,6 +39,7 @@ permissions:
 jobs:
   spelling:
     name: spelling
+    if: vars.WORKFLOW_SPELLING != 'off'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:

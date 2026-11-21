@@ -42,10 +42,10 @@
 # reports as skipped and passing. A caller runs on no label, so a label set after the
 # opening counts from the next push or edit.
 #
-# The mode is the caller's variable CONVENTIONS_REVIEW, a repository variable over the
+# The mode is the caller's variable WORKFLOW_CONVENTIONS_MODE, a repository variable over the
 # organization's by GitHub's precedence, read without case in the condition and the Gate alike:
 # `release` (the default when neither is set) reviews a release PR on any branch; `all` reviews
-# every PR; `off` reviews none; another value fails naming the three. A PR the condition skips
+# every PR; another value fails naming the two. A PR the condition skips
 # gets no notice, since no job runs; one it admits that the mode does not review passes with
 # the Gate's notice.
 # On a release PR the review judges the range from the last release tag reachable from the
@@ -149,7 +149,7 @@ jobs:
   conventions:
     name: conventions
     # The job's own condition (.github#47): a release PR by its label or its title, or a mode
-    # other than `release` and `off`, which reviews every PR or fails naming the three. Any
+    # other than `release`, which reviews every PR or fails naming the two. Any
     # other PR skips the job: no runner starts, and the caller's check reports as skipped and
     # passing. GitHub's functions compare without case and know no regular expression, so a
     # title passes here by its ends and the Gate matches it exactly.
@@ -159,8 +159,8 @@ jobs:
       && (contains(github.event.pull_request.labels.*.name, 'release')
       || startsWith(github.event.pull_request.title, 'release: ')
       || endsWith(github.event.pull_request.title, ' Release')
-      || (vars.CONVENTIONS_REVIEW != '' && vars.CONVENTIONS_REVIEW != 'release'
-      && vars.CONVENTIONS_REVIEW != 'off'))
+      || (vars.WORKFLOW_CONVENTIONS_MODE != ''
+      && vars.WORKFLOW_CONVENTIONS_MODE != 'release'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     # A new push or edit supersedes the review of the previous state.
@@ -174,7 +174,7 @@ jobs:
         id: gate
         env:
           HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
-          MODE: ${{ vars.CONVENTIONS_REVIEW }}
+          MODE: ${{ vars.WORKFLOW_CONVENTIONS_MODE }}
           TITLE: ${{ github.event.pull_request.title }}
           LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'release') }}
           AUTHOR: ${{ github.event.pull_request.user.login }}
@@ -193,16 +193,16 @@ jobs:
               *) return 1 ;;
             esac
           }
-          # The caller's CONVENTIONS_REVIEW, `release` when neither the repository nor the
-          # organization sets it, read without case as the job's condition reads it, so `Off`
-          # is `off` in both. The backticks below are Markdown for the summary, not command
+          # The caller's WORKFLOW_CONVENTIONS_MODE, `release` when neither the repository nor the
+          # organization sets it, read without case as the job's condition reads it, so `All`
+          # is `all` in both. The backticks below are Markdown for the summary, not command
           # substitutions.
           mode="${MODE:-release}"
           mode="${mode,,}"
           case "$mode" in
-            release|all|off) ;;
+            release|all) ;;
             *)
-              echo "conventions: CONVENTIONS_REVIEW is \`$MODE\`; it is \`release\`, \`all\` or \`off\` (C57)" | tee -a "$GITHUB_STEP_SUMMARY"
+              echo "conventions: WORKFLOW_CONVENTIONS_MODE is \`$MODE\`; it is \`release\` or \`all\` (C57)" | tee -a "$GITHUB_STEP_SUMMARY"
               exit 1
               ;;
           esac
@@ -222,12 +222,9 @@ jobs:
             # shellcheck disable=SC2016
             echo 'conventions: Dependabot PR, reviewed by `ci` only' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
-          elif [ "$mode" = "off" ]; then
-            echo "conventions: CONVENTIONS_REVIEW is off; the review is switched off for this repository" | tee -a "$GITHUB_STEP_SUMMARY"
-            echo "run=false" >> "$GITHUB_OUTPUT"
           elif [ "$mode" = "release" ] && [ "$release" != "true" ]; then
             # shellcheck disable=SC2016
-            echo 'conventions: not a release PR; with CONVENTIONS_REVIEW release the review runs on a PR labeled `release` or titled `<version> Release` or `release: <version>`' | tee -a "$GITHUB_STEP_SUMMARY"
+            echo 'conventions: not a release PR; with WORKFLOW_CONVENTIONS_MODE release the review runs on a PR labeled `release` or titled `<version> Release` or `release: <version>`' | tee -a "$GITHUB_STEP_SUMMARY"
             echo "run=false" >> "$GITHUB_OUTPUT"
           elif app "$AUTHOR" || app "$ACTOR"; then
             echo "conventions: a pull request opened or updated by a GitHub App gets no review" | tee -a "$GITHUB_STEP_SUMMARY"

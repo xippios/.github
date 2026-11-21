@@ -45,7 +45,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   directory, so no `.codespellrc`, `setup.cfg` or `pyproject.toml` of the checkout is read, and
   uv runs with `--no-config`. `ignore-words` defaults to `cancelled`, GitHub's spelling of a
   run's conclusion and of `cancelled()`. A named path that does not exist fails the check,
-  since codespell passes it in silence. Permissions: `contents: read`; no secret. The job times
+  since codespell passes it in silence. The variable `WORKFLOW_SPELLING` switches it (the
+  switch, under the wiring below). Permissions: `contents: read`; no secret. The job times
   out after 5 minutes. A root's caller:
 
   ```yaml
@@ -77,7 +78,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   redacted message, a refusal's category), the turns, the tool calls, the token usage and the
   key the review ended on (the keys below). The job times out after 45 minutes, which leaves a
   review at effort `xhigh` the time of 160 turns on one key; a review the timeout ends returns
-  no verdict and writes no summary line.
+  no verdict and writes no summary line. The variable `WORKFLOW_CONVENTIONS` switches it (the
+  switch, under the wiring below).
   Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
   - **The events**: the job runs on a pull request's opening, push, reopening and edit alone,
     the event `pull_request` with the types `opened`, `synchronize`, `reopened` and `edited`,
@@ -96,15 +98,15 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     and compare without case, so the condition admits a title by its start, `release:` and a
     space, or by its end, a space and `Release`, and the Gate below matches it exactly. A caller
     runs on no label, so a label set after the opening counts from the next push or edit.
-  - **The mode**: the caller's variable `CONVENTIONS_REVIEW`, read from the calling repository,
-    where a repository variable overrides the organization's by GitHub's precedence, and read
-    without case by the condition and the Gate alike, so `Off` is `off`. `release`, the default
-    when neither is set, reviews a release pull request. `all` reviews every pull request. `off`
-    reviews none. Any other value fails the check and names the three. A pull request the
-    condition skips gets no notice, since no job runs; one it admits that the mode does not
-    review passes with the Gate's notice. A pull request that no mode reviews makes no API call
-    and needs no key. The mode reads the title and the label, so a caller runs on `edited` too,
-    and a label set after the opening counts from the next push or edit.
+  - **The mode**: the caller's variable `WORKFLOW_CONVENTIONS_MODE`, read from the calling
+    repository, where a repository variable overrides the organization's by GitHub's
+    precedence, and read without case by the condition and the Gate alike, so `All` is `all`.
+    `release`, the default when neither is set, reviews a release pull request. `all` reviews
+    every pull request. Any other value, `off` among them, fails the check and names the two. A
+    pull request the condition skips gets no notice, since no job runs; one it admits that the
+    mode does not review passes with the Gate's notice. A pull request that no mode reviews
+    makes no API call and needs no key. The mode reads the title and the label, so a caller
+    runs on `edited` too, and a label set after the opening counts from the next push or edit.
   - **The documents**: the ones the repository's `README.md` links under `## Documents`, read on
     the default branch and never from the pull request, so a pull request cannot rewrite the
     rules it is judged by (C80, `docs/style/repository.md` of a coordinate root). A path, an
@@ -365,22 +367,24 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     whatever the caller's script checks, each pair named. On a pull request the checkout is its
     merge with the base, so a number the base took since the branch left it counts as taken.
   - **The failure names the script**: each error annotation names
-    `python3 scripts/adr_index.py`, which writes both files from the records, to be run and its
-    files committed once what comes first is mended. After a failed `--check` that is any record
+    `python3 -I scripts/adr_index.py`, which writes both files from the records, to be run and
+    its files committed once what comes first is mended. After a failed `--check` that is any record
     the script's own lines above the annotation name, such as one whose first line does not
     read, since the script writes neither file while a record does not read; after a number
     twice, one of the two records renumbered. A record's name reaches an annotation escaped, so
     no name starts a workflow command.
 
+  The variable `WORKFLOW_ADR_INDEX` switches it (the switch, under the wiring below).
   Permissions: `contents: read`; the checkout keeps no token. The job times out after 5 minutes.
 - **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff 0.17.1,
   the scripts' tests on a pinned pytest (with the review's
   `anthropic` 2.3.0 and `spelling.yml`'s codespell; a fake client, no key, no network), and
   actionlint with the runner's shellcheck. It calls `spelling.yml` over `README.md`, `.github`
   and `scripts` as the job `spelling`, and `ci` fails when that job did not pass, so the
-  ruleset's required check `ci` covers both. The one test of `site-tests.yml` that requires a
-  site with the real Composer uses the runner's PHP and Composer, and is skipped elsewhere
-  without them.
+  ruleset's required check `ci` covers both. `ci` counts a `spelling` job that did not run as
+  not passed, so the switch `WORKFLOW_SPELLING` is for callers. The one test of
+  `site-tests.yml` that requires a site with the real Composer uses the runner's PHP and
+  Composer, and is skipped elsewhere without them.
 
 Every action in the workflows is pinned to a commit SHA with its version in a comment.
 `setup-uv` installs a pinned uv and `setup-php` a pinned Composer, the review runs a pinned
@@ -486,7 +490,8 @@ jobs:
 The trigger files `spelling.yml` and `adr-index.yml` run on a pull request's opening, push and
 reopening, the types `opened`, `synchronize` and `reopened`, since an edit starts the review
 only. Each has its one job under the job id that keeps its check context and carries no
-condition. A root's `.github/workflows/spelling.yml`:
+condition, since the workflow it calls carries its switch (the switch, below). A root's
+`.github/workflows/spelling.yml`:
 
 ```yaml
 name: Spelling
@@ -521,6 +526,18 @@ jobs:
   adr-index:
     uses: xippios/.github/.github/workflows/adr-index.yml@main
 ```
+
+### The switch
+
+A variable `WORKFLOW_<NAME>` with the values `on` and `off` switches a workflow whose file
+exists (https://github.com/xippios/.github/issues/111): GitHub reads the calling repository's
+variable over the organization's, a called workflow reads its caller's, and the workflow is on
+where neither sets one. Only `off` switches it off, compared without case, and any other value
+leaves it on. `spelling.yml` and `adr-index.yml` carry their switch in their job's condition,
+`vars.WORKFLOW_SPELLING != 'off'` and `vars.WORKFLOW_ADR_INDEX != 'off'`, so on `off` no runner
+starts and the check reports as skipped and passing. The review carries its switch
+`WORKFLOW_CONVENTIONS` in the trigger file `conventions.yml` above, so on `off` neither of its
+jobs calls a workflow and `conventions / conventions` reports nothing.
 
 ## Rulesets
 
