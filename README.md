@@ -398,7 +398,9 @@ From coordinate-core 0.7.6 and sdk-template 0.3.4 on, the caller of `spelling.ym
 `conventions.yml` and `adr-index.yml` runs on `pull_request` with the types `opened`,
 `synchronize`, `reopened` and `edited`. A caller's `on: pull_request` without `types` runs on the
 first three only, and `edited` matters to the review, since the description is judged and a
-change of the title or of the base arrives as `edited`. A caller runs on no label (C57):
+change of the title or of the base arrives as `edited`. An edit starts the review only, so the
+trigger files `spelling.yml` and `adr-index.yml` below run on the first three types and the
+trigger file `conventions.yml` on all four. A caller runs on no label (C57):
 GitHub starts a workflow on a label of any name and reports a head's checks from its newest
 run, so the run of a label could stand for the head. A label set
 after the opening, `release` among them, counts from the next push or edit. The jobs of a
@@ -481,16 +483,17 @@ jobs:
       DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
 ```
 
-The trigger files `spelling.yml` and `adr-index.yml` run on a pull request's four types, each
-with its one job under the job id that keeps its check context, and carry no condition. A root's
-`.github/workflows/spelling.yml`:
+The trigger files `spelling.yml` and `adr-index.yml` run on a pull request's opening, push and
+reopening, the types `opened`, `synchronize` and `reopened`, since an edit starts the review
+only. Each has its one job under the job id that keeps its check context and carries no
+condition. A root's `.github/workflows/spelling.yml`:
 
 ```yaml
 name: Spelling
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read
@@ -509,7 +512,7 @@ name: ADR index
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: read

@@ -3,7 +3,8 @@ repository are written in: block mappings indented by two spaces, block sequence
 plain scalars and flow sequences of plain words. PyYAML is not among the suite's pins, so a test
 reads a workflow with this reader, which refuses what it does not know instead of guessing: a
 tab, a comment, a key given twice, a quoted or block scalar, an indicator at the start of a plain
-scalar and an indentation that YAML would read otherwise. A file it reads, YAML reads alike, with
+scalar, a value with a space before it or a colon at its end, and an indentation that YAML would
+read otherwise. A file it reads, YAML reads alike, with
 every scalar a string."""
 
 import re
@@ -27,7 +28,10 @@ def scalar(value: str, line: str) -> str | list[str]:
         if not value.endswith("]") or not all(WORD.fullmatch(item) for item in items):
             raise UnreadError(line)
         return items
-    if value[0] in INDICATORS or ": " in value or " #" in value or value != value.rstrip():
+    # Space around the value, and a colon at its end, which YAML reads as the start of a mapping.
+    if value[0] in INDICATORS or ": " in value or " #" in value or value != value.strip():
+        raise UnreadError(line)
+    if value.endswith(":"):
         raise UnreadError(line)
     return value
 
