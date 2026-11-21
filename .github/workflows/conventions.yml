@@ -97,6 +97,24 @@
 # secret from what it prints and writes, and the PR comment says nothing of keys. A secret
 # with one key reviews as before, and a caller passes the secret as it did.
 #
+# The run before (.github#95): the Prepare step reads the check's last comment on the pull
+# request before the Verdict step rewrites it, the workflow token's, which gh names
+# github-actions; its hidden last line carries the head that run judged and its findings. The
+# head is compared with that one by the text of its files, not by ancestry, since a rebased
+# head descends from no head judged before: the two trees, the checkout's where it holds that
+# commit, else GitHub's, read with the workflow token. The review gives each finding of the run
+# before one state, fixed, decided by the opener or open, on the opener's decisions on the pull
+# request, and the script refuses any other. A decision of the opener never settles a finding
+# that blocked by itself: that one is decided only with the judge's reason that no written rule
+# is broken, else open and carried into this run. The comment lists them, and says of each new
+# finding whether its file changed since the head judged before, or that it was not compared
+# where that head could not be read; it never guesses, and marks only a file the comparison
+# covers: a changed one or a file the head's tree holds. A first run, and a run that finds no
+# comment of the check or one written before this, judges as a first run and lists nothing; the
+# job summary says that no run before was found, or names it. A
+# finding names a line only where its file has that line at the head, and keeps its file
+# without one where it has not (.github#85). No permission, secret or input is added.
+#
 # The model judges and runs nothing. Its material is prepared under .review/ before it
 # starts; it reads with three tools the script serves (read_file, list_files, grep) inside
 # the workspace's real path only: `.git/`, `.envrc`, `.env` files, symlinks that lead out and
@@ -269,7 +287,9 @@ jobs:
       # `case()` yields its last argument, '', for a public caller (.github#83). A README that
       # links none ends the job green here, with a notice and `review=false`: no API call.
       # On a release PR (the gate's `release`) the range runs from the last release tag, and
-      # the version comes from the title, else from the head's pyproject.toml.
+      # the version comes from the title, else from the head's pyproject.toml. The run before
+      # comes from the check's last comment, read here before the Verdict step rewrites it
+      # (.github#95): .review/earlier.json and .review/changed.json.
       - name: Prepare the review material
         id: prepare
         if: steps.gate.outputs.run == 'true'
@@ -318,7 +338,10 @@ jobs:
       # failed or stopped before its verdict), is no verdict and fails, with the script's
       # summary line. A verdict, `ready` included, is posted as the comment, which follows
       # docs/style/reviews.md#conventions-check: the lead with the count and the head's commit,
-      # what was judged, then the findings, each with the document and section it goes against.
+      # what was judged, then the findings, each with the document and section it goes against
+      # and, after a run before, whether its file changed since the head judged before; then
+      # the findings of the run before, each with what became of it, and a hidden last line
+      # with this head and its findings for the next run (.github#95).
       # Anything that looks like a key is redacted before the summary and the comment.
       - name: Verdict
         if: ${{ !cancelled() && steps.gate.outputs.run == 'true' && steps.prepare.outputs.review == 'true' }}
@@ -341,6 +364,18 @@ jobs:
           OLD_MARKER = "<!-- conventions -->"
           # An Anthropic key, a GitHub token of any kind.
           KEY = re.compile(r"sk-ant-[A-Za-z0-9_-]+|gh[opsur]_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+")
+          SHA = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+          # The hidden last line carries this run's head and findings to the next run, which
+          # scripts/conventions.py reads (`run_state`, .github#95).
+          FIELDS = ("document", "file", "line", "blocking", "text")
+          # Whether a new finding's file changed since the head the run before judged.
+          MARKS = {
+              "unchanged": "Its file is unchanged since the head judged before.",
+              "changed": "Its file changed since the head judged before.",
+              "not compared": (
+                  "Its file was not compared: the head judged before could not be read."
+              ),
+          }
           PR = os.environ["PR"]
           REPO = os.environ["REPO"]
           COMMIT = f"https://github.com/{REPO}/commit/{os.environ['HEAD_SHA']}"
@@ -410,24 +445,77 @@ jobs:
           against = ""
           if documents is not None:
               against = f", against {count(len(documents), 'document')} of `README.md` on `main`"
-          lines = [MARKER, lead, "", f"Judged: {what}{against}."]
-          if findings:
-              lines.append("")
-          for number, finding in enumerate(findings, 1):
+          def described(finding):
+              """The finding as an item of a list: the document or the place, the text."""
               document = plain(finding.get("document") or "")
               where = plain(finding.get("file") or "")
               line = finding.get("line")
               if where and isinstance(line, int) and not isinstance(line, bool) and line > 0:
                   where += f":{line}"
               text = one_line(finding.get("text", ""))
-              blocks = "yes" if finding.get("blocking") else "no"
               if document:
                   place = f" `{where}`." if where else ""
-                  lines.append(f"{number}. **{document}** {text}{place} Blocks: {blocks}.")
-              elif where:
-                  lines.append(f"{number}. **`{where}`** {text} Blocks: {blocks}.")
+                  return f"**{document}** {text}{place}"
+              if where:
+                  return f"**`{where}`** {text}"
+              return f"**the pull request** {text}"
+
+
+          def sentence(value):
+              text = one_line(value or "")
+              return text if not text or text[-1] in ".!?" else text + "."
+
+
+          def became(finding):
+              """What became of a finding of the run before, as the review stated it, in the
+              words of `became` in scripts/conventions.py. A decision of the opener never
+              settles a finding that blocked by itself: the judge's reason comes with it."""
+              state, carried = finding.get("state"), finding.get("finding")
+              reason = sentence(finding.get("reason"))
+              if state == "fixed":
+                  return "Fixed."
+              if state == "decided":
+                  return f"Decided by the opener: {reason}" if reason else "Decided by the opener."
+              words = "Open."
+              if isinstance(carried, int) and not isinstance(carried, bool):
+                  words = f"Open: finding {carried} above."
+              if not reason:
+                  return words
+              # One that blocked, carried by a finding that does not block: the judge's reason.
+              if finding.get("unblocked"):
+                  return f"{words} It blocked before and no longer blocks: {reason}"
+              return f"{words} The opener decided otherwise, and the rule stands: {reason}"
+
+
+          lines = [MARKER, lead, "", f"Judged: {what}{against}."]
+          if findings:
+              lines.append("")
+          for number, finding in enumerate(findings, 1):
+              blocks = "yes" if finding.get("blocking") else "no"
+              mark = MARKS.get(finding.get("since"))
+              mark = f" {mark}" if mark else ""
+              lines.append(f"{number}. {described(finding)} Blocks: {blocks}.{mark}")
+          # The run before (.github#95): each of its findings with what became of it. A first
+          # run, and one that found no comment of the check, has none.
+          earlier = result.get("earlier") if isinstance(result.get("earlier"), dict) else {}
+          head = earlier.get("head")
+          if isinstance(head, str) and SHA.fullmatch(head):
+              before = [f for f in earlier.get("findings") or [] if isinstance(f, dict)]
+              judged_before = f"https://github.com/{REPO}/commit/{head}"
+              lines.append("")
+              if before:
+                  lines += [f"The run before judged {judged_before} and gave {count(len(before))}:", ""]
               else:
-                  lines.append(f"{number}. **the pull request** {text} Blocks: {blocks}.")
+                  lines.append(f"The run before judged {judged_before} and gave no findings.")
+              for number, finding in enumerate(before, 1):
+                  lines.append(f"{number}. {described(finding)} {became(finding)}")
+          run = {
+              "head": os.environ["HEAD_SHA"],
+              "findings": [{field: finding.get(field) for field in FIELDS} for finding in findings],
+          }
+          run_line = json.dumps(run, ensure_ascii=True, separators=(",", ":"))
+          run_line = run_line.replace("<", "\\u003c").replace(">", "\\u003e")
+          lines += ["", f"<!-- conventions-run: {run_line} -->"]
           body = KEY.sub("[redacted]", "\n".join(lines) + "\n")
           summary(body)
           print(body)

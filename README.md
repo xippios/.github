@@ -69,7 +69,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   when the workflow token wrote none and edited in place on the next run, never over another
   workflow's comment, in the form of `docs/style/reviews.md#conventions-check` of a coordinate
   root: the lead with the count and the head's commit, what was judged, then the findings, each
-  with the document and the section it goes against. A run that reviews nothing posts none, and
+  with the document and the section it goes against, and after a run before, its findings with
+  what became of each (the run before, below). A run that reviews nothing posts none, and
   a post that fails leaves its reason in the job summary and a warning annotation. No verdict (an
   API error, a refusal, a `max_tokens` stop, the turn cap of 160, a missing key) fails the check,
   and the job summary carries the script's line with the cause (the SDK's error class and its
@@ -208,11 +209,55 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     redacts every key of the secret, whatever its form, from all it prints and writes, and
     the PR comment says nothing of keys. A secret with one key reviews as before, and a
     caller's `gates.yml` passes the secret as it did.
+  - **The run before** (https://github.com/xippios/.github/issues/95): `prepare` reads the
+    check's last comment on the pull request before the Verdict step rewrites it: the
+    workflow token's, which `gh` names `github-actions`, opening with the check's marker. Its
+    hidden last line, `<!-- conventions-run: … -->`, carries the head that run judged and its
+    findings, as JSON with `<` and `>` escaped so that no text ends the HTML comment early.
+    The head is compared with the one judged before by the text of its files, not by
+    ancestry, since a rebased head descends from no head judged before: the two trees, the
+    checkout's tree of the earlier head where it holds that commit, else GitHub's, read with
+    the workflow's token, and a file changed where its blob or its mode differs.
+    `.review/earlier.json` gives the review the findings of the run before, each with whether
+    its file changed since, and the opener's decisions on the pull request, its author's
+    comments marked `<!-- style: comments/decisions -->`; `.review/changed.json` holds the
+    files changed since. The first message names the run before and the count of its
+    findings, so the cached prefix stays the same for every review of the repository. The
+    review gives each finding of the run before one state, fixed, decided by the opener or
+    open, an open one with the number of the finding of this review that carries it, and the
+    script answers another state, a finding left out or one given twice as it answers a
+    malformed finding: the model calls again. `decided` needs a decision of the opener on the
+    pull request. A decision of the opener settles a finding that did not block, and never
+    settles a finding that blocked by itself: that one is `decided` only where the judge finds
+    that the decision shows no written rule broken, and gives that reason in one sentence,
+    which the comment prints with it; where the rule is still broken it is open, carried into
+    this run as a finding, and the comment says that the opener decided otherwise and why the
+    rule stands. The script refuses `decided` on a finding that blocked without that reason,
+    so the judged party does not switch a required check off by a comment. A finding that
+    blocked stops blocking only as fixed or with the judge's reason: carried by a finding
+    that does not block, it needs one too, and the comment says that it blocked before and
+    why it no longer does. The comment lists
+    them under the new findings and says of each new finding whether its file changed since
+    the head judged before; where GitHub no longer serves that head whole, it says the file
+    was not compared, since that head could not be read, and never guesses. Only a file the
+    comparison covers is marked, a changed one or a file the head's tree holds; a finding
+    that names no file, or a path of neither tree such as the review's own material under
+    `.review/`, carries no mark, and `earlier.json` says nothing of its change. A first run,
+    and one that finds no comment of the check, or one written before this or whose hidden
+    line does not read, judges as a first run and lists nothing; the job summary names the
+    run before, or says that no run before was found, or that its comment does not read, and
+    that the run judges as a first run. No permission, secret or input is added, so a caller
+    changes nothing.
+  - **The line** (https://github.com/xippios/.github/issues/85): a finding names a line only
+    where its file has that line at the head, counted as `read_file` counts lines; where it
+    has not, as in a file the head lacks or one the tools refuse, the finding keeps its file
+    and names no line.
   - **What the model may do**: nothing but read. Before it starts, `conventions.py
     prepare` writes its material to `.review/`: `diff.patch` and `log.txt` of the range,
     `pr.json` (title, body, author, comments, files), `checks.json` (the head's checks, `ci`
-    among them), `meta.json` (the coordinates and the range) and the documents under
-    `documents/`, listed in `documents.json`. The system prompt carries the instructions and
+    among them), `meta.json` (the coordinates and the range), the documents under
+    `documents/`, listed in `documents.json`, and after a run before, `earlier.json` and
+    `changed.json` (the run before, above). The system prompt carries the instructions and
     the documents, cached, and names no pull request (the coordinates and the range are in
     the first message), so every review of a repository against the same documents sends the
     same prefix and parallel reviews read one cache entry; the model reads everything else
@@ -418,7 +463,14 @@ the material as the workflow does, the documents from the clone's `origin/main` 
 names another ref) and a pull request labeled `release` or titled `<version> Release` or
 `release: <version>` on its release's range, with its version, and runs the review, then
 prints the summary line and the findings, each with the document it goes
-against. A README that links no documents ends it there, green, as in the workflow. It needs
+against. A README that links no documents ends it there, green, as in the workflow. It reads
+the run before from the check's last comment as the workflow does, since that comment is the
+workflow token's whatever `gh`'s login, and posts nothing. `--earlier <file>` takes the verdict
+file that an earlier dry run wrote with `--out`, which names the pull request and the head
+that run judged, and stands for the check's comment, so a dry run judges as a later run before
+any comment carries the hidden line. It refuses, before any clone, the file of a run that
+returned no verdict and that of another pull request. It prints the states and the marks as the comment shows them, after the
+findings. It needs
 `gh` signed in, whose login stands for the workflow's token, and a `DOCUMENTS_READ_TOKEN` in the
 environment of the command is read as a private caller's workflow reads the secret, whatever the
 repository's visibility, since a dry run posts nothing. It needs the key in the
