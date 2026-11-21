@@ -2404,17 +2404,33 @@ def pr_titled(fake_gh: Path, title: str) -> None:
     (fake_gh / "pr.json").write_text(json.dumps({"title": title, "body": "Body."}) + "\n")
 
 
-@pytest.mark.parametrize("title", ["0.2.0 Release", "release: v0.2.0"])
 def test_a_release_pr_reads_its_version_from_the_title(
-    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], title: str
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path]
 ) -> None:
     pyproject = '[project]\nname = "pkg"\nversion = "0.1.9"\n'
     ws, _first, base, head = make_release_checkout(tmp_path, tag="v0.1.0", pyproject=pyproject)
-    pr_titled(fake_gh, title)
+    pr_titled(fake_gh, "0.2.0 Release")
     assert prepare(REPO, ws, base, head, "--release") == 0
     assert json.loads((ws / ".review" / "meta.json").read_text())["version"] == "0.2.0"
     summary = actions["summary"].read_text().splitlines()
     assert "conventions: the release's version is 0.2.0, read from the title" in summary
+
+
+@pytest.mark.parametrize("title", ["release: v0.2.0", "release: 0.2.0"])
+def test_the_older_title_form_names_no_version(
+    tmp_path: Path, fake_gh: Path, actions: dict[str, Path], title: str
+) -> None:
+    """A release PR labeled `release` whose title is of the older form, retired in step 2.1 of
+    .github 0.5.0: its version is the head's, not the title's."""
+    pyproject = '[project]\nname = "pkg"\nversion = "0.1.9"\n'
+    ws, _first, base, head = make_release_checkout(tmp_path, tag="v0.1.0", pyproject=pyproject)
+    pr_titled(fake_gh, title)
+    assert prepare(REPO, ws, base, head, "--release") == 0
+    assert json.loads((ws / ".review" / "meta.json").read_text())["version"] == "0.1.9"
+    summary = actions["summary"].read_text().splitlines()
+    assert "conventions: the release's version is 0.1.9, read from the head's pyproject.toml" in (
+        summary
+    )
 
 
 def test_a_labeled_release_pr_reads_its_version_from_the_heads_pyproject(
@@ -2479,9 +2495,9 @@ def test_prepare_needs_full_shas_without_workdir(tmp_path: Path, fake_gh: Path, 
     ("title", "version"),
     [
         ("0.7.4 Release", "0.7.4"),
-        ("release: 0.6.4", "0.6.4"),
-        ("release: 0.6.4-rc.1", "0.6.4-rc.1"),
-        ("release: v0.6.4", "0.6.4"),
+        ("release: 0.6.4", None),
+        ("release: 0.6.4-rc.1", None),
+        ("release: v0.6.4", None),
         ("Release: 0.6.4", None),
         ("release 0.6.4", None),
         ("release: 0.6.4 and more", None),
@@ -2495,8 +2511,8 @@ def test_prepare_needs_full_shas_without_workdir(tmp_path: Path, fake_gh: Path, 
     ],
 )
 def test_a_release_pr_is_known_by_its_title(title: str, version: str | None) -> None:
-    """`<version> Release`, and `release: <version>` until every workspace has adopted
-    coordinate-core 0.7.4, as the core's `RELEASE_TITLE` reads them (coordinate-core#805)."""
+    """`<version> Release` alone (docs/style/pulls.md#release-pr of a coordinate root); the older
+    form, retired in step 2.1 of .github 0.5.0, is no release title."""
     assert fr.release_version(title) == version
     assert fr.is_release_title(title) is (version is not None)
 
@@ -2547,7 +2563,7 @@ def test_dry_run_judges_a_release_pr_by_its_title(
     tmp_path: Path, fake_gh: Path, api, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     source, _first, base, head = make_release_checkout(tmp_path, tag="v0.1.0")
-    facts = {"baseRefOid": base, "headRefOid": head, "title": "release: 0.2.0"}
+    facts = {"baseRefOid": base, "headRefOid": head, "title": "0.2.0 Release"}
     (fake_gh / "shas.json").write_text(json.dumps(facts))
 
     def clone(repo: str, pr: int, sha: str, workdir: Path) -> None:
@@ -2562,6 +2578,32 @@ def test_dry_run_judges_a_release_pr_by_its_title(
     assert first.startswith(f"Review the release pull request {REPO}#7:")
     assert "from v0.1.0 (" in first
     assert json.loads(out_file.read_text())["range"]["tag"] == "v0.1.0"
+
+
+def test_dry_run_judges_a_pr_of_the_older_title_form_as_no_release(
+    tmp_path: Path, fake_gh: Path, api, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the label, a title of the form retired in step 2.1 of .github 0.5.0 makes no
+    release PR: the dry run judges the pull request's own diff, as the workflow's Gate reads it."""
+    source, _first, base, head = make_release_checkout(tmp_path, tag="v0.1.0")
+    facts = {"baseRefOid": base, "headRefOid": head, "title": "release: 0.2.0"}
+    (fake_gh / "shas.json").write_text(json.dumps(facts))
+
+    def clone(repo: str, pr: int, sha: str, workdir: Path) -> None:
+        git(tmp_path, "clone", "-q", str(source), str(workdir))
+        git(workdir, "checkout", "-q", "--detach", sha)
+
+    monkeypatch.setattr(fr, "clone_pull_request", clone)
+    client = api(message([verdict()]))
+    out_file = tmp_path / "dry.json"
+    assert fr.main(["dry-run", "--repo", REPO, "--pr", "7", "--out", str(out_file)]) == 0
+    first = client.messages.requests[0]["messages"][0]["content"]
+    assert not first.startswith(f"Review the release pull request {REPO}#7:")
+    assert json.loads(out_file.read_text())["range"] == {
+        "release": False,
+        "since": base,
+        "tag": None,
+    }
 
 
 @pytest.mark.parametrize(
@@ -2796,6 +2838,16 @@ def test_a_head_judged_before_that_cannot_be_read_is_not_compared(
         [],
         [comment("opener", "Looks good."), comment("opener", f"{DECISIONS}\n**Decided.** No.\n")],
         [check_comment(EARLIER_HEAD, BEFORE, author="someone")],
+        # The marker from before the markers of the style, retired in step 2.1 of .github 0.5.0,
+        # with no hidden line and with one that reads: no comment of the check either way.
+        [comment("github-actions", "<!-- conventions -->\n## conventions: `not ready`\n")],
+        [
+            comment(
+                "github-actions",
+                "<!-- conventions -->\n## conventions: `not ready`\n\n"
+                f"{run_block(EARLIER_HEAD, BEFORE)}\n",
+            )
+        ],
     ],
 )
 def test_a_run_that_finds_no_comment_of_the_check_judges_as_a_first_run_and_says_so(
@@ -2820,7 +2872,6 @@ def test_a_run_that_finds_no_comment_of_the_check_judges_as_a_first_run_and_says
             f"{CHECK}\n**Blocked.** 1 finding, 1 blocking, at https://github.com/{REPO}/commit/"
             f"{EARLIER_HEAD}.\n\n1. **sdk-core: docs/conventions.md** A finding. Blocks: yes.\n"
         ),
-        "<!-- conventions -->\n## conventions: `not ready`\n",
         f"{CHECK}\n**Approved.** No findings.\n\n<!-- conventions-run: {{not json -->\n",
         f"{CHECK}\n**Approved.** No findings.\n\n{run_block('e' * 7, BEFORE)}\n",
         f"{CHECK}\n**Approved.** No findings.\n\n{run_block(EARLIER_HEAD, [{'file': 'x'}])}\n",
