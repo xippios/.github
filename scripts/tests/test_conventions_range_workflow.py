@@ -248,6 +248,13 @@ def test_the_readme_says_what_the_gate_decides_case_by_case() -> None:
         "never by a search, whose index can lag just after a merge",
         "An error fails closed",
         "names the call and the class of the error",
+        # The time limits (finding 2 of the review of .github#130).
+        (
+            "A call of `gh` gets at most 30 seconds and all of them together 240 seconds, so "
+            "the gate ends with its line a minute before the job's timeout"
+        ),
+        # The order of the outputs (finding 3 of the review of .github#130).
+        "`run` is written last, after the sentence and `pr`",
     ):
         assert text in flat, text
     # No record that a reader of this public repository cannot open.

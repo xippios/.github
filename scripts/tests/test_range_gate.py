@@ -17,8 +17,10 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+import conventions as fr
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,13 +32,16 @@ OTHER_SHA = "d" * 40
 MILESTONE = {"number": 5, "title": "sdk-usda-psd 0.5.0"}
 TITLE = "0.5.0 Step 3: The gate knows the merge that completes a package"
 CALL = 'python3 -I "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" range-gate\n'
+BASH = shutil.which("bash") or "bash"
 # A stub `gh`: it logs each call and answers it with the page of its kind that the call asks for,
 # from `answers.json` beside it. A GraphQL query is the milestone's issues or the pull request's
 # closing issues, its page the number of its cursor `c<n>`; a REST call is the pull requests of a
-# commit, its page the number after `page=`. A page the test gave none of fails the call.
+# commit, its page the number after `page=`. A page the test gave none of fails the call, and a
+# page with `sleep` answers after that many seconds.
 STUB = """\
 import json
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -61,6 +66,7 @@ pages = json.loads((HERE / "answers.json").read_text()).get(kind, [])
 if index >= len(pages):
     sys.exit(f"stub: no page {index} of {kind}")
 page = pages[index]
+time.sleep(page.get("sleep", 0))
 sys.stdout.write(page.get("stdout", ""))
 sys.stderr.write(page.get("stderr", ""))
 sys.exit(page.get("exit", 0))
@@ -215,17 +221,19 @@ def run_gate(
     pulls: list[dict] | None = None,
     issues: list[dict] | None = None,
     closes: list[dict] | None = None,
+    more: dict[str, str] | None = None,
     **kwargs: str,
 ) -> Gate:
-    """Run the step `Gate` as the runner's default shell runs it, in the workspace."""
+    """Run the step `Gate` as the runner's default shell runs it, in the workspace; `more`
+    changes or adds to its environment."""
     answers = {
         "pulls": [ok([pull()])] if pulls is None else pulls,
         "issues": issue_pages([issue(12)]) if issues is None else issues,
         "closing": closing_pages([closing(12)]) if closes is None else closes,
     }
-    env = gate_env(tmp_path, answers=answers, **kwargs)
+    env = {**gate_env(tmp_path, answers=answers, **kwargs), **(more or {})}
     done = subprocess.run(
-        ["bash", "-e", "-o", "pipefail", "-c", step("Gate")],
+        [BASH, "-e", "-o", "pipefail", "-c", step("Gate")],
         env=env,
         cwd=env["GITHUB_WORKSPACE"],
         capture_output=True,
@@ -617,6 +625,151 @@ def test_a_page_that_names_a_next_page_without_a_cursor_fails_closed(tmp_path: P
     failed(gate, CALLS["issues"], "an answer of another shape")
 
 
+# --- the page cap, the time limits and a gh that does not run (the review of .github#130) --
+
+
+def numbered(count: int) -> list[list[dict]]:
+    """`count` pages of the milestone's issues, one issue that is no step on each."""
+    return [[issue(1000 + index, "gap")] for index in range(count)]
+
+
+def test_a_milestone_of_more_than_fifty_pages_fails_closed(tmp_path: Path) -> None:
+    """Decision 5: the fiftieth page still names a next one, and the gate reads no further."""
+    gate = run_gate(tmp_path, issues=issue_pages(*numbered(51)))
+    failed(gate, CALLS["issues"], "more than 50 pages")
+    assert gate.kinds().count("issues") == 50
+
+
+def test_a_milestone_that_ends_on_its_fiftieth_page_is_read(tmp_path: Path) -> None:
+    pages_of_issues = [*numbered(49), [issue(12)]]
+    judged(run_gate(tmp_path, issues=issue_pages(*pages_of_issues)))
+
+
+def test_closing_issues_of_more_than_fifty_pages_fail_closed(tmp_path: Path) -> None:
+    closes = closing_pages(*[[closing(2000 + index)] for index in range(51)])
+    gate = run_gate(tmp_path, closes=closes)
+    failed(gate, CALLS["closing"], "more than 50 pages")
+
+
+def unmerged(count: int, start: int = 0) -> list[dict]:
+    """`count` pull requests of the commit that are open, the least an answer holds of each."""
+    return [
+        {"number": 100 + start + index, "merged_at": None, "merge_commit_sha": None}
+        for index in range(count)
+    ]
+
+
+def test_fifty_full_pages_of_the_commits_pull_requests_fail_closed(tmp_path: Path) -> None:
+    pulls = [ok(unmerged(100, 100 * page)) for page in range(51)]
+    gate = run_gate(tmp_path, pulls=pulls)
+    failed(gate, CALLS["pulls"], "more than 50 pages")
+    assert gate.kinds() == ["pulls"] * 50
+
+
+def test_a_merged_pull_request_on_the_fiftieth_page_is_read(tmp_path: Path) -> None:
+    pulls = [*(ok(unmerged(100, 100 * page)) for page in range(49)), ok([pull(9)])]
+    judged(run_gate(tmp_path, pulls=pulls), pr="9")
+
+
+def test_a_gh_that_does_not_run_fails_closed(tmp_path: Path) -> None:
+    """No `gh` on the path: the runner's `python3` alone, by a link in a directory of its own."""
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    (alone / "python3").symlink_to(sys.executable)
+    gate = run_gate(tmp_path, more={"PATH": str(alone)})
+    failed(gate, CALLS["pulls"], "gh did not run (FileNotFoundError)")
+
+
+# The limits the tests set in place of the gate's own, so that the suite stays fast.
+CALL_LIMIT = "RANGE_GATE_CALL_SECONDS"
+TOTAL_LIMIT = "RANGE_GATE_SECONDS"
+
+
+@pytest.mark.parametrize("kind", list(CALLS))
+def test_a_call_that_does_not_come_back_fails_closed_within_its_limit(
+    tmp_path: Path, kind: str
+) -> None:
+    """A read that hangs ends the gate with its line long before the job's timeout."""
+    page = failing(kind, {"sleep": 5, "stdout": "[]"})
+    started = time.monotonic()
+    gate = run_gate(tmp_path, more={CALL_LIMIT: "0.5"}, **page)
+    assert time.monotonic() - started < 4
+    failed(gate, CALLS[kind], "gh gave no answer within 0.5 seconds")
+
+
+def test_the_gate_as_a_whole_cannot_outlast_its_time(tmp_path: Path) -> None:
+    """Each call within its own limit, and the pages together past the gate's: the read that
+    the time runs out in fails closed, and no further page is read."""
+    pulls = [{**ok(unmerged(100, 100 * page)), "sleep": 0.4} for page in range(10)]
+    started = time.monotonic()
+    gate = run_gate(tmp_path, pulls=pulls, more={TOTAL_LIMIT: "1.5"})
+    assert time.monotonic() - started < 4
+    failed(gate, CALLS["pulls"], "the gate's time ran out after 1.5 seconds")
+    assert len(gate.calls) < 10
+
+
+def test_the_gates_limits_stay_far_below_the_jobs_timeout() -> None:
+    """The job times out after 5 minutes, its checkout included: the gate's reads end with its
+    line a minute before, and one call takes at most a part of that."""
+    job = WORKFLOW.split("\n  gate:\n", 1)[1].split("\n  range:\n", 1)[0]
+    assert "\n    timeout-minutes: 5\n" in job
+    assert fr.GATE_SECONDS == 240
+    assert fr.GATE_CALL_SECONDS == 30
+    assert fr.GATE_SECONDS <= 5 * 60 - 60
+    assert fr.GATE_CALL_SECONDS < fr.GATE_SECONDS
+
+
+@pytest.mark.parametrize(
+    ("value", "seconds"),
+    [("0.5", 0.5), ("2", 2.0), ("30", 30.0), ("31", 30.0), ("0", 30.0), ("-1", 30.0), ("x", 30.0)],
+)
+def test_a_limit_is_only_ever_shortened(
+    monkeypatch: pytest.MonkeyPatch, value: str, seconds: float
+) -> None:
+    """A value above the gate's own, or one that is no positive number, counts as its own, so no
+    environment lets the gate outlast the job."""
+    monkeypatch.setenv(CALL_LIMIT, value)
+    assert fr.gate_limit(CALL_LIMIT, fr.GATE_CALL_SECONDS) == seconds
+    monkeypatch.delenv(CALL_LIMIT)
+    assert fr.gate_limit(CALL_LIMIT, fr.GATE_CALL_SECONDS) == 30.0
+
+
+def unwritable(tmp_path: Path) -> dict[str, str]:
+    """A job summary that cannot be written: its path is a directory."""
+    folder = tmp_path / "a-directory"
+    folder.mkdir(exist_ok=True)
+    return {"GITHUB_STEP_SUMMARY": str(folder)}
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        {},
+        {"issues": issue_pages([issue(12), issue(13)])},
+        {"pulls": [ok([pull(milestone=None)])]},
+        {"pulls": [HTTP_403]},
+        {"event": "workflow_dispatch"},
+    ],
+    ids=["judged", "a step left", "no milestone", "an error", "a dispatch"],
+)
+def test_a_summary_that_cannot_be_written_never_leaves_run_true(tmp_path: Path, case: dict) -> None:
+    """An error after the decision fails the job and never leaves `run` as `true`: the sentence
+    goes first, then `pr`, and `run` last."""
+    gate = run_gate(tmp_path, more=unwritable(tmp_path), **case)
+    assert gate.code == 1, gate.out
+    assert gate.outputs.get("run") != "true"
+    assert "range gate: " in gate.log
+    assert "Traceback" not in gate.out
+
+
+def test_an_output_file_that_cannot_be_written_fails_the_job(tmp_path: Path) -> None:
+    folder = tmp_path / "outputs"
+    folder.mkdir()
+    gate = run_gate(tmp_path, more={"GITHUB_OUTPUT": str(folder)})
+    assert gate.code == 1
+    assert "Traceback" not in gate.out
+
+
 @pytest.mark.parametrize(("name", "value"), [("SHA", "c0ffee"), ("REPO", "no-owner")])
 def test_an_event_that_names_no_commit_or_repository_fails_closed(
     tmp_path: Path, name: str, value: str
@@ -655,4 +808,5 @@ def test_the_gate_runs_where_the_sdk_cannot_be_imported(tmp_path: Path) -> None:
         check=False,
     )
     assert (done.returncode, done.stderr) == (0, "")
-    assert (tmp_path / "output.txt").read_text() == "run=true\npr=7\n"
+    # `run` is written last, after the sentence and `pr` (finding 3 of the review of .github#130).
+    assert (tmp_path / "output.txt").read_text() == "pr=7\nrun=true\n"
