@@ -3,10 +3,14 @@
 
 The verdict is ``ready`` or ``not ready``.
 
-The check ``conventions`` (README.md, "The workflows") runs two commands of this script;
-a dry run runs both in a temporary directory. The workflow's gate decides before either
-whether the pull request is reviewed at all (the mode ``WORKFLOW_CONVENTIONS_MODE``, C57).
+The check ``conventions`` (README.md, "The workflows") runs four commands of this script;
+a dry run runs ``prepare`` and ``review`` in a temporary directory. ``gate`` decides before
+them whether the pull request is reviewed at all (the mode ``WORKFLOW_CONVENTIONS_MODE``, C57).
+``gate`` and ``verdict`` need the standard library alone, so the runner's ``python3 -I`` runs
+them before and without uv; the review imports ``anthropic`` where it calls the API.
 
+- ``gate`` reads the environment of the workflow's Gate step and writes ``mode``, ``release``
+  and ``run`` to the step's outputs, its notice to the log and the job summary.
 - ``prepare`` writes the material the review judges to ``.review/`` in the checkout of the
   pull request's head, after emptying it: ``diff.patch`` and ``log.txt`` of the range (merge
   base to head; on a release pull request, ``--release``, from the last release tag reachable
@@ -59,6 +63,8 @@ whether the pull request is reviewed at all (the mode ``WORKFLOW_CONVENTIONS_MOD
   script refuses another (``earlier_problem``); each new finding then says whether its file
   changed since the head judged before. A finding names a line only where its file has that
   line at the head (``settled``, .github#85).
+- ``verdict`` reads the verdict file of ``review`` and writes the check's comment to the job
+  summary, the log and the pull request.
 - ``dry-run`` runs ``prepare`` in a temporary (or given) directory and then ``review``, and
   prints the summary line and the findings, for a terminal. A pull request labeled
   ``release`` or titled as a release is judged on its release's range, as in the workflow.
@@ -81,7 +87,8 @@ Anthropic key or a GitHub token, is redacted from everything it prints or writes
 
 Exit status: 0 ``ready``, 1 ``not ready``, 2 no verdict (the review could not run, or ended
 without one: no key, an API error, a refusal, a ``max_tokens`` stop, the turn cap) and, for
-``prepare``, a failure.
+``prepare``, a failure. ``gate`` exits 1 where the check fails without a review, ``verdict`` 1
+on ``not ready`` or no verdict, and either 0 otherwise.
 """
 
 from __future__ import annotations
@@ -102,11 +109,12 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import NamedTuple, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 from urllib.parse import quote
 
-import anthropic
-import httpx2
+if TYPE_CHECKING:
+    import anthropic
+    import httpx2
 
 # The judge and its effort, as .github#93 decided. A review takes more turns at xhigh than at
 # high, so the turn cap rose with the effort: a review that reaches it ends without a verdict.
@@ -571,10 +579,14 @@ def _append(path: str | None, text: str) -> None:
             handle.write(text)
 
 
-def _notice(text: str, summary: str | None) -> None:
-    line = redact(text)
+def _say(line: str, summary: str | None) -> None:
+    """Print ``line`` and append it to the job summary, as ``echo | tee -a`` does."""
     print(line, flush=True)
     _append(summary, line + "\n")
+
+
+def _notice(text: str, summary: str | None) -> None:
+    _say(redact(text), summary)
 
 
 # --- prepare -----------------------------------------------------------------------------
@@ -2105,6 +2117,8 @@ def make_client(key: str) -> Client:
     The key is given explicitly, so the SDK never reads ANTHROPIC_API_KEY, whose value can
     hold several keys.
     """
+    import anthropic
+
     return anthropic.Anthropic(api_key=key)
 
 
@@ -2509,6 +2523,9 @@ def _loop(
     max_turns: int,
     hidden: Sequence[Path],
 ) -> None:
+    import anthropic
+    import httpx2
+
     model, effort = outcome.model, outcome.effort
     sandbox = Sandbox(material.workspace, hidden)
     system = system_prompt(material, max_turns)
@@ -2640,6 +2657,250 @@ def review(
     return outcome
 
 
+# --- the gate and the verdict ------------------------------------------------------------
+
+MODES = ("release", "all")
+DEPENDABOT = "dependabot[bot]"
+NO_RESULT = "conventions: no verdict (the review wrote no result; see the Prepare and Review steps)"
+LAST_COMMENT = '[.comments[] | select(.viewerDidAuthor)] | last | .body // ""'
+
+
+def _app(login: str) -> bool:
+    """Whether ``login`` is a GitHub App's, its name ending in ``[bot]``, but Dependabot's."""
+    return login != DEPENDABOT and login.endswith("[bot]")
+
+
+def gate(summary: str | None) -> int:
+    """The workflow's Gate: whether the review runs, before the head's checkout and any key.
+
+    It reads the environment of the Gate step and writes ``mode``, ``release`` and ``run`` to
+    the step's outputs, its notice to the log and the job summary; it exits 1 where the check
+    fails without a review, else 0.
+
+    The caller's WORKFLOW_CONVENTIONS_MODE, ``release`` when neither the repository nor the
+    organization sets it, is read without case as the job's condition reads it, so ``All`` is
+    ``all`` in both; another value fails naming the two. A release PR is one labeled
+    ``release`` or titled as ``is_release_title`` reads it, on any branch. Then, in order: a
+    Dependabot pull request passes, reviewed by ``ci`` alone; one the mode does not review
+    passes with the notice; one a GitHub App opened or updated fails; with the key the review
+    runs; a pull request from a fork, or one with the secret empty, fails naming why.
+    """
+    raw = os.environ.get("MODE", "")
+    mode = (raw or "release").lower()
+    if mode not in MODES:
+        _say(
+            f"conventions: WORKFLOW_CONVENTIONS_MODE is `{raw}`; it is `release` or `all` (C57)",
+            summary,
+        )
+        return 1
+    release = os.environ.get("LABELED") == "true" or is_release_title(os.environ.get("TITLE", ""))
+    _output("mode", mode)
+    _output("release", "true" if release else "false")
+    author, actor = os.environ.get("AUTHOR", ""), os.environ.get("ACTOR", "")
+    if author == DEPENDABOT and actor == DEPENDABOT:
+        _say("conventions: Dependabot PR, reviewed by `ci` only", summary)
+        _output("run", "false")
+        return 0
+    if mode == "release" and not release:
+        _say(
+            "conventions: not a release PR; with WORKFLOW_CONVENTIONS_MODE release the review runs "
+            "on a PR labeled `release` or titled `<version> Release` or `release: <version>`",
+            summary,
+        )
+        _output("run", "false")
+        return 0
+    if _app(author) or _app(actor):
+        _say(
+            "conventions: a pull request opened or updated by a GitHub App gets no review", summary
+        )
+        return 1
+    if os.environ.get("HAS_KEY") == "true":
+        _output("run", "true")
+        if os.environ.get("READ_TOKEN_UNUSED") == "true":
+            _say(
+                f"conventions: {READ_TOKEN_ENV} is not used in a public repository, whose review "
+                "comment and job summary would show what the review quotes from a private "
+                "document (.github#83)",
+                summary,
+            )
+        return 0
+    if os.environ.get("HEAD_REPO", "") != os.environ.get("REPO", ""):
+        _say(
+            "conventions: a pull request from a fork gets no secrets; the review cannot run",
+            summary,
+        )
+        return 1
+    _say(
+        f"conventions: {KEY_ENV} is empty; the review cannot run. Share the organization secret "
+        "with this repository (G4).",
+        summary,
+    )
+    return 1
+
+
+def _flat(value: object) -> str:
+    """``value`` on one line, each run of whitespace one space."""
+    return " ".join(str(value).split())
+
+
+def _plain(value: object) -> str:
+    """``value`` on one line for a code span of the comment, a backtick as a quote."""
+    return _flat(value).replace("`", "'")
+
+
+def _counted(number: int, noun: str = "finding") -> str:
+    """``number`` and ``noun``, plural but for one."""
+    return f"{number} {noun}{'' if number == 1 else 's'}"
+
+
+def _described(finding: Mapping[str, object]) -> str:
+    """A finding as an item of the comment's list: the document or the place, then the text."""
+    document = _plain(finding.get("document") or "")
+    where = _plain(finding.get("file") or "")
+    line = finding.get("line")
+    if where and isinstance(line, int) and not isinstance(line, bool) and line > 0:
+        where += f":{line}"
+    text = _flat(finding.get("text", ""))
+    if document:
+        place = f" `{where}`." if where else ""
+        return f"**{document}** {text}{place}"
+    if where:
+        return f"**`{where}`** {text}"
+    return f"**the pull request** {text}"
+
+
+def run_line(head: str, findings: Sequence[Mapping[str, object]]) -> str:
+    """The comment's hidden last line: this run's head and findings, which ``run_state`` reads.
+
+    The JSON has ``<`` and ``>`` escaped, so no text ends the HTML comment early (.github#95).
+    """
+    run = {"head": head, "findings": [{key: f.get(key) for key in FINDING_KEYS} for f in findings]}
+    text = json.dumps(run, ensure_ascii=True, separators=(",", ":"))
+    text = text.replace("<", "\\u003c").replace(">", "\\u003e")
+    return f"<!-- conventions-run: {text} -->"
+
+
+def no_verdict(result: object) -> str:
+    """The job summary of a run without a verdict: the script's line with its cause, redacted."""
+    line = result.get("summary") if isinstance(result, dict) else None
+    if not isinstance(line, str) or not line.strip():
+        line = NO_RESULT
+    return (
+        "## conventions: no verdict\n\n"
+        + redact(_flat(line))
+        + "\n\nThe review returned no verdict; the check fails.\n"
+    )
+
+
+def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple[str, bool]:
+    """The check's comment on the verdict file ``result``, redacted, and whether it passes.
+
+    It follows docs/style/reviews.md#conventions-check: the lead with the count and the head's
+    commit, what was judged, then the findings, each with the document and section it goes
+    against and, after a run before, whether its file changed since the head judged before;
+    then the findings of the run before, each with what became of it (``became``), and the
+    hidden last line (``run_line``). A blocking finding makes the verdict ``not ready``.
+    """
+    commit = f"https://github.com/{repo}/commit/{head}"
+    findings = [f for f in result.get("findings") or [] if isinstance(f, dict)]
+    blocking = sum(1 for f in findings if f.get("blocking"))
+    ready = result.get("verdict") == "ready" and not blocking
+    if not ready:
+        lead = f"**Blocked.** {_counted(len(findings))}, {blocking} blocking, at {commit}."
+    elif findings:
+        lead = f"**Findings.** {_counted(len(findings))}, none blocking, at {commit}."
+    else:
+        lead = f"**Approved.** No findings at {commit}."
+    judged = result.get("range") if isinstance(result.get("range"), dict) else {}
+    documents = result.get("documents") if isinstance(result.get("documents"), list) else None
+    if judged.get("release") and judged.get("tag"):
+        what = f"the release's range from `{_plain(judged['tag'])}` to the head"
+    elif judged.get("release"):
+        what = "the pull request's own diff, since no release tag is reachable from the base"
+    else:
+        what = "the pull request's own diff"
+    against = ""
+    if documents is not None:
+        against = f", against {_counted(len(documents), 'document')} of `README.md` on `main`"
+    lines = [CHECK_MARKERS[0], lead, "", f"Judged: {what}{against}."]
+    if findings:
+        lines.append("")
+    for number, finding in enumerate(findings, 1):
+        blocks = "yes" if finding.get("blocking") else "no"
+        mark = MARKS.get(finding.get("since"))
+        mark = f" {mark}" if mark else ""
+        lines.append(f"{number}. {_described(finding)} Blocks: {blocks}.{mark}")
+    earlier = result.get("earlier") if isinstance(result.get("earlier"), dict) else {}
+    before_head = earlier.get("head")
+    if isinstance(before_head, str) and SHA.fullmatch(before_head):
+        before = [f for f in earlier.get("findings") or [] if isinstance(f, dict)]
+        judged_before = f"https://github.com/{repo}/commit/{before_head}"
+        lines.append("")
+        if before:
+            lines += [
+                f"The run before judged {judged_before} and gave {_counted(len(before))}:",
+                "",
+            ]
+        else:
+            lines.append(f"The run before judged {judged_before} and gave no findings.")
+        for number, finding in enumerate(before, 1):
+            lines.append(f"{number}. {_described(finding)} {became(finding)}")
+    lines += ["", run_line(head, findings)]
+    return redact("\n".join(lines) + "\n"), ready
+
+
+def _gh(repo: str, *args: str, body: str | None = None) -> subprocess.CompletedProcess[str]:
+    """One call of ``gh`` on ``repo``, ``body`` its input, its output captured as text."""
+    return subprocess.run(
+        ["gh", *args, "--repo", repo], input=body, text=True, capture_output=True, check=False
+    )
+
+
+def verdict(summary: str | None) -> int:
+    """The workflow's Verdict step: the check's comment on the verdict file of ``review``.
+
+    It reads the environment of the Verdict step. No file, or one without a verdict, is no
+    verdict: the job summary carries the script's line, and the check fails with no comment.
+    A verdict, ``ready`` included, goes to the job summary, the log and one sticky comment
+    (C57 as amended by coordinate-core#364, .github#36): the last comment the token wrote is
+    edited where it is the check's, by its marker, the old form's too, and the comment is
+    created where the token wrote none; after another workflow's comment, or where the
+    comments could not be read, a new one is posted, so another workflow's comment is never
+    overwritten. A failed post leaves its reason, redacted, in the job summary and a warning
+    annotation (.github#40). It exits 0 on ``ready`` and 1 otherwise.
+    """
+    pr, repo = os.environ["PR"], os.environ["REPO"]
+    head = os.environ["HEAD_SHA"]
+    try:
+        with Path(os.environ["RESULT_FILE"]).open(encoding="utf-8") as handle:
+            result = json.load(handle)
+    except (OSError, ValueError):
+        result = None
+    if not isinstance(result, dict) or result.get("verdict") not in VERDICTS:
+        text = no_verdict(result)
+        _append(summary, text)
+        print(text)
+        return 1
+    body, ready = verdict_comment(result, repo, head)
+    _append(summary, body)
+    print(body)
+    last = _gh(repo, "pr", "view", pr, "--json", "comments", "--jq", LAST_COMMENT)
+    known = last.returncode == 0
+    ours = known and last.stdout.startswith(CHECK_MARKERS)
+    none = known and not last.stdout.strip()
+    if ours or none:
+        edit = ("--edit-last", "--create-if-none")
+        posted = _gh(repo, "pr", "comment", pr, *edit, "--body-file", "-", body=body)
+    else:
+        posted = _gh(repo, "pr", "comment", pr, "--body-file", "-", body=body)
+    if posted.returncode != 0:
+        reason = redact(_flat(posted.stderr)) or f"gh exited {posted.returncode}"
+        line = f"conventions: posting the PR comment failed: {reason}"
+        _append(summary, f"\n{line}\n")
+        print("::warning::" + line.replace("%", "%25"))
+    return 0 if ready else 1
+
+
 # --- the command line --------------------------------------------------------------------
 
 
@@ -2734,6 +2995,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     commands = parser.add_subparsers(dest="command", required=True)
 
+    commands.add_parser("gate", help="decide whether the review runs, from the Gate's environment")
     prep = commands.add_parser("prepare", help="write the review material to .review/")
     prep.add_argument("--repo", required=True, help="owner/name of the pull request's repository")
     prep.add_argument("--pr", required=True, type=int, help="the pull request's number")
@@ -2776,6 +3038,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     rev.add_argument("--review", required=True, type=Path, help="the prepared .review directory")
     rev.add_argument("--out", required=True, type=Path, help="the verdict file (JSON)")
     loop_options(rev)
+    commands.add_parser("verdict", help="post the check's comment on the verdict file")
 
     dry = commands.add_parser("dry-run", help="prepare and review one pull request locally")
     dry.add_argument("--repo", required=True, help="owner/name of the pull request's repository")
@@ -2795,6 +3058,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--max-turns must be at least 1")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
 
+    if args.command in ("gate", "verdict"):
+        try:
+            return gate(summary) if args.command == "gate" else verdict(summary)
+        except Exception as exc:  # The log is public: the class only.
+            _notice(f"conventions: internal error: {type(exc).__name__}", summary)
+            return 1
     try:
         if args.command == "prepare":
             _prepare(args, summary)

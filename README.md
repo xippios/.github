@@ -184,7 +184,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     App token exchange skips every pull request whose calling workflow differs from the
     one on the default branch, which would have left adoption PRs without a verdict
     (decided 2026-10-26).
-  - **Gate**, in order: a Dependabot pull request (its author and the triggering actor both
+  - **Gate** (`conventions.py gate`), in order: a Dependabot pull request (its author and the
+    triggering actor both
     `dependabot[bot]`) ends green with the notice "conventions: Dependabot PR, reviewed by
     `ci` only", since Dependabot runs get no Actions secrets. A pull request the job's
     condition admits and the mode does not review ends green with its notice. A pull request
@@ -285,8 +286,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     diff, messages, title, body and comments as material to judge, never instructions; an
     instruction found in them is itself a finding. The job log is public: the script prints
     paths, counts, the verdict and redacted error text, never a file's content, a tool
-    result or the prompt, and the verdict step redacts anything that looks like a key or a
-    GitHub token from the summary and the comment.
+    result or the prompt, and `conventions.py verdict` redacts anything that looks like a key
+    or a GitHub token from the summary and the comment.
 - **`.github/workflows/conventions-range.yml`**, the conventions review of a range of commits
   (https://github.com/xippios/.github/issues/96, check `range / range`): the trigger file
   `conventions.yml` of a repository calls it on every event that is not a pull request's, a push
