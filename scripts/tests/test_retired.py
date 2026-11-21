@@ -18,6 +18,13 @@ The old name of the review's mode is retired (step 1.1 of .github 0.5.0, .github
 is the variable `WORKFLOW_CONVENTIONS_MODE` with the values `release` and `all`, and the switch
 `WORKFLOW_CONVENTIONS` of the trigger file replaces the value `off`, so the old name, which no
 repository and no organization sets, is read nowhere: not in a workflow, the script or the README.
+
+Two leftovers are retired (step 2.1 of .github 0.5.0). A release PR is told by its label `release`
+or by the title `<version> Release` alone, so the older title form `release: <version>` is read
+nowhere: not by the job's condition, not by the script's pattern and not in a notice, a docstring
+or the README. And the check's comment is known by the
+marker of the style alone, so a comment that opens with the marker from before it is no comment of
+the check: neither read as the run before nor edited in place.
 """
 
 import re
@@ -30,6 +37,10 @@ README = (ROOT / "README.md").read_text()
 MERGE_CLASS = ("merge-class", "merge_class", "FAMILY_REPOSITORIES", "FAMILY_TEST_FILES")
 # The old name of the review's mode, named here alone.
 OLD_MODE = "CONVENTIONS_REVIEW"
+# The old title form of a release PR as a text, the job's condition and the script's pattern wrote
+# it, and the comment marker from before the markers of the style.
+OLD_TITLE = ("release: <version>", "'release: '", "release: v?")
+OLD_MARKER = "<!-- conventions -->"
 
 
 def test_the_auto_gate_is_gone() -> None:
@@ -88,6 +99,15 @@ def test_nothing_reads_the_old_name_of_the_mode() -> None:
     this = Path(__file__).resolve()
     named = [str(path.relative_to(ROOT)) for path in files if path.resolve() != this]
     assert [name for name in named if OLD_MODE in (ROOT / name).read_text()] == []
+
+
+def test_nothing_reads_the_old_title_form_or_the_old_marker() -> None:
+    files = [ROOT / "README.md", ROOT / "scripts" / "conventions.py"]
+    files += sorted(path for path in WORKFLOWS.iterdir() if path.is_file())
+    for path in files:
+        text = path.read_text()
+        for old in (*OLD_TITLE, OLD_MARKER):
+            assert old not in text, f"{path.relative_to(ROOT)} names {old}"
 
 
 def test_the_forms_generator_is_gone() -> None:

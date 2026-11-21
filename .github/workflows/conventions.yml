@@ -1,135 +1,3 @@
-# The conventions review (C57 as amended by coordinate-core#364, check `conventions`): this
-# repository's scripts/conventions.py has claude-opus-5-5, at effort xhigh (.github#93) on the
-# Messages API, judge a pull request against its repository's own documents, the ones the README
-# links under `## Documents` on the default branch (C80), and return a verdict. `ready` passes
-# the check and `not ready` fails it; either verdict, with its findings, goes to one sticky PR
-# comment in the form of docs/style/reviews.md#conventions-check, created on the first run that
-# reviews the pull request and edited in place after (.github#36); no verdict (an API error, a
-# refusal, the turn cap of 160) fails it with the cause, the turns and the token usage in the
-# job summary and posts no comment. The job times out after 45 minutes, which leaves a review at
-# effort xhigh the time of 160 turns on one key; a review the timeout ends returns no verdict and
-# writes no summary line. The documents are never read from the pull request, so a pull request
-# cannot rewrite the rules it is judged by: the repository's own come from the default branch,
-# another repository's from its link's ref or the release the head requires. A document the
-# review cannot read (a private repository's that no token reaches, a missing file) fails the
-# check naming it and the tokens it was read with; a README that links none passes with a
-# notice, and no API call is made.
-#
-# The read token (.github#62): the caller's optional secret DOCUMENTS_READ_TOKEN, used only
-# where the calling repository is private (`github.event.repository.private`, the caller's
-# payload; .github#83). The review's comment and its job summary quote the documents it
-# judges by, so a public caller would publish a private document's text; a private caller's
-# can show the sibling's text to everyone who reads that repository. A public caller that
-# passes the secret reads as one that passes none, with the Gate's notice where the review
-# runs. Another repository's file, a listed document, that repository's pyproject.toml and
-# its tags, is read with the workflow's token first; only where GitHub does not find it, a
-# private repository's included, is it read again with the read token, so a private
-# sibling's document is read and its pin resolves as a public one's does. Any other failure
-# fails the check at once. Without the secret, or with it empty, the check reads with the
-# workflow's token alone. The token is in the Prepare step's environment alone, and the
-# script hands it to gh as the GH_TOKEN of that one read, so no other process, the review's
-# included, gets it, and it reaches neither the job summary, documents.json nor the log. Of
-# what the check reads with the token, a pull request chooses nothing but a release tag: the
-# list of documents comes from the README on the default branch (C80). That bounds the
-# check, not the secret, which a changed workflow of any repository that receives it can use;
-# which repositories receive it is the organization's setting. A pull request from a fork or
-# of Dependabot gets no secret, and the Gate ends it before any read.
-#
-# A release PR is labeled `release` or titled `<version> Release`, and `release: <version>`
-# until every workspace has adopted coordinate-core 0.7.4 (coordinate-core#791,
-# coordinate-core#805). The job's own `if:` skips any other PR unless the mode could review it
-# (.github#47), so a caller needs no condition and its check `conventions / conventions`
-# reports as skipped and passing. A caller runs on no label, so a label set after the
-# opening counts from the next push or edit.
-#
-# The mode is the caller's variable WORKFLOW_CONVENTIONS_MODE, a repository variable over the
-# organization's by GitHub's precedence, read without case in the condition and the Gate alike:
-# `release` (the default when neither is set) reviews a release PR on any branch; `all` reviews
-# every PR; another value fails naming the two. A PR the condition skips
-# gets no notice, since no job runs; one it admits that the mode does not review passes with
-# the Gate's notice.
-# On a release PR the review judges the range from the last release tag reachable from the
-# base to the head, since the PR's own diff is the CHANGELOG and the bump; without a tag it
-# judges the PR's own diff and says so. It names the version the release ships, read from the
-# title, else from the head's pyproject.toml.
-#
-# The review left the Claude Code action for the Messages API, called with an API key, on
-# 2026-10-29 (D101 to D103).
-#
-# The script comes from xippios/.github at `job.workflow_sha`, the commit of the workflow
-# file that defines this job (GitHub's contexts reference): for a caller, the .github commit
-# its `uses:` resolved to. The workflow runs as a called job only; it left this repository's
-# own pull requests on 2026-11-03 (C58). actionlint 1.7.12
-# does not know the `job.workflow_*` properties yet: .github/actionlint.yaml ignores that one
-# error in this file.
-#
-# The review runs on the workflow token, `github.token` (decided 2026-10-26), so its
-# comment comes from `github-actions[bot]`: the Claude GitHub App's token exchange skips a
-# pull request whose calling workflow differs from the default branch's
-# (`workflow_not_found_on_default_branch`), which would leave adoption PRs without a
-# verdict.
-#
-# One wiring (C58, 2026-11-03; two until then): called as a job from a repository's gates.yml,
-# which passes ANTHROPIC_API_KEY and, in a private repository whose README lists a private
-# repository's document, DOCUMENTS_READ_TOKEN, each by name (`on: workflow_call`, check
-# `conventions / conventions`); the caller runs on `pull_request` with the types opened,
-# synchronize, reopened and edited, with no `if:` on the job, so `github.event.pull_request` is
-# there and a change of the title or of the base arrives as `edited`.
-#
-# The gate, in order: a Dependabot pull request (author and actor both `dependabot[bot]`)
-# ends green, reviewed by `ci` only, since Dependabot runs get no Actions secrets. A pull
-# request the mode does not review ends green with a notice. A pull request opened or updated
-# by any other GitHub App (a login ending in `[bot]`) gets no review and fails, as the
-# action's empty `allowed_bots` had it. With the organization secret ANTHROPIC_API_KEY the
-# review runs; a pull request from a fork never gets the secret and fails, and one from the
-# repository itself with the secret empty fails naming it (coordinate-core#368 shares the
-# secret with every repository).
-#
-# The keys (.github#87): ANTHROPIC_API_KEY holds one key or several, one per line, and the
-# script tries them in that order, handing the SDK one key at a time. A review runs on one key
-# from its first turn to its verdict. Where the API refuses the key or its account, at the
-# first request or a later one, the review starts again from its first turn on the next key:
-# an authentication, permission or billing error, a request the API turns down for the
-# balance of the account, and a rate limit that outlasts the SDK's retries. Any other end
-# without a verdict tries no other key. The summary line names the key the review ended on by
-# its position, `key=2/3`, and counts the tokens of every attempt; where the API refused every
-# key, it names each by its position and error class. The script redacts every key of the
-# secret from what it prints and writes, and the PR comment says nothing of keys. A secret
-# with one key reviews as before, and a caller passes the secret as it did.
-#
-# The run before (.github#95): the Prepare step reads the check's last comment on the pull
-# request before the Verdict step rewrites it, the workflow token's, which gh names
-# github-actions; its hidden last line carries the head that run judged and its findings. The
-# head is compared with that one by the text of its files, not by ancestry, since a rebased
-# head descends from no head judged before: the two trees, the checkout's where it holds that
-# commit, else GitHub's, read with the workflow token. The review gives each finding of the run
-# before one state, fixed, decided by the opener or open, on the opener's decisions on the pull
-# request, and the script refuses any other. A decision of the opener never settles a finding
-# that blocked by itself: that one is decided only with the judge's reason that no written rule
-# is broken, else open and carried into this run. The comment lists them, and says of each new
-# finding whether its file changed since the head judged before, or that it was not compared
-# where that head could not be read; it never guesses, and marks only a file the comparison
-# covers: a changed one or a file the head's tree holds. A first run, and a run that finds no
-# comment of the check or one written before this, judges as a first run and lists nothing; the
-# job summary says that no run before was found, or names it. A
-# finding names a line only where its file has that line at the head, and keeps its file
-# without one where it has not (.github#85). No permission, secret or input is added.
-#
-# The model judges and runs nothing. Its material is prepared under .review/ before it
-# starts; it reads with three tools the script serves (read_file, list_files, grep) inside
-# the workspace's real path only: `.git/`, `.envrc`, `.env` files, symlinks that lead out and
-# the script's own checkout are refused. The review spawns no process, and ANTHROPIC_API_KEY
-# is in the Review step's environment alone. setup-uv reads the .sdk-gates checkout, and uv
-# runs from the runner's temporary directory with --no-config, so nothing in the pull
-# request's checkout (a uv.toml, a .python-version, a .venv, a uv version or cache key)
-# decides what runs beside the key. Both uv runs resolve with --exclude-newer
-# 2026-10-29T00:00:00Z: anthropic is pinned, and its dependencies are frozen at that date
-# instead of resolved afresh in the step that holds the key.
-#
-# The job log is public: the script prints paths, counts, the verdict and redacted error
-# text, never a file's content, a tool result or the prompt. `edited` is among the types
-# because the description is judged. Actions are pinned to commit SHAs, the version in a
-# comment.
 name: Conventions
 
 on:
@@ -148,22 +16,15 @@ permissions:
 jobs:
   conventions:
     name: conventions
-    # The job's own condition (.github#47): a release PR by its label or its title, or a mode
-    # other than `release`, which reviews every PR or fails naming the two. Any
-    # other PR skips the job: no runner starts, and the caller's check reports as skipped and
-    # passing. GitHub's functions compare without case and know no regular expression, so a
-    # title passes here by its ends and the Gate matches it exactly.
     if: >-
       github.event_name == 'pull_request'
       && contains(fromJSON('["opened", "synchronize", "reopened", "edited"]'), github.event.action)
       && (contains(github.event.pull_request.labels.*.name, 'release')
-      || startsWith(github.event.pull_request.title, 'release: ')
       || endsWith(github.event.pull_request.title, ' Release')
       || (vars.WORKFLOW_CONVENTIONS_MODE != ''
       && vars.WORKFLOW_CONVENTIONS_MODE != 'release'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # A new push or edit supersedes the review of the previous state.
     concurrency:
       group: conventions-${{ github.repository }}-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -176,8 +37,6 @@ jobs:
           path: .sdk-gates
           persist-credentials: false
 
-      # The mode, the label and the title decide first, so a pull request that no mode reviews costs
-      # no checkout of its head, no key and no API call (C57 as amended by coordinate-core#364).
       - name: Gate
         id: gate
         env:
@@ -189,13 +48,9 @@ jobs:
           ACTOR: ${{ github.actor }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           REPO: ${{ github.repository }}
-          # Whether a public caller passed the read token, which its check does not use
-          # (.github#83): a boolean, never the token.
           READ_TOKEN_UNUSED: ${{ secrets.DOCUMENTS_READ_TOKEN != '' && github.event.repository.private != true }}
         run: python3 -I "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" gate
 
-      # The full history brings every branch and tag: the default branch, where the README
-      # and its documents are read, and the release tags, where a release's range starts.
       - name: Check out the pull request head with full history
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -204,8 +59,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      # The review script, from the commit that defines this job (see the header); the
-      # script refuses its own checkout to the model's tools.
       - name: Check out the review script from xippios/.github
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -215,8 +68,6 @@ jobs:
           path: .sdk-gates
           persist-credentials: false
 
-      # Pointed at the script's checkout, so no uv version or cache key comes from the pull
-      # request.
       - name: Install uv
         if: steps.gate.outputs.run == 'true'
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
@@ -225,22 +76,6 @@ jobs:
           working-directory: .sdk-gates
           enable-cache: false
 
-      # Everything the review judges, prepared here because the review runs no command.
-      # .review/ is emptied first, so nothing the pull request carries there survives. The
-      # documents are the ones the README links under `## Documents` on the default branch,
-      # read there and never from the pull request (C80): the repository's own from that
-      # branch, another repository's from GitHub with the workflow's token, which reads a
-      # public repository, and where GitHub does not find a file with it, with the caller's
-      # DOCUMENTS_READ_TOKEN (see the header; .github#62), at the ref its link names or at
-      # the release tag of it that the head's pyproject.toml requires (README.md, "The
-      # documents"; .github#70). A document neither reads fails, naming it. The read token is
-      # in this step's environment alone, and only where the calling repository is private:
-      # `case()` yields its last argument, '', for a public caller (.github#83). A README that
-      # links none ends the job green here, with a notice and `review=false`: no API call.
-      # On a release PR (the gate's `release`) the range runs from the last release tag, and
-      # the version comes from the title, else from the head's pyproject.toml. The run before
-      # comes from the check's last comment, read here before the Verdict step rewrites it
-      # (.github#95): .review/earlier.json and .review/changed.json.
       - name: Prepare the review material
         id: prepare
         if: steps.gate.outputs.run == 'true'
@@ -269,8 +104,6 @@ jobs:
             --repo "$REPO" --pr "$PR" --base-sha "$BASE_SHA" --head-sha "$HEAD_SHA" \
             --workspace "$GITHUB_WORKSPACE" --main "$MAIN" "$@"
 
-      # The key is in this step's environment alone. The step fails on no verdict, and the
-      # Verdict step runs anyway: it reads the verdict file and decides the check.
       - name: Review
         id: review
         if: steps.gate.outputs.run == 'true' && steps.prepare.outputs.review == 'true'
@@ -285,15 +118,6 @@ jobs:
             --workspace "$GITHUB_WORKSPACE" --review "$GITHUB_WORKSPACE/.review" \
             --out "$RUNNER_TEMP/verdict.json"
 
-      # The verdict file is the script's; no file, or one without a verdict (the review
-      # failed or stopped before its verdict), is no verdict and fails, with the script's
-      # summary line. A verdict, `ready` included, is posted as the comment, which follows
-      # docs/style/reviews.md#conventions-check: the lead with the count and the head's commit,
-      # what was judged, then the findings, each with the document and section it goes against
-      # and, after a run before, whether its file changed since the head judged before; then
-      # the findings of the run before, each with what became of it, and a hidden last line
-      # with this head and its findings for the next run (.github#95).
-      # Anything that looks like a key is redacted before the summary and the comment.
       - name: Verdict
         if: ${{ !cancelled() && steps.gate.outputs.run == 'true' && steps.prepare.outputs.review == 'true' }}
         env:

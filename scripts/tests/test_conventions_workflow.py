@@ -10,7 +10,10 @@ call; the step `Verdict` writes the check's comment in
 the style of docs/style/reviews.md on every run that reviewed the pull request, `ready` included
 (.github#36). Both steps call the script, `gate` and `verdict`, from its checkout in `.sdk-gates`
 (step 2 of .github 0.5.0). The tests run the steps' own scripts, as the workflow holds them, in
-the environment the runner gives a step."""
+the environment the runner gives a step, and evaluate the job's own condition as the file holds it
+with `expressions.py`. A release PR is told by its label `release` or by its title
+`<version> Release` alone, and the older title form is no release PR's (step 2.1 of
+.github 0.5.0)."""
 
 import json
 import os
@@ -22,6 +25,7 @@ from pathlib import Path
 
 import conventions as fr
 import pytest
+from expressions import holds
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "scripts" / "conventions.py"
@@ -31,9 +35,11 @@ MODES = ("release", "all")
 # Values of the mode that the Gate refuses: `off` among them, since the switch WORKFLOW_CONVENTIONS
 # of the trigger file replaces it (step 1.1 of .github 0.5.0).
 WRONG_MODES = ["relase", "off", "Off", "OFF", "on", "none"]
-# A release PR's title, `<version> Release`, and `release: <version>` until every workspace has
-# adopted coordinate-core 0.7.4 (coordinate-core#805), as the core's `RELEASE_TITLE` reads it.
-RELEASE_TITLES = ["0.7.4 Release", "release: 0.6.4", "release: 0.6.4-rc.1", "release: v0.6.4"]
+# A release PR's title, `<version> Release` (docs/style/pulls.md#release-pr of a coordinate root).
+RELEASE_TITLES = ["0.7.4 Release"]
+# The title form that a release PR carried until every workspace had adopted coordinate-core 0.7.4,
+# retired in step 2.1 of .github 0.5.0: no release PR's title any more.
+OLD_TITLES = ["release: 0.6.4", "release: 0.6.4-rc.1", "release: v0.6.4"]
 OTHER_TITLES = [
     "feat: a change",
     "Release: 0.6.4",
@@ -45,6 +51,7 @@ OTHER_TITLES = [
     "0.7.4-rc.1 Release",
     "0.7.4 Release notes",
     "Plan the Release",
+    *OLD_TITLES,
 ]
 # The types of a pull request's event that the review runs on: its opening, a push, its reopening
 # and an edit (step 1 of .github 0.5.0).
@@ -55,7 +62,6 @@ CONDITION = (
     "github.event_name == 'pull_request' "
     f"&& contains(fromJSON('{json.dumps(FOUR)}'), github.event.action) "
     "&& (contains(github.event.pull_request.labels.*.name, 'release') "
-    "|| startsWith(github.event.pull_request.title, 'release: ') "
     "|| endsWith(github.event.pull_request.title, ' Release') "
     "|| (vars.WORKFLOW_CONVENTIONS_MODE != '' "
     "&& vars.WORKFLOW_CONVENTIONS_MODE != 'release'))"
@@ -78,7 +84,7 @@ OTHER_EVENTS = [
     ("issue_comment", "created"),
 ]
 # The expression functions that the condition may call: actionlint knows them all.
-FUNCTIONS = {"contains", "startsWith", "endsWith", "fromJSON"}
+FUNCTIONS = {"contains", "endsWith", "fromJSON"}
 REPO = "xippios/sdk-usda-psd"
 SHA = "c" * 40
 COMMIT = f"https://github.com/{REPO}/commit/{SHA}"
@@ -259,8 +265,13 @@ def test_release_passes_any_other_pr_with_a_notice(tmp_path: Path, title: str) -
     assert "conventions: not a release PR" in out
     assert "labeled `release`" in out
     assert "`<version> Release`" in out
-    assert "`release: <version>`" in out
+    assert "`release: <version>`" not in out
     assert "with WORKFLOW_CONVENTIONS_MODE release the review runs" in out
+    # The notice names the one title form.
+    assert (
+        "conventions: not a release PR; with WORKFLOW_CONVENTIONS_MODE release the review runs on "
+        "a PR labeled `release` or titled `<version> Release`\n" in out
+    )
 
 
 @pytest.mark.parametrize("title", RELEASE_TITLES + OTHER_TITLES)
@@ -270,17 +281,16 @@ def test_the_gate_and_the_script_read_a_title_alike(tmp_path: Path, title: str) 
 
 
 # The pattern of a release PR's title that the Gate matched with `grep -E` until step 2 of
-# .github 0.5.0, when the script's `is_release_title` took its place.
-GATE_PATTERN = (
-    r"^(release: v?[0-9]+\.[0-9]+\.[0-9]+([-+.][0-9A-Za-z.+-]*)?|[0-9]+\.[0-9]+\.[0-9]+ Release)$"
-)
+# .github 0.5.0, when the script's `is_release_title` took its place, without the alternative of the
+# older form, which step 2.1 retired.
+GATE_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+ Release$"
 
 
 @pytest.mark.parametrize("title", ["feat: a change", "Ship the next version", *RELEASE_TITLES])
 @pytest.mark.parametrize("more", [False, True])
 def test_the_script_reads_a_title_as_the_gates_grep_did(title: str, more: bool) -> None:
     """The rule that tells a release PR by its title stands once, in the script, and gives the
-    Gate's answers of before for the titles these tests use."""
+    Gate's answers of before for the titles these tests use, but for the older form."""
     titles = OTHER_TITLES if more else [title]
     for each in titles:
         done = subprocess.run(
@@ -360,7 +370,7 @@ def test_all_reviews_every_pr(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("value", WRONG_MODES)
-@pytest.mark.parametrize("title", ["feat: a change", "release: 0.6.4"])
+@pytest.mark.parametrize("title", ["feat: a change", "0.7.4 Release"])
 def test_another_value_off_included_fails_and_names_the_two(
     tmp_path: Path, value: str, title: str
 ) -> None:
@@ -395,7 +405,7 @@ def test_the_gate_reads_the_mode_without_case_as_the_condition_does(
 
 
 def test_a_reviewed_pr_without_the_key_fails_naming_the_secret(tmp_path: Path) -> None:
-    code, out, _outputs = gate(tmp_path, mode="release", title="release: 0.6.4", key=False)
+    code, out, _outputs = gate(tmp_path, mode="release", title="0.7.4 Release", key=False)
     assert code == 1
     assert "conventions: ANTHROPIC_API_KEY is empty; the review cannot run" in out
     # A pull request that no mode reviews needs no key.
@@ -428,8 +438,8 @@ def test_dependabot_passes_and_another_app_fails(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     "case",
     [
-        {"mode": "off", "title": "release: 0.6.4"},
-        {"mode": "relase", "title": "release: 0.6.4"},
+        {"mode": "off", "title": "0.7.4 Release"},
+        {"mode": "relase", "title": "0.7.4 Release"},
         {"mode": "release", "title": "feat: a change"},
         {"mode": "all", "author": "dependabot[bot]", "actor": "dependabot[bot]"},
         {"mode": "all", "author": "some-app[bot]"},
@@ -488,20 +498,18 @@ def admitted(
     event: str = "pull_request",
     action: str = "opened",
 ) -> bool:
-    """CONDITION as GitHub evaluates it: `==`, `contains`, `startsWith`, `endsWith` and `!=`
-    compare strings without case, and an unset variable or a missing property reads as the empty
-    string. A called workflow reads its caller's `github.event_name` and `github.event.action`."""
-    mode, title = mode.lower(), title.lower()
-    return (
-        event == "pull_request"
-        and action.lower() in [kept.lower() for kept in kept_types()]
-        and (
-            labeled(labels)
-            or title.startswith("release: ")
-            or title.endswith(" release")
-            or mode not in ("", "release")
-        )
-    )
+    """The job's own condition, as the file holds it, evaluated by `expressions.py` as GitHub
+    evaluates it: strings compare without case, and an unset variable reads as the empty string.
+    A called workflow reads its caller's `github.event_name` and `github.event.action`."""
+    pull_request = {"title": title, "labels": [{"name": label} for label in labels]}
+    context = {
+        "github": {
+            "event_name": event,
+            "event": {"action": action, "pull_request": pull_request},
+        },
+        "vars": {"WORKFLOW_CONVENTIONS_MODE": mode} if mode else {},
+    }
+    return holds(job_condition(), context)
 
 
 def test_the_job_holds_its_condition() -> None:
@@ -544,6 +552,70 @@ def test_a_pr_labeled_release_gets_the_release_review(tmp_path: Path) -> None:
     code, _out, outputs = gate(tmp_path, title=title, labels=("release",))
     assert code == 0
     assert outputs == {"mode": "release", "release": "true", "run": "true"}
+
+
+@pytest.mark.parametrize("title", OLD_TITLES)
+def test_the_older_title_form_is_no_release_pr(tmp_path: Path, title: str) -> None:
+    """In the mode `release` the job's condition skips a pull request with that title and no
+    label, as it skips any other, and the Gate and the script read it as no release PR's; the
+    label still makes it one (step 2.1 of .github 0.5.0)."""
+    assert fr.release_version(title) is None
+    assert not fr.is_release_title(title)
+    for mode in ("", "release", "Release"):
+        assert not admitted(mode, title, ()), mode
+    assert admitted("", title, ("release",))
+    code, out, outputs = gate(tmp_path, mode="all", title=title)
+    assert (code, outputs) == (0, {"mode": "all", "release": "false", "run": "true"})
+    code, out, outputs = gate(tmp_path, mode="release", title=title)
+    assert (code, outputs) == (0, {"mode": "release", "release": "false", "run": "false"})
+    assert "conventions: not a release PR" in out
+    code, _out, outputs = gate(tmp_path, mode="release", title=title, labels=("release",))
+    assert (code, outputs) == (0, {"mode": "release", "release": "true", "run": "true"})
+
+
+# The edges of the title rule, held as `is_release_title` reads them since step 2 of .github
+# 0.5.0 (the decisions on .github#123): the whole title, stripped of white space at its ends, with
+# Python's digits.
+
+
+@pytest.mark.parametrize("title", ["x\n0.7.4 Release", "0.7.4 Release\nx", "0.7.4\nRelease"])
+def test_a_title_of_several_lines_is_no_release_title(tmp_path: Path, title: str) -> None:
+    """The Gate's `grep -E` matched each line alone; the script matches the whole title, so a
+    title whose last line alone is a release's is none, though the condition admits it by its
+    end."""
+    assert fr.release_version(title) is None
+    assert not fr.is_release_title(title)
+    _code, _out, outputs = gate(tmp_path, mode="all", title=title)
+    assert outputs["release"] == "false"
+
+
+@pytest.mark.parametrize(
+    "title",
+    [" 0.7.4 Release", "0.7.4 Release ", "\t0.7.4 Release", "0.7.4 Release\t", "0.7.4 Release\n"],
+)
+def test_a_title_with_white_space_at_an_end_is_a_release_title(tmp_path: Path, title: str) -> None:
+    assert fr.release_version(title) == "0.7.4"
+    assert fr.is_release_title(title)
+    _code, _out, outputs = gate(tmp_path, mode="all", title=title)
+    assert outputs["release"] == "true"
+
+
+@pytest.mark.parametrize(
+    ("title", "version"),
+    [
+        ("\u0660.\u0667.\u0664 Release", "\u0660.\u0667.\u0664"),
+        ("\uff10.\uff17.\uff14 Release", "\uff10.\uff17.\uff14"),
+    ],
+)
+def test_a_title_whose_digits_are_not_ascii_is_a_release_title(
+    tmp_path: Path, title: str, version: str
+) -> None:
+    """Python's `\\d` matches any decimal digit, so Arabic-Indic and full-width digits make a
+    release title, and the version is named in them."""
+    assert fr.release_version(title) == version
+    assert fr.is_release_title(title)
+    _code, _out, outputs = gate(tmp_path, mode="all", title=title)
+    assert outputs["release"] == "true"
 
 
 @pytest.mark.parametrize("mode", ["", "release", "Release"])
@@ -686,8 +758,10 @@ def test_the_readme_describes_the_review_by_mode() -> None:
     # The release PR by its label and its title, and the job's own condition (.github#47).
     assert "labeled `release`" in flat
     assert "`<version> Release`" in flat
-    assert "`release: <version>`" in flat
-    assert "coordinate-core 0.7.4" in flat
+    assert "`release: <version>`" not in flat
+    assert "coordinate-core 0.7.4" not in flat
+    assert "admits a title by its end, a space and `Release`, and the Gate below matches it" in flat
+    assert "by its start" not in flat
     # A caller runs on no label, so a label set later counts from the next event (.github#68).
     assert "`labeled`" not in flat
     assert "a label set after the opening counts from the next push or edit" in flat
@@ -711,50 +785,15 @@ def test_the_readme_describes_the_review_by_mode() -> None:
     assert "a caller that runs on those four alone sees no change" in flat
 
 
-def workflow_header() -> str:
-    """The comment that opens conventions.yml, before its first key, as one line."""
-    lines = []
-    for line in WORKFLOW.splitlines():
-        if line.strip() and not line.startswith("#"):
-            break
-        lines.append(line.removeprefix("#"))
-    return " ".join(" ".join(lines).split())
-
-
-def test_the_workflows_header_says_a_skipped_pr_gets_no_notice() -> None:
-    header = workflow_header()
-    assert "passes any other with a notice" not in header
-    assert "passes every PR with a notice" not in header
-    assert "the Gate's notice" in header
-    assert "read without case" in header
-
-
-def test_the_header_the_gate_and_the_docstring_name_the_mode_and_its_two_values() -> None:
-    """The comments that the rename makes false are mended, and no more (step 1.1 of .github
-    0.5.0): the header's paragraph on the mode, the condition's comment and the Gate's."""
-    header = workflow_header()
-    assert "The mode is the caller's variable WORKFLOW_CONVENTIONS_MODE" in header
-    assert "`off` reviews none" not in header
-    assert "another value fails naming the two" in header
-    job = WORKFLOW.split("\njobs:\n", 1)[1].split("\n    if: >-\n", 1)[0]
-    flat = " ".join(line.strip().removeprefix("# ") for line in job.splitlines())
-    assert "a mode other than `release`, which reviews every PR or fails naming the two" in flat
-    # The Gate's comment went into the script with its code (step 2 of .github 0.5.0).
+def test_the_gate_and_the_docstring_name_the_mode_and_its_two_values() -> None:
+    """The Gate's docstring and the script's name the mode and its two values (step 1.1 of
+    .github 0.5.0); the workflow carries no comment that could say otherwise (step 2.1)."""
     gate_comment = " ".join(str(fr.gate.__doc__).replace("``", "`").split())
     assert "The caller's WORKFLOW_CONVENTIONS_MODE, `release` when neither" in gate_comment
     assert "`Off`" not in gate_comment
     assert "WORKFLOW_CONVENTIONS_MODE" in " ".join(fr.__doc__.split())
-    for text in (header, flat, gate_comment):
-        assert "naming the three" not in text
-
-
-def test_the_workflows_header_lays_out_a_caller_on_no_label() -> None:
-    """The header gives the four types a caller of coordinate-core 0.7.6 runs on, and says that
-    a label set after the opening counts from the next push or edit (.github#68)."""
-    header = workflow_header()
-    assert "opened, synchronize, reopened and edited" in header
-    assert "labeled" not in header.replace("labeled `release`", "")
-    assert "a label set after the opening counts from the next push or edit" in header
+    assert "naming the three" not in gate_comment
+    assert "#" not in WORKFLOW.split("\njobs:\n", 1)[1].split("\n    steps:\n", 1)[0]
 
 
 def test_the_readmes_callers_run_on_no_label() -> None:
@@ -778,26 +817,25 @@ def test_the_readmes_callers_run_on_no_label() -> None:
     assert "counts from the next push or edit" in flat
 
 
-def test_the_readme_and_the_header_lay_out_the_keys_of_the_secret() -> None:
+def test_the_readme_lays_out_the_keys_of_the_secret() -> None:
     """The secret holds one key or several, one per line, tried in order; a refused key starts
     the review again on the next, and the summary line names the key that served
     (.github#87)."""
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
-    for text in (" ".join(section.split()), workflow_header()):
-        assert "one key or several, one per line" in text
-        assert "starts again from its first turn on the next key" in text
-        assert "`key=2/3`" in text
-        assert "says nothing of keys" in text
+    text = " ".join(section.split())
+    assert "one key or several, one per line" in text
+    assert "starts again from its first turn on the next key" in text
+    assert "`key=2/3`" in text
+    assert "says nothing of keys" in text
 
 
-def test_the_readme_the_header_and_the_docstring_name_the_judge_the_script_runs() -> None:
-    """The README's sentence on the judge and on the turn cap, the header of conventions.yml
-    and the script's docstring name the model, the effort and the turn cap that the script
-    runs with (.github#93)."""
+def test_the_readme_and_the_docstring_name_the_judge_the_script_runs() -> None:
+    """The README's sentence on the judge and on the turn cap and the script's docstring name
+    the model, the effort and the turn cap that the script runs with (.github#93)."""
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
-    for text in (section, workflow_header(), fr.__doc__):
+    for text in (section, fr.__doc__):
         flat = " ".join(text.replace("`", "").split())
         assert f"{fr.MODEL}, at effort {fr.EFFORT}" in flat
         assert f"the turn cap of {fr.MAX_TURNS}" in flat
@@ -805,18 +843,18 @@ def test_the_readme_the_header_and_the_docstring_name_the_judge_the_script_runs(
 
 def test_the_job_times_out_after_45_minutes_and_the_texts_say_so() -> None:
     """The job's timeout leaves a review at effort xhigh the time of 160 turns on one key, since
-    the turns start again on the next, and the header and the README name it beside the turn
-    cap: a review the timeout ends writes no summary line, while `prepare` has written its own
-    lines to the job summary before (findings 1 of the reviews of .github#94)."""
+    the turns start again on the next, and the README names it beside the turn cap: a review
+    the timeout ends writes no summary line, while `prepare` has written its own lines to the
+    job summary before (findings 1 of the reviews of .github#94)."""
     assert "    timeout-minutes: 45\n" in WORKFLOW
     assert "timeout-minutes: 30" not in WORKFLOW
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
-    for text in (" ".join(section.split()), workflow_header()):
-        assert "The job times out after 45 minutes" in text
-        assert "the time of 160 turns on one key" in text
-        assert "a review the timeout ends returns no verdict and writes no summary line" in text
-        assert "no line of the script" not in text
+    text = " ".join(section.split())
+    assert "The job times out after 45 minutes" in text
+    assert "the time of 160 turns on one key" in text
+    assert "a review the timeout ends returns no verdict and writes no summary line" in text
+    assert "no line of the script" not in text
 
 
 def test_the_readme_says_the_sdks_retries_of_a_429_alone() -> None:
@@ -833,8 +871,8 @@ def test_the_readme_says_the_sdks_retries_of_a_429_alone() -> None:
 def test_the_readme_runs_the_review_locally_on_a_release_pr_as_the_workflow() -> None:
     section = README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(section.split())
-    assert "labeled `release`" in flat
-    assert "`<version> Release`" in flat
+    assert "a pull request labeled `release` or titled `<version> Release` on its release's" in flat
+    assert "`release: <version>`" not in flat
 
 
 # --- the read token (.github#62) ---------------------------------------------------------
@@ -896,15 +934,6 @@ def test_no_notice_on_the_read_token_where_it_is_used_or_nothing_is_read(
     """A private caller, or a caller without the secret; a pull request the mode passes."""
     _code, out, _outputs = gate(tmp_path, mode=mode, read_token_unused=unused)
     assert "DOCUMENTS_READ_TOKEN" not in out
-
-
-def test_the_workflows_header_lays_out_the_read_token() -> None:
-    header = workflow_header()
-    assert "DOCUMENTS_READ_TOKEN" in header
-    assert "only where the calling repository is private" in header
-    assert "quote the documents it judges by" in header
-    assert "a pull request chooses nothing but a release tag" in header
-    assert "chooses nothing the token reads" not in header
 
 
 def test_the_readme_lays_out_the_read_token_and_its_caller() -> None:
@@ -1175,13 +1204,25 @@ def test_findings_that_do_not_block_pass_and_update_an_earlier_comment(tmp_path:
     assert summary.startswith(f"{MARKER}\n**Findings.** 1 finding, none blocking, at {COMMIT}.\n")
     assert comment == summary
     assert calls == [VIEW, EDIT]
-    # The comment of the earlier form is the review's too.
+
+
+@pytest.mark.parametrize("verdict", ["ready", "not ready"])
+def test_a_comment_with_the_old_marker_is_no_comment_of_the_check(
+    tmp_path: Path, verdict: str
+) -> None:
+    """The marker from before the markers of the style is retired (step 2.1 of .github 0.5.0):
+    the token's last comment that opens with it is another's, so the verdict posts a new
+    comment and edits none."""
+    findings = [] if verdict == "ready" else [finding("", "A stray print.", blocking=True)]
     old = "<!-- conventions -->\n## conventions: `not ready`\n"
-    _code, _summary, calls, comment = verdict_step(
-        tmp_path, result("ready", findings), last_comment=old
+    code, summary, calls, comment = verdict_step(
+        tmp_path, result(verdict, findings), last_comment=old
     )
-    assert comment is not None
-    assert calls == [VIEW, EDIT]
+    assert code == (0 if verdict == "ready" else 1)
+    assert comment == summary
+    assert comment.startswith(f"{MARKER}\n")
+    assert calls == [VIEW, CREATE]
+    assert fr.CHECK_MARKERS == (MARKER,)
 
 
 @pytest.mark.parametrize("verdict", ["ready", "not ready"])
@@ -1347,21 +1388,21 @@ def test_the_next_run_reads_the_run_the_comment_carries(tmp_path: Path) -> None:
     assert run.findings == [findings[0], {**findings[1], "text": "Key [redacted] here."}]
 
 
-def test_the_readme_and_the_header_lay_out_the_run_before() -> None:
+def test_the_readme_lays_out_the_run_before() -> None:
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
-    for text in (" ".join(section.split()), workflow_header()):
-        assert "the run before" in text
-        assert "fixed, decided by the opener or open" in text
-        assert "whether its file changed since the head judged before" in text
-        assert "by the text of its files, not by ancestry" in text
-        assert "could not be read" in text
-        assert "judges as a first run" in text
-        assert "names a line only where its file has that line at the head" in text
-        # Findings 1, 3 and 8 of the review of .github#104.
-        assert "a file the head's tree holds" in text
-        assert "never settles a finding that blocked" in text
-        assert "no run before was found" in text
+    text = " ".join(section.split())
+    assert "the run before" in text
+    assert "fixed, decided by the opener or open" in text
+    assert "whether its file changed since the head judged before" in text
+    assert "by the text of its files, not by ancestry" in text
+    assert "could not be read" in text
+    assert "judges as a first run" in text
+    assert "names a line only where its file has that line at the head" in text
+    # Findings 1, 3 and 8 of the review of .github#104.
+    assert "a file the head's tree holds" in text
+    assert "never settles a finding that blocked" in text
+    assert "no run before was found" in text
     dry_run = README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0]
     flat = " ".join(dry_run.split())
     assert (
