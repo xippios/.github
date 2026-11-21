@@ -7,10 +7,9 @@ reusable workflows that a repository calls as jobs. The coordinate workspaces ca
 `conventions.yml`, the conventions review by mode on each repository's own documents, from
 coordinate-core 0.6.4 (C57 as amended by coordinate-core#364, .github#32); `adr-index.yml`
 checks a repository's index of its decision records. The conventions
-review keeps its place beside the reviewer for good (C57). GitHub decides what merges: the
-required checks pass, the required approvals are there, and auto-merge merges. The sites of the
-web workspace call `site-tests.yml`, which runs a site's suite through the host xippios-web,
-from web-template 0.1.0 (https://github.com/xippios/.github/issues/30).
+review keeps its place beside the reviewer for good (C57). The sites of the web workspace call
+`site-tests.yml`, which runs a site's suite through the host xippios-web, from web-template
+0.1.0 (https://github.com/xippios/.github/issues/30).
 
 Names: created as `xippios/.github`, renamed `xippios/sdk-gates` on 2026-10-27 and back to
 `.github` on 2026-10-30 for the coordinate workspaces (coordinate-core plan §11.2); the
@@ -32,22 +31,25 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
 
 ## The workflows
 
-- **`.github/workflows/spelling.yml`** (coordinate-core 0.5.1, C79, .github#18) is the
-  spelling check of the coordinate workspaces: a reusable workflow a repository's `gates.yml`
-  calls as a job with the paths to check, check `spelling / spelling`. It runs codespell,
-  pinned to 2.4.3, with its built-in `en-GB_to_en-US` dictionary only, so a British spelling
-  fails it and a typo does not (the typo dictionaries flag identifiers). Three flags widen
-  codespell's defaults to what C79 covers: `--regex` splits words at every non-letter and at a
-  camelCase hump, so a possessive, a snake_case and a camelCase name are checked by their
+- **`.github/workflows/spelling.yml`** checks that the files its caller names are spelled in
+  American English, check `spelling / spelling`. It runs on a pull request's opening, push and
+  reopening, as its trigger file starts it. The calling file hands over the input `paths`, the
+  files and directories to check, separated by spaces or newlines, the optional input
+  `ignore-words`, and no secret. Permissions: `contents: read`. The variable
+  `WORKFLOW_SPELLING` switches it (the switch, under the wiring below).
+
+  It runs codespell, pinned to 2.4.3, with its built-in `en-GB_to_en-US` dictionary only, so a
+  British spelling fails it and a typo does not (the typo dictionaries flag identifiers). Three
+  flags widen codespell's defaults to what C79 covers: `--regex` splits words at every non-letter
+  and at a camelCase hump, so a possessive, a snake_case and a camelCase name are checked by their
   parts; `--check-hidden` checks `.claude` and `.github`, which codespell skips even when named;
   `--skip .git` keeps a caller that names `.` out of the repository's objects. The caller's
-  `gates.yml` alone decides what is checked: codespell runs from the runner's temporary
-  directory, so no `.codespellrc`, `setup.cfg` or `pyproject.toml` of the checkout is read, and
-  uv runs with `--no-config`. `ignore-words` defaults to `cancelled`, GitHub's spelling of a
-  run's conclusion and of `cancelled()`. A named path that does not exist fails the check,
-  since codespell passes it in silence. The variable `WORKFLOW_SPELLING` switches it (the
-  switch, under the wiring below). Permissions: `contents: read`; no secret. The job times
-  out after 5 minutes. A root's caller:
+  `gates.yml` alone decides what is checked: codespell runs from the runner's temporary directory,
+  so no `.codespellrc`, `setup.cfg` or `pyproject.toml` of the checkout is read, and uv runs with
+  `--no-config`. `ignore-words` defaults to `cancelled`, GitHub's spelling of a run's conclusion
+  and of `cancelled()`. A named path that does not exist fails the check, since codespell passes
+  it in silence; a path is read under the caller's checkout, so an absolute path does not exist
+  there. The job times out after 5 minutes. A root's caller:
 
   ```yaml
   spelling:
@@ -58,9 +60,15 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
 
   A line that must keep a British word, such as a compatibility read of an old key, carries
   codespell's inline `codespell:ignore` comment.
-- **`.github/workflows/conventions.yml`**, the conventions review (C57 as amended by
-  coordinate-core#364, check `conventions`): it judges a pull request against its repository's
-  own documents, while the reviewer judges it against the plan of its package. It runs
+- **`.github/workflows/conventions.yml`**, the conventions review, judges a pull request
+  against its repository's own documents, check `conventions / conventions`. It runs on a pull
+  request's opening, push, reopening and edit, and on no other event of its caller (the events,
+  below). The calling file hands over the secrets `ANTHROPIC_API_KEY` and
+  `DOCUMENTS_READ_TOKEN`, both optional, by name, and no input. Permissions: `contents: read`,
+  `pull-requests: write`, `checks: read`. The variable `WORKFLOW_CONVENTIONS` switches it (the
+  switch, under the wiring below).
+
+  Beside it, the reviewer judges a pull request against the plan of its package. The review runs
   `scripts/conventions.py`, which has `claude-opus-5-5`, at effort `xhigh`
   (https://github.com/xippios/.github/issues/93), review the pull request on the Messages API
   (the SDK `anthropic`, pinned to 2.3.0), each turn streamed with `max_tokens` 64,000, since
@@ -73,14 +81,14 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   with the document and the section it goes against, and after a run before, its findings with
   what became of each (the run before, below). A run that reviews nothing posts none, and
   a post that fails leaves its reason in the job summary and a warning annotation. No verdict (an
-  API error, a refusal, a `max_tokens` stop, the turn cap of 160, a missing key) fails the check,
-  and the job summary carries the script's line with the cause (the SDK's error class and its
-  redacted message, a refusal's category), the turns, the tool calls, the token usage and the
-  key the review ended on (the keys below). The job times out after 45 minutes, which leaves a
-  review at effort `xhigh` the time of 160 turns on one key; a review the timeout ends returns
-  no verdict and writes no summary line. The variable `WORKFLOW_CONVENTIONS` switches it (the
-  switch, under the wiring below).
-  Permissions: `contents: read`, `pull-requests: write`, `checks: read`.
+  API error, a refusal, a `max_tokens` stop, the turn cap of 160, a missing key) fails the check
+  and posts no comment: the Review step fails without ending the job, and the Verdict step after
+  it reads the verdict file and decides the check. The job summary carries the script's line
+  with the cause (the SDK's error class and its redacted message, a refusal's category), the
+  turns, the tool calls, the token usage and the key the review ended on (the keys below). The job
+  times out after 45 minutes, which leaves a review at effort `xhigh` the time of 160 turns on one
+  key; a review the timeout ends returns no verdict and writes no summary line. A new push or edit
+  of the pull request cancels the run that still reviews its state before.
   - **The events**: the job runs on a pull request's opening, push, reopening and edit alone,
     the event `pull_request` with the types `opened`, `synchronize`, `reopened` and `edited`,
     and is skipped on any other event of its caller, such as a push to `main`, a dispatch or the
@@ -89,14 +97,13 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     starts no review there and its check reports as skipped, and a caller that runs on those
     four alone sees no change.
   - **The release pull request** (https://github.com/xippios/.github/issues/47): one labeled
-    `release`, or titled `<version> Release`, and `release: <version>` until every workspace has
-    adopted coordinate-core 0.7.4 (`docs/style/pulls.md#release-pr` of a coordinate root), on
-    any branch. The job's own `if:`
+    `release`, or titled `<version> Release` (`docs/style/pulls.md#release-pr` of a coordinate
+    root), on any branch. The job's own `if:`
     skips any other pull request unless the mode is `all` or a value the Gate refuses, so a
     caller needs no condition of its own: its check `conventions / conventions` reports as
     skipped and passing, and no runner starts. GitHub's expressions know no regular expression
-    and compare without case, so the condition admits a title by its start, `release:` and a
-    space, or by its end, a space and `Release`, and the Gate below matches it exactly. A caller
+    and compare without case, so the condition admits a title by its end, a space and
+    `Release`, and the Gate below matches it whole, stripped of white space at its ends. A caller
     runs on no label, so a label set after the opening counts from the next push or edit.
   - **The mode**: the caller's variable `WORKFLOW_CONVENTIONS_MODE`, read from the calling
     repository, where a repository variable overrides the organization's by GitHub's
@@ -138,7 +145,7 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     job summary and `documents.json` name the ref each document was read at. A link the review
     cannot read as a file, a directory or a page outside GitHub, fails the check naming it. A
     README that links none passes with the notice "links no documents under ## Documents;
-    nothing to judge", since the root's `doctor` owns that contract.
+    nothing to judge" and makes no API call, since the root's `doctor` owns that contract.
   - **The read token** (https://github.com/xippios/.github/issues/62): `DOCUMENTS_READ_TOKEN`,
     an optional secret of the caller, a token that reads the private repositories whose files
     its README lists. The check uses it only where the calling repository is private, by
@@ -147,15 +154,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     quote the documents it judges by, so in a public repository they would publish a private
     document's text, and in a private repository they can show the sibling's text to everyone
     who reads that repository. A public repository that passes the secret reads as one that
-    passes none, and its job summary says so where the review runs: a private sibling's
-    document fails its check and names it. Where the check uses the token, it asks GitHub for
+    passes none, and its job summary says so where the review runs, from the Gate, which learns
+    whether the secret was passed and never its value: a private sibling's document fails its
+    check and names it. Where the check uses the token, it asks GitHub for
     another repository's file with the workflow's token first, and only where GitHub answers
     "not found" asks again with the read token: for a listed document, that repository's
     `pyproject.toml` and its tags, so a private repository's document is read and its pin
     resolves as a public one's does. Any other failure fails the check as above, and the read
     token never stands in for it. Without the secret, or with it empty, the check reads with
     the workflow's token alone. The token is in the environment of the step that prepares the
-    review material alone, and the script hands it to `gh` as the `GH_TOKEN` of that one read,
+    review material alone, as the empty string where the caller is public, and the script hands
+    it to `gh` as the `GH_TOKEN` of that one read,
     so no other process gets it, the review's included, and neither the job summary,
     `documents.json` nor the log carries it. Of what the check reads with the token, a pull
     request chooses nothing but a release tag, by the requirement of its head: the list of
@@ -167,7 +176,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   - **The range**: on a release pull request the review judges everything from the last release
     tag (`v*`) reachable from the base to the head, since the pull request's own diff is the
     CHANGELOG and the bump. Without a tag it judges the pull request's own diff and says so. Any
-    other pull request is judged on its own diff, merge base to head.
+    other pull request is judged on its own diff, merge base to head. The head is checked out
+    with its full history, which brings the default branch, where the README and its documents
+    are read, and the release tags, where a release's range starts.
   - **The version**: the review names the version a release pull request ships, read from its
     title, else from the `[project]` version of the head's `pyproject.toml`, taken from the
     commit and in a version's characters only. Where neither names one, the job summary says
@@ -184,8 +195,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     App token exchange skips every pull request whose calling workflow differs from the
     one on the default branch, which would have left adoption PRs without a verdict
     (decided 2026-10-26).
-  - **Gate** (`conventions.py gate`), in order: a Dependabot pull request (its author and the
-    triggering actor both
+  - **Gate** (`conventions.py gate`): it decides after the checkout of the script alone, so a
+    pull request it turns away gets no checkout of its head, no key and no API call. In order:
+    a Dependabot pull request (its author and the triggering actor both
     `dependabot[bot]`) ends green with the notice "conventions: Dependabot PR, reviewed by
     `ci` only", since Dependabot runs get no Actions secrets. A pull request the job's
     condition admits and the mode does not review ends green with its notice. A pull request
@@ -263,7 +275,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     has not, as in a file the head lacks or one the tools refuse, the finding keeps its file
     and names no line.
   - **What the model may do**: nothing but read. Before it starts, `conventions.py
-    prepare` writes its material to `.review/`: `diff.patch` and `log.txt` of the range,
+    prepare` empties `.review/`, so nothing the pull request carries there survives, and writes
+    its material there: `diff.patch` and `log.txt` of the range,
     `pr.json` (title, body, author, comments, files), `checks.json` (the head's checks, `ci`
     among them), `meta.json` (the coordinates and the range), the documents under
     `documents/`, listed in `documents.json`, and after a run before, `earlier.json` and
@@ -288,21 +301,26 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     paths, counts, the verdict and redacted error text, never a file's content, a tool
     result or the prompt, and `conventions.py verdict` redacts anything that looks like a key
     or a GitHub token from the summary and the comment.
-- **`.github/workflows/conventions-range.yml`**, the conventions review of a range of commits
-  (https://github.com/xippios/.github/issues/96, check `range / range`): the trigger file
-  `conventions.yml` of a repository calls it on every event that is not a pull request's, a push
-  to `main` or a dispatch (the trigger files, under the wiring below). Its one job, `range`,
-  holds no review yet: its condition is false, so no runner starts and its check reports as
-  skipped on every run. It takes the caller's `ANTHROPIC_API_KEY` and `DOCUMENTS_READ_TOKEN`,
-  both optional, as `conventions.yml` takes them. Permissions: `contents: read`,
-  `pull-requests: write`, `checks: read`, `issues: read`, which a trigger file grants from its
-  start, since a caller that grants less than a called workflow asks for fails at its start.
-- **`.github/workflows/site-tests.yml`** (https://github.com/xippios/.github/issues/30 as
-  amended by https://github.com/xippios/.github/issues/37) runs a site's suite through the host
-  xippios-web, the only test harness of the web platform.
-  The `ci.yml` that web-template renders
-  into a site calls it as the job `tests`, check `tests / tests`, with the site's key and the
-  organization secret `WEB_READ_TOKEN`, which reads xippios-web and the sites it requires:
+- **`.github/workflows/conventions-range.yml`**, the conventions review of a range of commits,
+  judges no range yet, check `range / range`: its one job, `range`, has a false condition, so
+  no runner starts and its check reports as skipped on every run. It runs on a push to `main`
+  and on a dispatch, the events of the trigger file `conventions.yml` that are no pull
+  request's (the trigger files, under the wiring below). The calling file hands over the secrets
+  `ANTHROPIC_API_KEY` and `DOCUMENTS_READ_TOKEN`, both optional, as to `conventions.yml`, and
+  no input. Permissions: `contents: read`, `pull-requests: write`, `checks: read`,
+  `issues: read`. The variable `WORKFLOW_CONVENTIONS` switches it (the switch, under the wiring
+  below).
+
+  A trigger file grants these permissions from its start, since a caller that grants less than
+  a called workflow asks for fails at its start.
+- **`.github/workflows/site-tests.yml`** runs a site's suite through the host xippios-web, the
+  only test harness of the web platform, check `tests / tests`. It runs on a pull request and
+  on a push to `main`, the events of the `ci.yml` that web-template renders into a site, which
+  calls it as the job `tests`. The calling file hands over the input `site`, the site's key,
+  and the secret `WEB_READ_TOKEN`, the organization's token that reads xippios-web and the sites
+  it requires, both required. Permissions: `contents: read`. No variable switches it.
+
+  A site's caller:
 
   ```yaml
   tests:
@@ -326,31 +344,35 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     takes the site's entries from `vendor/xippios/web-<site>`, where the require put the site,
     and the host's layout loads them from `public/build/manifest.json`, without which a site's
     page answers 500. No install script of a package runs, as the host's `.npmrc` also sets it.
-    Then it runs `php artisan dusk --testsuite=<site>` against the host served by
-    `php artisan serve` at `APP_URL` `http://127.0.0.1:8000`, Laravel's recipe for Dusk on
-    GitHub Actions. Where the site has no `tests/Browser`, no npm runs and a notice says that
-    Dusk does not run. The suites are the host's, one per site in its `phpunit.xml` and
-    `phpunit.dusk.xml`, from xippios-web 0.1.0.
+    Then it runs `php artisan dusk --testsuite=<site>` with the runner's Chrome and its driver
+    against the host served by `php artisan serve` at `APP_URL` `http://127.0.0.1:8000`,
+    Laravel's recipe for Dusk on GitHub Actions. Where the site has no `tests/Browser`, no npm
+    runs and a notice says that Dusk does not run. The suites are the host's, one per site in its
+    `phpunit.xml` and `phpunit.dusk.xml`, from xippios-web 0.1.0.
   - **The checks before**: an empty secret fails the check and names it. A pull request from a
     fork never gets the secret, so it fails there. A key that web-template's `copier.yml` would
     refuse fails, and so does a site whose `composer.json` names another package than
     `xippios/web-<site>`.
   - **The token** reaches two steps only: the host's checkout, which keeps no credential, and
-    Composer's resolution, which runs with `--no-scripts` and `--no-plugins` and gets the token
-    in `COMPOSER_AUTH`, never on disk. The skipped scripts, package discovery among them, the
-    plugins the host allows, the suite, the build and Dusk run after it, without the token. The
-    build needs none: the host's `package-lock.json` takes every package from the public npm
-    registry, and its `.npmrc` names no registry and no credential.
+    Composer's resolution, which gets the token in `COMPOSER_AUTH`, never on disk, and runs
+    with `--no-scripts`, since the host's scripts boot the application, which runs the site's
+    code, and `--no-plugins`, since a plugin the host allows runs inside Composer. The skipped
+    scripts, package discovery among them, the plugins the host allows, the suite, the build and
+    Dusk run after it, without the token. The build needs none: the host's `package-lock.json`
+    takes every package from the public npm registry, and its `.npmrc` names no registry and no
+    credential.
 
   PHP 8.4 and Composer 2.11.1 come from setup-php, and Node 22, the version the host's own
-  `ci.yml` builds with, from setup-node, with no cache. Permissions: `contents: read`. The job
-  times out after 20 minutes.
-- **`.github/workflows/adr-index.yml`**
-  (https://github.com/xippios/.github/issues/46) checks that a repository's index of its
-  architecture decision records is current: `docs/adr.md` and `docs/adr.json` must be what the
-  repository's own `scripts/adr_index.py` writes from the records in `docs/adr/`, and no two
-  records may take one number. A repository's `gates.yml` calls it as a job, check
-  `adr-index / adr-index`, with no input and no secret:
+  `ci.yml` builds with, from setup-node, with no cache. The job times out after 20 minutes.
+- **`.github/workflows/adr-index.yml`** checks that a repository's index of its architecture
+  decision records is current, check `adr-index / adr-index`: `docs/adr.md` and `docs/adr.json`
+  must be what the repository's own `scripts/adr_index.py` writes from the records in
+  `docs/adr/`, and no two records may take one number. It runs on a pull request's opening,
+  push and reopening, as its trigger file starts it. The calling file hands over no input and
+  no secret. Permissions: `contents: read`. The variable `WORKFLOW_ADR_INDEX` switches it (the
+  switch, under the wiring below).
+
+  A `gates.yml` calls it as a job:
 
   ```yaml
   adr-index:
@@ -375,21 +397,28 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     twice, one of the two records renumbered. A record's name reaches an annotation escaped, so
     no name starts a workflow command.
 
-  The variable `WORKFLOW_ADR_INDEX` switches it (the switch, under the wiring below).
-  Permissions: `contents: read`; the checkout keeps no token. The job times out after 5 minutes.
-- **`.github/workflows/ci.yml`** is this repository's own `ci` (15 minutes): ruff 0.17.1,
-  the scripts' tests on a pinned pytest (with the review's
-  `anthropic` 2.3.0 and `spelling.yml`'s codespell; a fake client, no key, no network), and
-  actionlint with the runner's shellcheck. It calls `spelling.yml` over `README.md`, `.github`
-  and `scripts` as the job `spelling`, and `ci` fails when that job did not pass, so the
-  ruleset's required check `ci` covers both. `ci` counts a `spelling` job that did not run as
-  not passed, so the switch `WORKFLOW_SPELLING` is for callers. The one test of
+  The checkout keeps no token, and the job times out after 5 minutes.
+- **`.github/workflows/ci.yml`** checks this repository itself, check `ci`: ruff, the scripts'
+  tests, actionlint and the spelling of `README.md`, `.github` and `scripts`. It runs on every
+  pull request of this repository and on a push to `main`. No file calls it, since it is no
+  reusable workflow. Permissions: `contents: read`. No variable switches it.
+
+  The job `ci` runs ruff 0.17.1, the rev of the templates' `ruff-pre-commit` hook, the scripts'
+  tests on a pinned pytest (with the review's `anthropic` 2.3.0 and `spelling.yml`'s codespell;
+  a fake client, no key, no network), and actionlint with the runner's shellcheck on every
+  `run:` script, and times out after 15 minutes. It calls `spelling.yml` over `README.md`,
+  `.github` and `scripts` as the job `spelling`, and `ci` runs where that job failed too and
+  fails at its last step where it did not pass, since a job that a failed need skips reports
+  as skipped, which passes: so `ci` passes only where both pass. `ci` counts a `spelling` job
+  that did not run as not passed, so the switch `WORKFLOW_SPELLING` is for callers. The one test of
   `site-tests.yml` that requires a site with the real Composer uses the runner's PHP and
   Composer, and is skipped elsewhere without them.
 
-Every action in the workflows is pinned to a commit SHA with its version in a comment.
-`setup-uv` installs a pinned uv and `setup-php` a pinned Composer, the review runs a pinned
-`anthropic`, and the spelling check a pinned codespell.
+Every action in the workflows is pinned to a commit SHA with its version in a comment, written as
+the action's own tags write it, with or without the `v`. It is the one comment a workflow file of
+this repository carries: what a workflow does, and why, stands in this README. `setup-uv` installs
+a pinned uv and `setup-php` a pinned Composer, the review runs a pinned `anthropic`, and the
+spelling check a pinned codespell.
 
 ## Wiring and check contexts
 
@@ -422,7 +451,7 @@ skipped and passing on a pull request that condition skips
 | `adr-index.yml` | `adr-index` | `adr-index / adr-index` |
 | `site-tests.yml` | `tests` | `tests / tests` |
 
-A context joins the caller's job id and the callee's job name, so a ruleset requires the
+A context joins the caller's job id and the callee's job name, so a required check names the
 slash-joined context and a caller keeps the job ids above. The caller passes the review its
 secrets by name, never `secrets: inherit`: `ANTHROPIC_API_KEY`, and `DOCUMENTS_READ_TOKEN`,
 which the review needs only in a private repository whose README lists a private repository's
@@ -540,17 +569,6 @@ starts and the check reports as skipped and passing. The review carries its swit
 `WORKFLOW_CONVENTIONS` in the trigger file `conventions.yml` above, so on `off` neither of its
 jobs calls a workflow and `conventions / conventions` reports nothing.
 
-## Rulesets
-
-The organization's ruleset on this repository (gate coordinate#9;
-`gh api orgs/xippios/rulesets`):
-
-- **`GitHub Main`** (org branch ruleset on `main` of this repository): pull request
-  required, one approving review, review from code owners (`.github/CODEOWNERS` names
-  the human for every path), stale approvals dismissed on push, `ci` and `review` required,
-  merge or squash. The review does not run here (C58); `ci` calls `spelling.yml` over this
-  repository's files.
-
 ## Running the checks locally
 
 The checks of this repository, as `ci` runs them:
@@ -568,8 +586,8 @@ uvx --from actionlint-py==1.7.12.25 actionlint
 
 A dry run clones the pull request into a temporary directory (or `--workdir`, kept), prepares
 the material as the workflow does, the documents from the clone's `origin/main` (`--main`
-names another ref) and a pull request labeled `release` or titled `<version> Release` or
-`release: <version>` on its release's range, with its version, and runs the review, then
+names another ref) and a pull request labeled `release` or titled `<version> Release` on its
+release's range, with its version, and runs the review, then
 prints the summary line and the findings, each with the document it goes
 against. A README that links no documents ends it there, green, as in the workflow. It reads
 the run before from the check's last comment as the workflow does, since that comment is the
@@ -599,15 +617,8 @@ verdict.
 
 ## Changing this repository
 
-Every pull request here waits for the human: the `GitHub Main` ruleset wants the human's
-code-owner approval (below) and `ci` and `review` green, so no session can change the workflows
-or the review on its own. A pull request that changes `conventions.py` is checked by `ci`
-and the dry run above; the review no longer runs on this repository's own pull requests
-(C58). The documents the review judges by are each repository's own, listed in its README's
-`## Documents` (C80), so nothing here decides what a repository is held to.
-
-`.github/CODEOWNERS` names the human for every path, so the organization ruleset's code-owner
-review (gate coordinate#9: one approval, review from code owners, stale approvals dismissed on
-push) is the human's approval on every pull request here. The reviewer's approval sets the
-required status `review` beside it, never in its place. `coordinate sync` writes the root's
-CODEOWNERS from `workspace.toml`; this repository's is kept by hand.
+A change here is a branch and a pull request, which `ci` checks (the checks, above). A pull
+request that changes `conventions.py` is checked by `ci` and the dry run above; the review no
+longer runs on this repository's own pull requests (C58). The documents the review judges by
+are each repository's own, listed in its README's `## Documents` (C80), so nothing here decides
+what a repository is held to.
