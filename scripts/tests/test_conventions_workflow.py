@@ -4,8 +4,9 @@ and that no other mode could review, so the caller's check reports as skipped an
 (.github#47), and any event of the caller that is not a pull request's opening, push, reopening
 or edit, so a caller that also runs on a push to `main` or on a dispatch changes nothing for it
 (step 1 of .github 0.5.0). The step `Gate` of conventions.yml then decides from the caller's
-`CONVENTIONS_REVIEW` variable, the pull request's label `release` and its title whether the
-review runs, before any checkout or API call; the step `Verdict` writes the check's comment in
+`WORKFLOW_CONVENTIONS_MODE` variable, `release` or `all` (step 1.1 of .github 0.5.0), the pull
+request's label `release` and its title whether the review runs, before any checkout or API
+call; the step `Verdict` writes the check's comment in
 the style of docs/style/reviews.md on every run that reviewed the pull request, `ready` included
 (.github#36). The tests run the steps' own scripts."""
 
@@ -21,7 +22,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = (ROOT / ".github" / "workflows" / "conventions.yml").read_text()
 README = (ROOT / "README.md").read_text()
-MODES = ("release", "all", "off")
+MODES = ("release", "all")
+# Values of the mode that the Gate refuses: `off` among them, since the switch WORKFLOW_CONVENTIONS
+# of the trigger file replaces it (step 1.1 of .github 0.5.0).
+WRONG_MODES = ["relase", "off", "Off", "OFF", "on", "none"]
 # A release PR's title, `<version> Release`, and `release: <version>` until every workspace has
 # adopted coordinate-core 0.7.4 (coordinate-core#805), as the core's `RELEASE_TITLE` reads it.
 RELEASE_TITLES = ["0.7.4 Release", "release: 0.6.4", "release: 0.6.4-rc.1", "release: v0.6.4"]
@@ -48,8 +52,8 @@ CONDITION = (
     "&& (contains(github.event.pull_request.labels.*.name, 'release') "
     "|| startsWith(github.event.pull_request.title, 'release: ') "
     "|| endsWith(github.event.pull_request.title, ' Release') "
-    "|| (vars.CONVENTIONS_REVIEW != '' && vars.CONVENTIONS_REVIEW != 'release' "
-    "&& vars.CONVENTIONS_REVIEW != 'off'))"
+    "|| (vars.WORKFLOW_CONVENTIONS_MODE != '' "
+    "&& vars.WORKFLOW_CONVENTIONS_MODE != 'release'))"
 )
 # The events of a caller that the condition skips, each with its action: a push to `main`, a
 # dispatch, the other types of a pull request's event and the events that are no pull request's.
@@ -183,7 +187,7 @@ def test_release_passes_any_other_pr_with_a_notice(tmp_path: Path, title: str) -
     assert "labeled `release`" in out
     assert "`<version> Release`" in out
     assert "`release: <version>`" in out
-    assert "CONVENTIONS_REVIEW" in out
+    assert "with WORKFLOW_CONVENTIONS_MODE release the review runs" in out
 
 
 @pytest.mark.parametrize("title", RELEASE_TITLES + OTHER_TITLES)
@@ -199,32 +203,34 @@ def test_all_reviews_every_pr(tmp_path: Path) -> None:
         assert outputs == {"mode": "all", "release": release, "run": "true"}
 
 
-def test_off_reviews_nothing(tmp_path: Path) -> None:
-    for title in ("feat: a change", "release: 0.6.4"):
-        code, out, outputs = gate(tmp_path, mode="off", title=title)
-        assert code == 0
-        assert outputs["run"] == "false"
-        assert "conventions: CONVENTIONS_REVIEW is off" in out
-
-
-def test_another_value_fails_and_names_the_three(tmp_path: Path) -> None:
-    code, out, outputs = gate(tmp_path, mode="relase", title="release: 0.6.4")
-    assert code == 1
-    assert "conventions: CONVENTIONS_REVIEW is `relase`" in out
-    for mode in MODES:
-        assert f"`{mode}`" in out
-    assert "run" not in outputs
+@pytest.mark.parametrize("value", WRONG_MODES)
+@pytest.mark.parametrize("title", ["feat: a change", "release: 0.6.4"])
+def test_another_value_off_included_fails_and_names_the_two(
+    tmp_path: Path, value: str, title: str
+) -> None:
+    """The mode has two values; `off` is a wrong one like any other, which fails before the
+    key, the App and Dependabot are looked at."""
+    for who in ({}, {"key": False}, {"author": "some-app[bot]"}):
+        code, out, outputs = gate(tmp_path, mode=value, title=title, **who)
+        assert code == 1
+        assert (
+            f"conventions: WORKFLOW_CONVENTIONS_MODE is `{value}`; it is `release` or `all` (C57)"
+            in out
+        )
+        assert "switched off" not in out
+        assert outputs == {}
 
 
 @pytest.mark.parametrize(
-    ("value", "mode"), [("Off", "off"), ("OFF", "off"), ("Release", "release"), ("ALL", "all")]
+    ("value", "mode"),
+    [("Release", "release"), ("RELEASE", "release"), ("All", "all"), ("ALL", "all")],
 )
 @pytest.mark.parametrize("title", ["feat: a change", "0.7.4 Release"])
 def test_the_gate_reads_the_mode_without_case_as_the_condition_does(
     tmp_path: Path, value: str, mode: str, title: str
 ) -> None:
     """The condition compares the mode without case (finding 1 of the review of .github#60), so
-    the Gate reads `Off` as `off`: one value means one mode in both."""
+    the Gate reads `All` as `all`: one value means one mode in both."""
     code, _out, outputs = gate(tmp_path, mode=value, title=title)
     expected, _out, _outputs = gate(tmp_path, mode=mode, title=title)
     assert code == expected == 0
@@ -238,9 +244,6 @@ def test_a_reviewed_pr_without_the_key_fails_naming_the_secret(tmp_path: Path) -
     assert "conventions: ANTHROPIC_API_KEY is empty; the review cannot run" in out
     # A pull request that no mode reviews needs no key.
     code, _out, outputs = gate(tmp_path, mode="release", title="feat: a change", key=False)
-    assert code == 0
-    assert outputs["run"] == "false"
-    code, _out, outputs = gate(tmp_path, mode="off", title="release: 0.6.4", key=False)
     assert code == 0
     assert outputs["run"] == "false"
 
@@ -261,9 +264,6 @@ def test_dependabot_passes_and_another_app_fails(tmp_path: Path) -> None:
     assert code == 1
     assert "opened or updated by a GitHub App gets no review" in out
     # A pull request that no mode reviews is not failed for its App either.
-    code, _out, outputs = gate(tmp_path, mode="off", author="some-app[bot]")
-    assert code == 0
-    assert outputs["run"] == "false"
     code, _out, outputs = gate(tmp_path, mode="release", author="some-app[bot]")
     assert code == 0
     assert outputs["run"] == "false"
@@ -273,6 +273,7 @@ def test_dependabot_passes_and_another_app_fails(tmp_path: Path) -> None:
     "case",
     [
         {"mode": "off", "title": "release: 0.6.4"},
+        {"mode": "relase", "title": "release: 0.6.4"},
         {"mode": "release", "title": "feat: a change"},
         {"mode": "all", "author": "dependabot[bot]", "actor": "dependabot[bot]"},
         {"mode": "all", "author": "some-app[bot]"},
@@ -293,7 +294,7 @@ def test_a_run_that_reviews_nothing_posts_no_comment(tmp_path: Path, case: dict)
 
 def test_the_gate_reads_the_callers_variable_the_label_and_the_title() -> None:
     block = step_block("Gate").split("run: |", 1)[0]
-    assert "MODE: ${{ vars.CONVENTIONS_REVIEW }}" in block
+    assert "MODE: ${{ vars.WORKFLOW_CONVENTIONS_MODE }}" in block
     assert "TITLE: ${{ github.event.pull_request.title }}" in block
     assert "LABELED: ${{ contains(github.event.pull_request.labels.*.name, 'release') }}" in block
     assert "FAMILY_REVIEW_REQUIRED" not in WORKFLOW
@@ -342,7 +343,7 @@ def admitted(
             labeled(labels)
             or title.startswith("release: ")
             or title.endswith(" release")
-            or mode not in ("", "release", "off")
+            or mode not in ("", "release")
         )
     )
 
@@ -389,7 +390,7 @@ def test_a_pr_labeled_release_gets_the_release_review(tmp_path: Path) -> None:
     assert outputs == {"mode": "release", "release": "true", "run": "true"}
 
 
-@pytest.mark.parametrize("mode", ["", "release", "off"])
+@pytest.mark.parametrize("mode", ["", "release", "Release"])
 @pytest.mark.parametrize("labels", [(), ("bug",)])
 def test_a_pr_without_the_label_and_the_title_skips_the_job(
     mode: str, labels: tuple[str, ...]
@@ -397,6 +398,14 @@ def test_a_pr_without_the_label_and_the_title_skips_the_job(
     """Proof 1 of the plan of .github 0.2.0: the job does not start, so the check reports as
     skipped."""
     assert not admitted(mode, "feat: a change", labels)
+
+
+@pytest.mark.parametrize("mode", ["all", "ALL", *WRONG_MODES])
+@pytest.mark.parametrize("labels", [(), ("bug",)])
+def test_a_mode_but_release_starts_the_job_off_included(mode: str, labels: tuple[str, ...]) -> None:
+    """`all` reviews every pull request, and a wrong value, `off` among them, reaches the Gate,
+    which fails naming the two (step 1.1 of .github 0.5.0)."""
+    assert admitted(mode, "feat: a change", labels)
 
 
 @pytest.mark.parametrize(
@@ -408,10 +417,9 @@ def test_a_skipped_job_hides_no_review_and_no_failure(
     tmp_path: Path, mode: str, labels: tuple[str, ...], who: dict
 ) -> None:
     """Whatever the condition skips, the Gate would have passed without a review: a mode other
-    than `release` and `off`, in any case, always starts the job, so a wrong value still fails
-    naming the three; a value that differs from `off` or `release` by case alone is that mode
-    in the Gate too; and a title the condition admits only by its looser reading ends at the
-    Gate."""
+    than `release`, in any case, always starts the job, so a wrong value, `off` among them, still
+    fails naming the two; a value that differs from `release` by case alone is that mode in the
+    Gate too; and a title the condition admits only by its looser reading ends at the Gate."""
     skipped = 0
     for title in ("feat: a change", *RELEASE_TITLES, *OTHER_TITLES):
         code, _out, outputs = gate(tmp_path, mode=mode, title=title, labels=labels, **who)
@@ -419,7 +427,7 @@ def test_a_skipped_job_hides_no_review_and_no_failure(
             skipped += 1
             assert (code, outputs.get("run")) == (0, "false"), title
     # The condition skips some pull request exactly where no label and no other mode admits it.
-    assert bool(skipped) == (mode.lower() in ("", "release", "off") and not labeled(labels))
+    assert bool(skipped) == (mode.lower() in ("", "release") and not labeled(labels))
 
 
 # --- the steps after the gate ------------------------------------------------------------
@@ -442,11 +450,19 @@ def test_the_review_and_the_verdict_wait_for_the_documents() -> None:
 def test_the_readme_describes_the_review_by_mode() -> None:
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/ci.yml`**", 1)[0]
-    assert "`CONVENTIONS_REVIEW`" in section
+    assert "`WORKFLOW_CONVENTIONS_MODE`" in section
     for mode in MODES:
         assert f"`{mode}`" in section
     assert "`## Documents`" in section
     flat = " ".join(section.split())
+    # The mode's two values, and `off` a wrong one (step 1.1 of .github 0.5.0).
+    mode = flat.split("**The mode**:", 1)[1].split(" - **", 1)[0]
+    assert "the caller's variable `WORKFLOW_CONVENTIONS_MODE`" in mode
+    assert "`release`, the default when neither is set, reviews a release pull request" in mode
+    assert "`all` reviews every pull request" in mode
+    assert "Any other value, `off` among them, fails the check and names the two" in mode
+    assert "reviews none" not in mode
+    assert "names the three" not in flat
     # The release PR by its label and its title, and the job's own condition (.github#47).
     assert "labeled `release`" in flat
     assert "`<version> Release`" in flat
@@ -491,6 +507,28 @@ def test_the_workflows_header_says_a_skipped_pr_gets_no_notice() -> None:
     assert "passes every PR with a notice" not in header
     assert "the Gate's notice" in header
     assert "read without case" in header
+
+
+def test_the_header_the_gate_and_the_docstring_name_the_mode_and_its_two_values() -> None:
+    """The comments that the rename makes false are mended, and no more (step 1.1 of .github
+    0.5.0): the header's paragraph on the mode, the condition's comment and the Gate's."""
+    header = workflow_header()
+    assert "The mode is the caller's variable WORKFLOW_CONVENTIONS_MODE" in header
+    assert "`off` reviews none" not in header
+    assert "another value fails naming the two" in header
+    job = WORKFLOW.split("\njobs:\n", 1)[1].split("\n    if: >-\n", 1)[0]
+    flat = " ".join(line.strip().removeprefix("# ") for line in job.splitlines())
+    assert "a mode other than `release`, which reviews every PR or fails naming the two" in flat
+    gate_comment = " ".join(
+        line.strip().removeprefix("# ")
+        for line in step("Gate").splitlines()
+        if line.strip().startswith("#")
+    )
+    assert "The caller's WORKFLOW_CONVENTIONS_MODE, `release` when neither" in gate_comment
+    assert "`Off`" not in gate_comment
+    assert "WORKFLOW_CONVENTIONS_MODE" in " ".join(fr.__doc__.split())
+    for text in (header, flat, gate_comment):
+        assert "naming the three" not in text
 
 
 def test_the_workflows_header_lays_out_a_caller_on_no_label() -> None:
@@ -634,7 +672,7 @@ def test_a_public_caller_that_passes_the_read_token_gets_a_notice_where_the_revi
     assert UNUSED_NOTICE in out
 
 
-@pytest.mark.parametrize(("mode", "unused"), [("all", False), ("release", True), ("off", True)])
+@pytest.mark.parametrize(("mode", "unused"), [("all", False), ("release", True)])
 def test_no_notice_on_the_read_token_where_it_is_used_or_nothing_is_read(
     tmp_path: Path, mode: str, unused: bool
 ) -> None:

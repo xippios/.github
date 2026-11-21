@@ -13,6 +13,7 @@ import re
 from pathlib import Path
 
 import pytest
+from expressions import runs
 from workflow_yaml import UnreadError, parse
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -51,19 +52,6 @@ def job_names(name: str) -> list[str]:
     """The names of the jobs of the workflow `name`, the second half of their check contexts."""
     jobs = (WORKFLOWS / name).read_text().split("\njobs:\n", 1)[1]
     return re.findall(r"^  [a-z-]+:\n    name: ([a-z-]+)$", jobs, re.M)
-
-
-def runs(condition: str, event: str, variables: dict[str, str]) -> bool:
-    """`condition`, comparisons joined by `&&`, as GitHub evaluates it: strings compare without
-    case, and a variable that neither the repository nor the organization sets reads as ''."""
-    result = True
-    for term in condition.split(" && "):
-        match = re.fullmatch(r"(github\.event_name|vars\.[A-Z_]+) (==|!=) '([^']*)'", term)
-        assert match, term
-        name, operator, literal = match.groups()
-        value = event if name == "github.event_name" else variables.get(name[5:], "")
-        result = result and ((value.lower() == literal.lower()) == (operator == "=="))
-    return result
 
 
 # --- the reader --------------------------------------------------------------------------

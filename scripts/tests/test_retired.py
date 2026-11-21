@@ -13,6 +13,11 @@ by the reviewer's approval and their code owners, as every coordinate workspace 
 callers name the workflow no more, so `merge-class.yml` leaves with `scripts/merge_class.py`, its
 tests and the names that only it used, `FAMILY_REPOSITORIES` and `FAMILY_TEST_FILES`. The README
 describes what stays, without the families, the merge classes and the classifier's local run.
+
+The old name of the review's mode is retired (step 1.1 of .github 0.5.0, .github#111). The mode
+is the variable `WORKFLOW_CONVENTIONS_MODE` with the values `release` and `all`, and the switch
+`WORKFLOW_CONVENTIONS` of the trigger file replaces the value `off`, so the old name, which no
+repository and no organization sets, is read nowhere: not in a workflow, the script or the README.
 """
 
 import re
@@ -23,6 +28,8 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 README = (ROOT / "README.md").read_text()
 # What only the merge-class gate named.
 MERGE_CLASS = ("merge-class", "merge_class", "FAMILY_REPOSITORIES", "FAMILY_TEST_FILES")
+# The old name of the review's mode, named here alone.
+OLD_MODE = "CONVENTIONS_REVIEW"
 
 
 def test_the_auto_gate_is_gone() -> None:
@@ -73,6 +80,14 @@ def test_the_readme_describes_no_family_and_no_merge_class() -> None:
     assert "famil" not in flat
     assert "classifier" not in flat
     assert "gates_caller" not in flat
+
+
+def test_nothing_reads_the_old_name_of_the_mode() -> None:
+    files = [ROOT / "README.md", *sorted(WORKFLOWS.glob("*.yml"))]
+    files += sorted((ROOT / "scripts").rglob("*.py"))
+    this = Path(__file__).resolve()
+    named = [str(path.relative_to(ROOT)) for path in files if path.resolve() != this]
+    assert [name for name in named if OLD_MODE in (ROOT / name).read_text()] == []
 
 
 def test_the_forms_generator_is_gone() -> None:
