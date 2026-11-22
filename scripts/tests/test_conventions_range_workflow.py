@@ -584,6 +584,55 @@ def test_prepare_writes_the_range_material_by_the_steps_own_script(tmp_path: Pat
     assert " range-prepare --repo " in uv_calls[0]
 
 
+def test_prepare_judges_a_merge_without_a_release_tag_against_its_first_parent(
+    tmp_path: Path,
+) -> None:
+    """Where no release tag is reachable, the step's own script judges the merged pull
+    request's whole change and none of the history before it (the answer of .github#138)."""
+    env = job_env(tmp_path, {})
+    workspace = Path(env["GITHUB_WORKSPACE"])
+    git(workspace, "init", "-q", "-b", "main")
+    readme = "# sdk-usda-psd\n\n## Documents\n\n- sdk-usda-psd: [docs/c.md](docs/c.md) — it.\n"
+    (workspace / "README.md").write_text(readme)
+    (workspace / "docs").mkdir()
+    (workspace / "docs" / "c.md").write_text("# conventions\n")
+    git(workspace, "add", "README.md", "docs")
+    git(workspace, "commit", "-q", "-m", "feat: the first commit")
+    first = git(workspace, "rev-parse", "HEAD")
+    git(workspace, "checkout", "-q", "-b", "step")
+    (workspace / "mod.py").write_text("VALUE = 1\n")
+    git(workspace, "add", "mod.py")
+    git(workspace, "commit", "-q", "-m", "feat: the step")
+    step = git(workspace, "rev-parse", "HEAD")
+    git(workspace, "checkout", "-q", "main")
+    (workspace / "other.py").write_text("OTHER = 1\n")
+    git(workspace, "add", "other.py")
+    git(workspace, "commit", "-q", "-m", "feat: a merge before it")
+    parent = git(workspace, "rev-parse", "HEAD")
+    git(workspace, "merge", "-q", "--no-ff", "-m", "Merge pull request #7", "step")
+    merge = git(workspace, "rev-parse", "HEAD")
+    env.update({"GH_TOKEN": "dummy", "DOCUMENTS_READ_TOKEN": "", "REPO": REPO, "COMMIT": merge})
+    env["MAIN"] = "main"
+    done = run_step("Prepare the range material", env, env["RUNNER_TEMP"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    review = workspace / ".review"
+    meta = json.loads((review / "meta.json").read_text())
+    assert (meta["commit"], meta["since"], meta["tag"]) == (merge, parent, None)
+    diff = (review / "diff.patch").read_text()
+    assert "+VALUE = 1" in diff
+    assert "OTHER" not in diff
+    log = (review / "log.txt").read_text()
+    assert f"commit {merge}\n" in log
+    assert f"commit {step}\n" in log
+    assert first not in log
+    assert parent not in log
+    assert (tmp_path / "summary.md").read_text().splitlines()[0] == (
+        "conventions: no release tag is reachable from the commit; the review judges what "
+        f"{merge} changed against its first parent {parent}"
+    )
+    assert (tmp_path / "output.txt").read_text() == "review=true\n"
+
+
 def test_prepare_refuses_a_link_in_place_of_the_scripts_checkout(tmp_path: Path) -> None:
     env, _sha = prepare_env(tmp_path)
     gates = Path(env["GITHUB_WORKSPACE"]) / ".sdk-gates"
@@ -694,7 +743,13 @@ def test_the_readme_says_what_the_range_judges_and_what_its_check_means() -> Non
         "It judges no pull request: its material holds no description and no checks",
         "names no release version",
         "the version's bump, the changelog's section and the tag",
-        "from the repository's first commit, and the job summary says so",
+        # The answer of .github#138: no release tag reachable.
+        (
+            "Where no release tag is reachable from the commit, the run judges what the commit "
+            "of the event changed against its first parent, which for a merge is the merged pull "
+            "request's whole change"
+        ),
+        "A commit with no parent is judged on its own change, and the job summary says which",
         "links no documents passes with its notice and makes no model call",
         # A commit that carries the last release tag (finding 2 of the review of .github#137).
         (
@@ -728,6 +783,8 @@ def test_the_readme_says_what_the_range_judges_and_what_its_check_means() -> Non
         assert text in flat, text
     assert "coordinate-core#" not in flat
     assert "coordinate-core/issues" not in flat
+    for old in ("every commit from the repository's first", "from the repository's first commit"):
+        assert old not in flat, old
 
 
 def test_the_readme_runs_the_review_of_a_commit_locally() -> None:
@@ -737,3 +794,8 @@ def test_the_readme_runs_the_review_of_a_commit_locally() -> None:
     flat = " ".join(section.split())
     assert "`--commit <sha>` in place of `--pr <n>`" in flat
     assert "as the job `range` does" in flat
+    assert (
+        "from the last release tag reachable from it, or, where none is, what the commit changed "
+        "against its first parent"
+    ) in flat
+    assert "first commit" not in flat

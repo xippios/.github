@@ -3,13 +3,15 @@ of conventions-range.yml judges the commits since the last release tag reachable
 of its event, with the judge, the effort, the turn cap and the documents of the review of a release
 PR, read as that review reads them. It judges no pull request: its material holds no description
 and no checks, and names no release version, and the judge is told so and that the release's own
-changes come with the release PR. Without a release tag reachable from the commit the range starts
-at the repository's first commit, and a README that links no documents ends green with its notice
-and no model call. The verdict goes to the job summary and, as the check's comment with its hidden
-last line, to one comment on the pull request whose merge made the commit, which a second run on
-the same commit rewrites; no comment where no pull request merged the commit, and none on a release
-PR. A missing key fails before the caller's commit is checked out. `dry-run --commit` judges a
-commit's range as the job does and posts nothing.
+changes come with the release PR. Without a release tag reachable from the commit the run judges
+what the commit changed against its first parent, for a merge the merged pull request's whole
+change, as the human decided on .github#138; a commit with no parent is judged on its own change. A
+commit that carries the last release tag and a README that links no documents end green with their
+notice and no model call. The verdict goes to the job summary and, as the check's comment with its
+hidden last line, to one comment on the pull request whose merge made the commit, which a second
+run on the same commit rewrites; no comment where no pull request merged the commit, and none on a
+release PR. A missing key fails before the caller's commit is checked out. `dry-run --commit`
+judges a commit's range as the job does and posts nothing.
 
 The review of a pull request keeps its texts word for word: the instructions, the first messages
 and the tools, held by their digests as they stood before this step.
@@ -179,7 +181,6 @@ def test_prepare_writes_the_material_of_a_range_without_a_pull_request(
         "main": "main",
         "since": first,
         "tag": "v0.1.0",
-        "first": None,
     }
     diff = (review / "diff.patch").read_text()
     assert "-VALUE = 1\n+VALUE = 2" in diff
@@ -211,11 +212,66 @@ def test_prepare_writes_the_material_of_a_range_without_a_pull_request(
     assert notice in capsys.readouterr().out
 
 
-def test_a_commit_without_a_release_tag_is_judged_from_the_first_commit(
+def untagged_notice(sha: str, parent: str | None) -> str:
+    """The sentence of a commit with no release tag reachable (the answer of .github#138)."""
+    head = "conventions: no release tag is reachable from the commit; the review judges what "
+    if parent is None:
+        return f"{head}{sha} changed, since it has no parent"
+    return f"{head}{sha} changed against its first parent {parent}"
+
+
+def make_merge(root: Path) -> tuple[Path, dict[str, str]]:
+    """A repository with no release tag whose `main` merged a step's branch of two commits by a
+    merge commit, after a commit of its own: the history before the merge holds the first
+    commit, an earlier step and that commit. Returns the checkout, detached at the merge, and
+    the commits by name."""
+    ws = root / "ws"
+    ws.mkdir()
+    git(ws, "init", "-q", "-b", "main")
+    shas = {"first": commit(ws, FIRST_FILES, "feat: the first commit")}
+    shas["before"] = commit(ws, {"src/pkg/mod.py": "VALUE = 2\n"}, "feat: an earlier step")
+    git(ws, "checkout", "-q", "-b", "step")
+    shas["one"] = commit(ws, {"src/pkg/new.py": "NEW = 1\n"}, "feat: the step's first commit")
+    shas["two"] = commit(
+        ws, {"src/pkg/new.py": "NEW = 2\n", "pyproject.toml": PYPROJECT}, "feat: its second"
+    )
+    git(ws, "checkout", "-q", "main")
+    shas["other"] = commit(ws, {"src/pkg/other.py": "OTHER = 1\n"}, "feat: a merge before it")
+    git(ws, "merge", "-q", "--no-ff", "-m", "Merge pull request #7 from xippios/step", "step")
+    shas["merge"] = git(ws, "rev-parse", "HEAD")
+    git(ws, "checkout", "-q", "--detach", shas["merge"])
+    return ws, shas
+
+
+def test_a_merge_without_a_release_tag_is_judged_against_its_first_parent(
     tmp_path: Path, gh: Path, actions: dict[str, Path]
 ) -> None:
-    """The range then holds every commit up to the commit, the first one's own changes too, and
-    the summary says so: the run never ends green without having judged."""
+    """The range is the merged pull request's whole change: every commit of the merged branch,
+    and none of the history before the merge (the answer of .github#138)."""
+    ws, shas = make_merge(tmp_path)
+    assert range_prepare(ws, shas["merge"]) == 0
+    review = ws / ".review"
+    meta = json.loads((review / "meta.json").read_text())
+    assert (meta["since"], meta["tag"]) == (shas["other"], None)
+    assert set(meta) == {"kind", "repo", "commit", "main", "since", "tag"}
+    diff = (review / "diff.patch").read_text()
+    assert "+NEW = 2" in diff
+    assert "version = " in diff
+    for absent in ("OTHER", "VALUE", "README.md", "docs/conventions.md"):
+        assert absent not in diff, absent
+    log = (review / "log.txt").read_text()
+    for name in ("merge", "two", "one"):
+        assert f"commit {shas[name]}\n" in log, name
+    for name in ("first", "before", "other"):
+        assert shas[name] not in log, name
+    summary = actions["summary"].read_text().splitlines()
+    assert summary[0] == untagged_notice(shas["merge"], shas["other"])
+    assert actions["output"].read_text() == "review=true\n"
+
+
+def test_a_plain_commit_without_a_release_tag_is_judged_on_its_own_change(
+    tmp_path: Path, gh: Path, actions: dict[str, Path]
+) -> None:
     ws, first, second, third = make_range(tmp_path, tag=None)
     # A tag on another branch and a tag of another form are no release tag of the commit.
     git(ws, "checkout", "-q", "-b", "side", first)
@@ -227,18 +283,34 @@ def test_a_commit_without_a_release_tag_is_judged_from_the_first_commit(
     assert range_prepare(ws, third) == 0
     review = ws / ".review"
     meta = json.loads((review / "meta.json").read_text())
-    assert (meta["since"], meta["tag"], meta["first"]) == (None, None, first)
+    assert (meta["since"], meta["tag"]) == (second, None)
     diff = (review / "diff.patch").read_text()
-    assert "+# sdk-usda-psd" in diff
     assert "+NEW = 1" in diff
-    assert "side.txt" not in diff
+    for absent in ("VALUE", "+# sdk-usda-psd", "side.txt"):
+        assert absent not in diff, absent
     log = (review / "log.txt").read_text()
-    for sha in (first, second, third):
-        assert f"commit {sha}\n" in log
-    assert actions["summary"].read_text().splitlines()[0] == (
-        "conventions: no release tag is reachable from the commit; the range starts at the "
-        f"repository's first commit, {first}, and holds every commit up to {third}"
-    )
+    assert log.startswith(f"commit {third}\n")
+    assert first not in log
+    assert second not in log
+    assert actions["summary"].read_text().splitlines()[0] == untagged_notice(third, second)
+    assert actions["output"].read_text() == "review=true\n"
+
+
+def test_the_first_commit_without_a_release_tag_is_judged_on_its_own_change(
+    tmp_path: Path, gh: Path, actions: dict[str, Path]
+) -> None:
+    """A commit with no parent: its change is the whole tree it adds, from the empty tree."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    git(ws, "init", "-q", "-b", "main")
+    first = commit(ws, FIRST_FILES, "feat: the first commit")
+    assert range_prepare(ws, first) == 0
+    review = ws / ".review"
+    meta = json.loads((review / "meta.json").read_text())
+    assert (meta["since"], meta["tag"]) == (None, None)
+    assert "+# sdk-usda-psd" in (review / "diff.patch").read_text()
+    assert (review / "log.txt").read_text().startswith(f"commit {first}\n")
+    assert actions["summary"].read_text().splitlines()[0] == untagged_notice(first, None)
     assert actions["output"].read_text() == "review=true\n"
 
 
@@ -309,9 +381,11 @@ def test_range_prepare_takes_a_full_commit_alone(
 
 
 def prepared(tmp_path: Path, gh: Path, *, tag: str | None = "v0.1.0") -> tuple[fr.Material, str]:
-    ws, first, _second, third = make_range(tmp_path, tag=tag)
+    """The material of the last commit of `make_range`, and where its range starts: the tag's
+    commit, or without a tag its first parent."""
+    ws, first, second, third = make_range(tmp_path, tag=tag)
     assert range_prepare(ws, third) == 0
-    return fr.load_material(ws, ws / ".review"), first
+    return fr.load_material(ws, ws / ".review"), first if tag else second
 
 
 def test_a_range_has_instructions_of_its_own(tmp_path: Path, gh: Path, actions) -> None:
@@ -334,10 +408,16 @@ def test_a_range_has_instructions_of_its_own(tmp_path: Path, gh: Path, actions) 
         ),
         "its file (empty when it concerns the range as a whole)",
         "at most 160 turns",
+        # The answer of .github#138.
+        (
+            "or, where no release tag is reachable, what that commit changed against its first "
+            "parent, which for a merge is the merged pull request's whole change"
+        ),
     ):
         assert said in flat, said
-    for absent in ("pr.json", "checks.json", "earlier.json", "the opener"):
+    for absent in ("pr.json", "checks.json", "earlier.json", "the opener", "every commit"):
         assert absent not in text, absent
+    assert "first commit" not in flat
     # The documents follow as for a pull request, cached; nothing names the commit.
     assert [block["text"].split("\n", 1)[0] for block in system[1:]] == [
         f"The document `{LABELS[0]}`, read from main:",
@@ -364,16 +444,39 @@ def test_the_first_message_names_the_commit_the_tag_and_no_version(
     assert "#" not in text
 
 
-def test_the_first_message_of_a_range_without_a_tag_names_the_first_commit(
+def test_the_first_message_of_a_range_without_a_tag_names_the_first_parent(
     tmp_path: Path, gh: Path, actions
 ) -> None:
-    material, first = prepared(tmp_path, gh, tag=None)
+    material, parent = prepared(tmp_path, gh, tag=None)
     text = fr.first_message(material)["content"]
-    assert text.startswith(
-        f"Review the range of {REPO} up to the commit {material.head}: every commit up to it, "
-        f"from the repository's first commit {first}, since no release tag is reachable from it. "
-        "It is no pull request, and the release that follows it is not in it yet."
+    assert text == (
+        f"Review the range of {REPO} up to the commit {material.head}: no release tag is "
+        f"reachable from it, so the range is what it changed against its first parent {parent}, "
+        "for a merge the merged pull request's whole change. It is no pull request, and the "
+        "release that follows it is not in it yet. Its material is under `.review/`, the 2 "
+        "documents under `.review/documents/`. Read what you need with the tools, then call "
+        "`submit_verdict`."
     )
+    for absent in ("first commit", "every commit", "version"):
+        assert absent not in text, absent
+
+
+def test_the_first_message_of_a_commit_with_no_parent_names_its_own_change(
+    tmp_path: Path, gh: Path, actions
+) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    git(ws, "init", "-q", "-b", "main")
+    first = commit(ws, FIRST_FILES, "feat: the first commit")
+    assert range_prepare(ws, first) == 0
+    text = fr.first_message(fr.load_material(ws, ws / ".review"))["content"]
+    assert text.startswith(
+        f"Review the range of {REPO} up to the commit {first}: no release tag is reachable from "
+        "it, and it has no parent, so the range is its own change. It is no pull request, and "
+        "the release that follows it is not in it yet. Its material is under `.review/`"
+    )
+    for absent in ("first commit", "every commit"):
+        assert absent not in text, absent
 
 
 def test_the_tools_of_a_range_say_the_range_where_a_pull_requests_say_the_pull_request() -> None:
@@ -396,9 +499,9 @@ def test_the_tools_of_a_range_say_the_range_where_a_pull_requests_say_the_pull_r
     [
         {"kind": "range", "commit": "c" * 7},
         {"repo": "not a repository"},
-        {"tag": None},
-        {"since": None, "first": None, "tag": None},
-        {"first": "f" * 40},
+        {"since": None},
+        {"since": "not a commit"},
+        {"tag": 7},
     ],
 )
 def test_a_range_meta_that_does_not_read_is_no_verdict(
@@ -507,7 +610,6 @@ def test_the_review_of_a_range_runs_the_judge_of_a_release_pr_on_its_material(
         "commit": third,
         "since": first,
         "tag": "v0.1.0",
-        "first": None,
     }
     assert (result["repo"], result["pr"], result["head"]) == (REPO, None, third)
     assert result["documents"] == LABELS
@@ -547,18 +649,20 @@ COMMENTS = f"repos/{REPO}/issues/7/comments"
 STEP_PR = {"title": "0.5.0 Step 4: The last step", "labels": []}
 
 
-def result(verdict: str | None, findings: list[dict], *, tag: str | None = "v0.1.0") -> dict:
+def result(
+    verdict: str | None,
+    findings: list[dict],
+    *,
+    tag: str | None = "v0.1.0",
+    since: str | None = "a" * 40,
+) -> dict:
+    """A range's verdict file: ``since`` is the tag's commit, or without a tag the first parent,
+    None for a commit with no parent."""
     return {
         "verdict": verdict,
         "findings": findings,
         "reason": None if verdict else "API error: APIConnectionError: Connection error.",
-        "range": {
-            "kind": "range",
-            "commit": COMMIT,
-            "since": "a" * 40 if tag else None,
-            "tag": tag,
-            "first": None if tag else "f" * 40,
-        },
+        "range": {"kind": "range", "commit": COMMIT, "since": since, "tag": tag},
         "documents": LABELS,
         "repo": REPO,
         "pr": None,
@@ -643,19 +747,39 @@ def test_the_verdict_goes_to_the_summary_and_to_one_comment_on_the_merged_pull_r
     assert writes == [{"method": "POST", "endpoint": COMMENTS, "input": {"body": body}}]
 
 
+@pytest.mark.parametrize(
+    ("since", "judged"),
+    [
+        (
+            "a" * 40,
+            (
+                "what this commit changed against its first parent, since no release tag is "
+                "reachable from it"
+            ),
+        ),
+        (
+            None,
+            (
+                "what this commit changed, since no release tag is reachable from it and it has "
+                "no parent"
+            ),
+        ),
+    ],
+)
 def test_a_blocking_finding_fails_the_check_and_posts_the_comment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, since: str | None, judged: str
 ) -> None:
+    """Without a release tag the comment says what was judged in its place (.github#138)."""
     findings = [finding(blocking=True, text="The rule is broken.")]
     code, summary, _calls, writes = range_verdict(
-        tmp_path, monkeypatch, result("ready", findings, tag=None)
+        tmp_path, monkeypatch, result("ready", findings, tag=None, since=since)
     )
     assert code == 1
     assert summary.startswith(
         f"{MARKER}\n**Blocked.** 1 finding, 1 blocking, at {COMMIT_URL}.\n\n"
-        "Judged: every commit up to this commit, since no release tag is reachable from it, "
-        "against 2 documents of `README.md` on `main`.\n"
+        f"Judged: {judged}, against 2 documents of `README.md` on `main`.\n"
     )
+    assert "every commit" not in summary
     assert writes[0]["input"]["body"] == summary
 
 
@@ -864,6 +988,36 @@ def test_a_dry_run_of_a_commit_whose_readme_links_no_documents_ends_green(
     monkeypatch.setattr(fr, "clone_commit", clone)
     api()
     assert fr.main(["dry-run", "--repo", REPO, "--commit", third]) == 0
+
+
+def test_a_dry_run_of_a_merge_without_a_release_tag_judges_it_against_its_first_parent(
+    tmp_path: Path, gh: Path, api, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    """The dry run of a commit follows the answer of .github#138 as the job does."""
+    source, shas = make_merge(tmp_path)
+
+    def clone(repo: str, sha: str, workdir: Path) -> None:
+        git(tmp_path, "clone", "-q", str(source), str(workdir))
+        git(workdir, "checkout", "-q", "--detach", sha)
+
+    monkeypatch.setattr(fr, "clone_commit", clone)
+    client = api(message([submitted("ready")]))
+    out = tmp_path / "dry.json"
+    code = fr.main(["dry-run", "--repo", REPO, "--commit", shas["merge"], "--out", str(out)])
+    assert code == 0
+    first_message = client.messages.requests[0]["messages"][0]["content"]
+    assert first_message.startswith(
+        f"Review the range of {REPO} up to the commit {shas['merge']}: no release tag is "
+        f"reachable from it, so the range is what it changed against its first parent "
+        f"{shas['other']}, for a merge the merged pull request's whole change."
+    )
+    assert untagged_notice(shas["merge"], shas["other"]) in capsys.readouterr().out
+    assert json.loads(out.read_text())["range"] == {
+        "kind": "range",
+        "commit": shas["merge"],
+        "since": shas["other"],
+        "tag": None,
+    }
 
 
 def test_a_dry_run_of_a_commit_that_carries_the_last_release_tag_makes_no_model_call(
