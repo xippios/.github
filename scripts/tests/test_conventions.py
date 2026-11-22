@@ -435,8 +435,9 @@ def test_end_turn_without_a_verdict_is_reprompted_once(
     text = {"type": "text", "text": "Done reading."}
     client = api(message([text], "end_turn"), message([verdict("not ready")]))
     code, result = run_review(workspace, tmp_path)
-    assert code == 1
-    assert result["verdict"] == "not ready"
+    # No finding blocks, so the verdict is ready (finding 2 of the review of #148).
+    assert code == 0
+    assert result["verdict"] == "ready"
     last = client.messages.requests[1]["messages"]
     assert last[-1] == {"role": "user", "content": "Call submit_verdict now."}
 
@@ -740,7 +741,8 @@ def test_a_key_in_a_finding_is_redacted(
     )
     api(message([verdict("not ready", [leaky])]))
     code, result = run_review(workspace, tmp_path)
-    assert code == 1
+    # The finding does not block, so the verdict is ready (finding 2 of the review of #148).
+    assert code == 0
     written = (tmp_path / "verdict.json").read_text()
     assert FAKE_KEY not in written
     assert FAKE_TOKEN not in written
@@ -3231,10 +3233,12 @@ def test_a_finding_names_a_line_only_where_its_file_has_it_at_the_head(
     ]
     api(message([verdict("not ready", findings)]))
     code, result = run_review(workspace, tmp_path)
-    assert code == 1
+    # None of the seven blocks: the verdict is ready, though the judge said not ready, by the
+    # one rule of finding 2 of the review of #148.
+    assert code == 0
     assert [f["line"] for f in result["findings"]] == [2, None, None, None, None, None, None]
     assert [f["file"] for f in result["findings"]] == [f["file"] for f in findings]
-    assert result["summary"].startswith("conventions: verdict=not ready findings=7 blocking=0 ")
+    assert result["summary"].startswith("conventions: verdict=ready findings=7 blocking=0 ")
 
 
 @pytest.mark.parametrize(

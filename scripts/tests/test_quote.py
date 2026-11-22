@@ -274,7 +274,8 @@ def test_a_blocking_finding_asked_again_in_vain_stays_as_one_that_does_not_block
     workspace: Path, tmp_path: Path, api, quote: str | None, why: str, line: str
 ) -> None:
     """After the second asking the finding stays, does not block, and the comment says why in
-    one line under it; with no other finding that blocks the verdict is ready."""
+    one line under it; with no other finding that blocks the verdict is ready. The comment
+    shows no text that the document does not hold as a quote (fix round 1 of #148)."""
     bad = finding(quote=quote)
     note = finding(blocking=False, quote="", text="A note.")
     client = api(
@@ -294,9 +295,8 @@ def test_a_blocking_finding_asked_again_in_vain_stays_as_one_that_does_not_block
         "`src/pkg/mod.py:1`. Blocks: no."
     )
     assert lines[item + 1] == f"   {line}"
-    if quote:
-        assert lines[item + 2] == f"   > {quote}"
-    assert lines[item + 2 if not quote else item + 3].startswith("2. ")
+    assert lines[item + 2].startswith("2. ")
+    assert not any(entry.lstrip().startswith(">") for entry in lines)
     assert lines[0] == "<!-- style: reviews/conventions -->"
     assert lines[1].startswith("**Findings.** 2 findings, none blocking, at ")
 
@@ -775,14 +775,15 @@ def test_a_dry_run_prints_the_quote_and_the_line_of_a_finding_that_no_longer_blo
     assert fr.main(["dry-run", "--repo", REPO, "--pr", "7"]) == 1
     out = capsys.readouterr().out.splitlines()
     said = f"{OWN}#tests: The change has no test."
-    assert out[-5:] == [
+    assert out[-4:] == [
         f"src/pkg/mod.py:1 [blocking] {said}",
         # As the dry run prints every text: a backtick as its escape.
         f"   > {fr.printable(RULE)}",
         f"src/pkg/mod.py:1 [non-blocking] {said}",
+        # A quote that does not stand is printed as no quote (fix round 1 of #148).
         f"   {NOT_FOUND}",
-        "   > Every change must be reviewed twice.",
     ]
+    assert out[-5].startswith("conventions: verdict=not ready findings=2 blocking=1 ")
 
 
 # --- the README --------------------------------------------------------------------------
@@ -815,3 +816,160 @@ def test_the_readme_says_the_three_rules() -> None:
     assert "its redacted message" not in pull_request
     assert "a finding of a range blocks only where it quotes the sentence" in ranged
     assert "the line of an API error" in ranged
+    # The two rules of fix round 1 of #148, where the README says the quote rule.
+    carried = (
+        "a finding that carries, as open, a finding of the run before that blocked keeps blocking"
+    )
+    one_rule = (
+        "The verdict is `ready` exactly where no finding blocks once these rules are applied, "
+        "and `not ready` exactly where one blocks, whatever verdict the judge gave"
+    )
+    for text in (carried, one_rule):
+        assert text in pull_request, text
+        assert text in ranged, text
+    assert "The comment shows no text as a quote that the document does not hold" in pull_request
+    assert "and where no finding blocks then, the verdict is `ready`" not in pull_request
+
+
+# --- fix round 1 of #148: a carrier keeps blocking, and one rule for the verdict ----------
+
+CARRIES = (
+    "It blocks as the finding of the run before that it carries did, though its quote was not "
+    "found in the document it names."
+)
+CARRIES_MISSING = (
+    "It blocks as the finding of the run before that it carries did, though it quotes no "
+    "sentence of the document it names."
+)
+
+
+@pytest.mark.parametrize("decided", [True, False], ids=["a decision places it", "no decision"])
+@pytest.mark.parametrize(
+    ("quote", "line"),
+    [("Every change must be reviewed twice.", CARRIES), (None, CARRIES_MISSING)],
+    ids=["a quote not found", "no quote"],
+)
+def test_a_carrier_of_a_finding_that_blocked_keeps_blocking_without_its_quote(
+    workspace: Path, tmp_path: Path, api, decided: bool, quote: str | None, line: str
+) -> None:
+    """A finding that blocked a release is not released by a misquote: its carrier is asked once
+    for the sentence as any blocking finding is, and where the verdict after it still holds the
+    carrier without a quote that stands, the carrier keeps blocking and the run ends not ready.
+    The entry of the run before reads as carried by a finding that blocks, never as one that no
+    longer blocks (finding 1 of the review of #148)."""
+    with_earlier(workspace, [finding()], [PLACED] if decided else [])
+    carrier = finding(quote=quote, text="The change has no test, still.")
+    states = [state(1, "open", 1, STANDS if decided else "")]
+    client = api(
+        message([submit("not ready", [carrier], states)]),
+        message([submit("not ready", [carrier], states)]),
+    )
+    code, result = review(workspace, tmp_path)
+    assert code == 1
+    refused = answer(client, 1)["content"]
+    assert refused.startswith("invalid verdict: ")
+    assert "finding 1 carries a finding of the run before that blocked and keeps blocking" in (
+        refused
+    )
+    assert result["verdict"] == "not ready"
+    why = "not found" if quote else "missing"
+    assert result["findings"] == [{**carrier, "unquoted": why, "since": "unchanged"}]
+    assert result["summary"].startswith("conventions: verdict=not ready findings=1 blocking=1 ")
+    before = result["earlier"]["findings"][0]
+    assert "unblocked" not in before
+    words = fr.became(before)
+    assert "no longer blocks" not in words
+    if decided:
+        assert words == (
+            f"Open: finding 1 above. The opener decided otherwise, and the rule stands: {STANDS}"
+        )
+    else:
+        assert words == "Open: finding 1 above."
+    lines = comment_lines(result)
+    assert lines[1].startswith("**Blocked.** 1 finding, 1 blocking, at ")
+    item = lines.index(
+        "1. **sdk-usda-psd: docs/conventions.md#tests** The change has no test, still. "
+        "`src/pkg/mod.py:1`. Blocks: yes. Its file is unchanged since the head judged before."
+    )
+    assert lines[item + 1] == f"   {line}"
+    # No text the document does not hold shows as a quote.
+    assert not any(entry.lstrip().startswith(">") for entry in lines)
+
+
+def test_a_carrier_that_the_judge_takes_from_blocking_with_its_reason_needs_no_quote(
+    workspace: Path, tmp_path: Path, api
+) -> None:
+    """The judge's reason still lets a finding that blocked stop blocking, as before this step:
+    a carrier that does not block needs no quote."""
+    with_earlier(workspace, [finding()])
+    carrier = finding(blocking=False, quote=None)
+    reason = "The rule binds release pull requests alone."
+    client = api(message([submit("ready", [carrier], [state(1, "open", 1, reason)])]))
+    code, result = review(workspace, tmp_path)
+    assert code == 0
+    assert len(client.messages.requests) == 1
+    assert result["earlier"]["findings"][0]["unblocked"] is True
+
+
+BAD = finding(quote="Every change must be reviewed twice.")
+NOTE = finding(blocking=False, quote=None, text="A note.")
+
+
+@pytest.mark.parametrize(
+    ("verdicts", "expected"),
+    [
+        ([("not ready", [NOTE])], "ready"),
+        ([("not ready", [])], "ready"),
+        ([("ready", [finding()])], "not ready"),
+        ([("not ready", [BAD]), ("not ready", [{**BAD, "blocking": False}])], "ready"),
+        ([("not ready", [BAD]), ("not ready", [BAD])], "ready"),
+        ([("ready", [BAD]), ("ready", [finding()])], "not ready"),
+    ],
+    ids=[
+        "no asking, not ready with no finding that blocks",
+        "no asking, not ready with no finding",
+        "no asking, ready with a finding that blocks",
+        "asked, the judge takes the blocking back and keeps not ready",
+        "asked, the script takes the blocking",
+        "asked, the judge quotes the rule and says ready",
+    ],
+)
+def test_the_verdict_is_ready_exactly_where_no_finding_blocks(
+    workspace: Path, tmp_path: Path, api, verdicts: list, expected: str
+) -> None:
+    """One rule on every path, whether the script asked or not: the judge's word on the verdict
+    yields to its findings once the script's rules are applied (finding 2 of the review of
+    #148)."""
+    api(*(message([submit(value, findings)]) for value, findings in verdicts))
+    code, result = review(workspace, tmp_path)
+    blocking = sum(1 for f in result["findings"] if f["blocking"])
+    assert result["verdict"] == expected
+    assert (expected == "not ready") is (blocking > 0)
+    assert code == (1 if blocking else 0)
+    lines = comment_lines(result)
+    assert lines[1].startswith("**Blocked.**" if blocking else ("**Findings.**", "**Approved.**"))
+
+
+@pytest.mark.parametrize("case", ["a carrier", "not ready with no finding that blocks"])
+def test_a_range_keeps_both_rules(range_workspace: Path, tmp_path: Path, api, case: str) -> None:
+    """A range is served by the same code: its carrier of a finding that blocked keeps blocking
+    without a quote that stands, and its verdict is ready exactly where no finding blocks."""
+    if case == "a carrier":
+        with_earlier(range_workspace, [finding(file="", line=None)])
+        carrier = finding(quote=None, file="", line=None)
+        states = [state(1, "open", 1)]
+        api(
+            message([submit("not ready", [carrier], states)]),
+            message([submit("not ready", [carrier], states)]),
+        )
+        code, result = review(range_workspace, tmp_path)
+        assert code == 1
+        assert result["verdict"] == "not ready"
+        assert result["findings"] == [{**carrier, "unquoted": "missing"}]
+        assert "unblocked" not in result["earlier"]["findings"][0]
+    else:
+        api(message([submit("not ready", [NOTE])]))
+        code, result = review(range_workspace, tmp_path)
+        assert code == 0
+        assert result["verdict"] == "ready"
+    assert result["range"]["kind"] == "range"
