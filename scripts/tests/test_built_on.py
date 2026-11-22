@@ -339,9 +339,13 @@ def test_a_range_builds_on_a_passed_check_with_its_comment(
     assert f"commit {shas['three']}\n" in log
     assert shas["two"] not in log
     assert shas["m2"] not in log
-    # A ready run's findings get no state: nothing up to its commit is judged again.
-    assert not (review / "earlier.json").exists()
-    assert not (review / "changed.json").exists()
+    # A ready run's findings get their states too, so they stay in the comment (fix round 1 of
+    # #142); nothing up to its commit is judged again.
+    assert json.loads((review / "earlier.json").read_text()) == {
+        "head": shas["m2"],
+        "findings": [{"number": 1, **NOTE, "file_changed": None}],
+        "decisions": [],
+    }
     assert checked(bin_dir) == [shas["m2"]]
     endpoints = [call[1] for call in stub_gh.calls(bin_dir)]
     assert endpoints == [
@@ -625,7 +629,7 @@ def test_the_judge_of_a_range_built_on_a_ready_run_is_told_so(
 ) -> None:
     _ws, shas, material = built_material(tmp_path, gh, "ready", [NOTE])
     assert material.built == {"commit": shas["m2"], "ready": True, "run": run_url(5), "by": "range"}
-    assert material.earlier is None
+    assert [finding["text"] for finding in material.earlier.findings] == [NOTE["text"]]
     text = fr.first_message(material)["content"]
     assert text == (
         f"Review the range of {REPO} up to the commit {shas['m3']}: this review builds on the run "
@@ -633,7 +637,9 @@ def test_the_judge_of_a_range_built_on_a_ready_run_is_told_so(
         "commit was judged and is not judged again, and the range is the commits after it, from "
         f"{shas['m2']} to the commit. It is no pull request, and the release that follows it is "
         "not in it yet. Its material is under `.review/`, the 2 documents under "
-        "`.review/documents/`. Read what you need with the tools, then call `submit_verdict`."
+        "`.review/documents/`. Read what you need with the tools, then call `submit_verdict`. "
+        "That run gave 1 finding: `.review/earlier.json` holds them, numbered from 1. Give each "
+        "of them its state in `earlier`."
     )
     system = fr.system_prompt(material, fr.MAX_TURNS)
     expected = fr.RANGE_INSTRUCTIONS + fr.RANGE_BUILT_INSTRUCTIONS
@@ -846,7 +852,12 @@ def test_a_ready_run_before_on_the_line_hands_over_no_findings(
     assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
     built = meta_of(ws)["built"]
     assert (built["commit"], built["ready"], built["by"]) == (shas["rel1"], True, "pull request")
-    assert not (ws / ".review" / "earlier.json").exists()
+    # Its finding that did not block gets its state, so it stays in the comment (fix round 1).
+    earlier = json.loads((ws / ".review" / "earlier.json").read_text())
+    assert (earlier["head"], [f["text"] for f in earlier["findings"]]) == (
+        shas["rel1"],
+        [NOTE["text"]],
+    )
 
 
 def test_a_run_before_off_the_line_gives_its_states_on_the_whole_range(
@@ -879,7 +890,12 @@ def test_a_judged_commit_newer_than_the_run_before_wins(
     built = meta_of(ws)["built"]
     assert built == {"commit": shas["rel2"], "ready": True, "run": run_url(8), "by": "range"}
     assert checked(bin_dir) == [shas["rel2"]]
-    assert not (ws / ".review" / "earlier.json").exists()
+    # The run built on gave no finding; the pull request's own run before keeps its states.
+    earlier = json.loads((ws / ".review" / "earlier.json").read_text())
+    assert (earlier["head"], [f["text"] for f in earlier["findings"]]) == (
+        shas["rel1"],
+        [TWO["text"]],
+    )
 
 
 def test_a_run_before_newer_than_a_judged_commit_wins(
@@ -922,6 +938,145 @@ def test_a_pull_requests_reads_that_fail_build_on_none(
     # The run before keeps its states on the whole range, as before this step.
     assert json.loads((ws / ".review" / "earlier.json").read_text())["head"] == gone
     assert actions["output"].read_text() == "review=true\n"
+
+
+# --- the states of the runs before (fix round 1 of #142) ----------------------------------
+
+BLOCKS = finding(file="CHANGELOG.md", line=1, blocking=True, text="The section is thin.")
+
+
+def earlier_of(ws: Path) -> dict:
+    return json.loads((ws / ".review" / "earlier.json").read_text())
+
+
+def fields(findings: list[dict]) -> list[dict]:
+    return [{key: f[key] for key in fr.FINDING_KEYS} for f in findings]
+
+
+@pytest.mark.parametrize("where", ["this head", "a head off the line"])
+def test_the_pull_requests_run_before_keeps_its_states_where_the_run_builds_on_the_range(
+    tmp_path: Path, gh, actions: dict[str, Path], where: str
+) -> None:
+    """What a run builds on decides its range, never whether an earlier finding gets its state:
+    the pull request's own run before, on this very head (a reopening, a run made again) or on a
+    head off the line (a rebase), gives each finding a state, the blocking one too, though the
+    run builds on a judged commit of the range; none leaves the comment unsaid."""
+    ws, shas = make_release(tmp_path)
+    head = shas["head"] if where == "this head" else "e" * 40
+    view = pull_request([pr_comment(pr_body(head, "not ready", [BLOCKS]))])
+    gh(answers(judged(shas["m3"], 13, "ready", []), view=view))
+    assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
+    built = meta_of(ws)["built"]
+    assert (built["commit"], built["by"]) == (shas["m3"], "range")
+    earlier = earlier_of(ws)
+    assert earlier["head"] == head
+    assert fields(earlier["findings"]) == [BLOCKS]
+    material = fr.load_material(ws, ws / ".review")
+    assert fr.earlier_problem({"verdict": "ready", "findings": []}, material.earlier) is not None
+    assert fr.first_message(material)["content"].endswith(
+        f" The run before, which judged the commit {head}, gave 1 finding: `.review/earlier.json` "
+        "holds them, numbered from 1, with the opener's decisions on the pull request. Give each "
+        "of them its state in `earlier`."
+    )
+
+
+def test_a_run_built_on_the_pull_requests_own_run_before_states_its_findings_alone(
+    tmp_path: Path, gh, actions: dict[str, Path]
+) -> None:
+    """As before: the run before on the line is the run built on, and the judged commit below it
+    is never read."""
+    ws, shas = make_release(tmp_path, rounds=2)
+    view = pull_request([pr_comment(pr_body(shas["rel1"], "not ready", [BLOCKS]))])
+    bin_dir = gh(answers(judged(shas["m2"], 12, "ready", [NOTE]), view=view))
+    assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
+    assert meta_of(ws)["built"]["by"] == "pull request"
+    earlier = earlier_of(ws)
+    assert earlier["head"] == shas["rel1"]
+    assert fields(earlier["findings"]) == [BLOCKS]
+    assert all("judged" not in f for f in earlier["findings"])
+    assert checked(bin_dir) == []
+
+
+def test_a_ready_run_built_on_keeps_its_findings_in_the_comment_with_their_states(
+    tmp_path: Path, gh, actions: dict[str, Path], api
+) -> None:
+    """The findings of a ready run, which did not block, stay in the comment as they were
+    given, each with what became of it (finding 2 of the review of #142)."""
+    ws, shas = make_release(tmp_path, rounds=2)
+    view = pull_request([pr_comment(pr_body(shas["rel1"], "ready", [NOTE]))])
+    gh(answers(view=view))
+    assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
+    assert fields(earlier_of(ws)["findings"]) == [NOTE]
+    good = submitted("ready", [])
+    good["input"]["earlier"] = [{"number": 1, "state": "fixed", "finding": None, "reason": ""}]
+    api(message([good]))
+    out = tmp_path / "verdict.json"
+    code = fr.main(
+        ["review", "--workspace", str(ws), "--review", str(ws / ".review"), "--out", str(out)]
+    )
+    assert code == 0
+    body, _ready = fr.verdict_comment(json.loads(out.read_text()), REPO, shas["head"])
+    at = f"https://github.com/{REPO}/commit/{shas['rel1']}"
+    assert (
+        f"The run before judged {at} and gave 1 finding:\n\n"
+        "1. **the pull request** A note on the range. Fixed.\n"
+    ) in body
+
+
+def test_two_runs_before_state_each_finding_once(
+    tmp_path: Path, gh, actions: dict[str, Path], api
+) -> None:
+    """The run built on and the pull request's own run before are two runs: both runs' findings
+    get their states, a finding that both gave once, and none is lost."""
+    ws, shas = make_release(tmp_path)
+    view = pull_request([pr_comment(pr_body(shas["head"], "not ready", [BLOCKS, TWO]))])
+    gh(answers(judged(shas["m3"], 13, "not ready", [TWO, NOTE]), view=view))
+    assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
+    earlier = earlier_of(ws)
+    assert earlier["head"] == shas["m3"]
+    assert [(f["number"], f["text"], f.get("judged")) for f in earlier["findings"]] == [
+        (1, TWO["text"], None),
+        (2, NOTE["text"], None),
+        (3, BLOCKS["text"], shas["head"]),
+    ]
+    material = fr.load_material(ws, ws / ".review")
+    assert material.earlier.heads == [shas["m3"], shas["m3"], shas["head"]]
+    assert " The two runs before gave 3 findings: " in fr.first_message(material)["content"]
+    states = [
+        {"number": 1, "state": "fixed", "finding": None, "reason": ""},
+        {"number": 2, "state": "fixed", "finding": None, "reason": ""},
+        {"number": 3, "state": "open", "finding": 1, "reason": ""},
+    ]
+    verdict = submitted("not ready", [BLOCKS])
+    verdict["input"]["earlier"] = states
+    api(message([verdict]))
+    out = tmp_path / "verdict.json"
+    code = fr.main(
+        ["review", "--workspace", str(ws), "--review", str(ws / ".review"), "--out", str(out)]
+    )
+    assert code == 1
+    result = json.loads(out.read_text())
+    assert [f.get("judged") for f in result["earlier"]["findings"]] == [None, None, shas["head"]]
+
+
+def test_the_comment_lists_each_run_before_under_the_commit_it_judged() -> None:
+    built = {"commit": "b" * 40, "ready": False, "run": run_url(5), "by": "range"}
+    range_ = {"release": True, "since": "b" * 40, "tag": "v0.1.0", "built": built, "unread": False}
+    earlier = {
+        "head": "b" * 40,
+        "findings": [
+            {**TWO, "state": "fixed", "finding": None},
+            {**BLOCKS, "state": "open", "finding": 1, "judged": "d" * 40},
+        ],
+    }
+    body = comment_of(range_, verdict="not ready", findings=[BLOCKS], earlier=earlier)
+    first, second = (f"https://github.com/{REPO}/commit/{c * 40}" for c in "bd")
+    assert (
+        f"The run before judged {first} and gave 1 finding:\n\n"
+        "1. **`src/pkg/two.py:1`** Two departs. Fixed.\n\n"
+        f"The run before judged {second} and gave 1 finding:\n\n"
+        "2. **`CHANGELOG.md:1`** The section is thin. Open: finding 1 above.\n"
+    ) in body
 
 
 # --- the comment ---------------------------------------------------------------------------
@@ -1083,8 +1238,12 @@ def test_the_readme_says_what_a_review_of_a_pull_request_builds_on() -> None:
         "the newer of the two counts",
         "A skipped check counts for nothing",
         "a check whose comment is missing or names another commit",
-        "Where that run was ready, the run judges the commits after the commit",
-        "Where it was not, it judges them too and gives each finding of that run its state",
+        "The run judges the commits after the commit, and the description and the checks as on",
+        # Fix round 1 of #142: the states, whatever the run builds on.
+        "each finding of that run, ready or not, gets its state",
+        "both runs' findings get their states, each finding once",
+        "never whether an earlier finding gets its state",
+        "a finding that blocked never leaves the comment unsaid",
         "Where no commit of the line was judged, the run judges the whole range as before",
         "A head that does not descend from a judged commit by its first parents",
         "at most 30 seconds a call, 120 seconds together and 100 commits of the line",
@@ -1104,7 +1263,7 @@ def test_the_readme_says_what_a_run_on_a_range_builds_on() -> None:
         "**What a run builds on**",
         "the newest commit of its line after the tag that a run on a range judged",
         "it judges the commits after that commit",
-        "it gives each of its findings its state, fixed or open",
+        "it gives each of its findings its state, fixed or open, whatever that run's verdict",
         "a skipped check, a missing comment",
         "count for nothing",
         "builds on none",
