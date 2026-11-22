@@ -3,11 +3,14 @@
 central workflow it calls, that names the events, the permissions and the secrets and calls this
 repository at `main`. Each block is free of comments (.github#111), reads in the subset of YAML
 that `workflow_yaml` reads, calls a workflow file of this repository, grants exactly what that
-workflow asks for, passes the secrets it declares by name and the inputs it requires, and keeps
+workflow asks for, passes by name only secrets it declares and the inputs it requires, and keeps
 the check context of the table. The trigger file `conventions.yml` carries one condition on each
 job, the name of the event and the switch `WORKFLOW_CONVENTIONS`, so a pull request calls the
-review of the pull request alone, any other event the range alone, and `off` neither. The callers
-of today, a root's `gates.yml` and a source's `organization.yml`, call as before."""
+review of the pull request alone, any other event the range alone, and `off` neither. Its jobs
+pass the key alone, as a repository that reads no private document takes the file, and the prose
+beside it shows the line that a workspace with private documents adds, filled from its own secret
+(step 6.2 of .github 0.5.0, .github#149). The callers of today, a root's `gates.yml` and a
+source's `organization.yml`, call as before."""
 
 import re
 from pathlib import Path
@@ -168,13 +171,14 @@ def test_each_job_grants_exactly_what_its_workflow_asks_for(name: str) -> None:
 
 
 @pytest.mark.parametrize("name", NAMES)
-def test_each_job_passes_the_declared_secrets_by_name_and_the_required_inputs(name: str) -> None:
+def test_each_job_passes_declared_secrets_by_name_and_the_required_inputs(name: str) -> None:
     for job in trigger_file(name)["jobs"].values():
         call = central(USES.fullmatch(job["uses"]).group(1))["on"]["workflow_call"] or {}
         declared = call.get("secrets") or {}
         passed = job.get("secrets", {})
         assert passed != "inherit"
-        assert list(passed) == list(declared), job["uses"]
+        assert set(passed) <= set(declared), job["uses"]
+        assert {key for key, spec in declared.items() if spec["required"] == "true"} <= set(passed)
         for secret, value in passed.items():
             assert value == f"${{{{ secrets.{secret} }}}}"
         inputs = call.get("inputs") or {}
@@ -183,9 +187,22 @@ def test_each_job_passes_the_declared_secrets_by_name_and_the_required_inputs(na
         assert {key for key, spec in inputs.items() if spec["required"] == "true"} <= set(given)
 
 
-def test_the_conventions_trigger_file_passes_both_secrets_to_each_job() -> None:
+def test_the_conventions_trigger_file_passes_the_key_alone_to_each_job() -> None:
+    """The sample is the file as a repository that reads no private document takes it: the read
+    token's line left out reads as none (.github#149)."""
     for job in trigger_file("conventions.yml")["jobs"].values():
-        assert set(job["secrets"]) == {"ANTHROPIC_API_KEY", "DOCUMENTS_READ_TOKEN"}
+        assert job["secrets"] == {"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}
+
+
+@pytest.mark.parametrize("name", ["conventions.yml", "conventions-range.yml"])
+def test_both_workflows_keep_the_read_token_as_an_optional_secret_of_their_call(name: str) -> None:
+    """The name is the workflows' own: a trigger file fills it from whichever secret its workspace
+    keeps, or leaves it out, and no workflow changes for it (.github#149)."""
+    secrets = central(name)["on"]["workflow_call"]["secrets"]
+    assert secrets == {
+        "ANTHROPIC_API_KEY": {"required": "false"},
+        "DOCUMENTS_READ_TOKEN": {"required": "false"},
+    }
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -242,9 +259,32 @@ def test_the_readme_says_where_the_read_token_is_needed_in_prose() -> None:
         "`DOCUMENTS_READ_TOKEN`, which the review needs only in a private repository whose README "
         "lists a private repository's document" in flat
     )
+    assert "the empty string" not in flat
+    assert "A trigger file passes both" not in flat
+
+
+def test_the_readme_says_that_a_trigger_file_fills_the_read_token_from_its_own_secret() -> None:
+    """The caller's secret is its workspace's, as the web workspace's `WEB_READ_TOKEN`, and a
+    repository that reads no private document leaves the line out (.github#149)."""
+    flat = " ".join(WIRING.split())
     assert (
-        "a repository without the read token passes the empty string, which reads as none" in flat
+        "A trigger file fills `DOCUMENTS_READ_TOKEN` from the secret that its workspace keeps for "
+        "reading its private repositories, as the web workspace does from `WEB_READ_TOKEN`, and a "
+        "repository that reads no private document leaves the line out, which reads as none" in flat
     )
+    # Beside the sample: its jobs pass the key alone, and the one line a workspace with private
+    # documents adds, the web workspace's as the example.
+    sample = WIRING.split("### The trigger files", 1)[1].split("```yaml\n", 1)[0]
+    sample = " ".join(sample.split())
+    assert (
+        "Both jobs pass `ANTHROPIC_API_KEY` by name and leave the read token's line out, as a "
+        "repository that reads no private document takes the file" in sample
+    )
+    # Every trigger file `conventions.yml` of today passes a read token, so the README counts
+    # none (finding 2 of the review of .github#150).
+    assert "most repositories" not in " ".join(README.split())
+    assert "`DOCUMENTS_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}`" in sample
+    assert "secrets.DOCUMENTS_READ_TOKEN" not in README
 
 
 def test_the_readme_keeps_the_callers_of_today() -> None:

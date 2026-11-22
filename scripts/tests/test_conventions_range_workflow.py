@@ -93,7 +93,8 @@ def test_it_is_callable_alone_with_the_two_secrets_of_the_review_both_optional()
     on = workflow()["on"]
     assert list(on) == ["workflow_call"]
     assert on["workflow_call"] == {"secrets": {name: {"required": "false"} for name in SECRETS}}
-    # The same two as the review of a pull request, so a trigger file passes both to each.
+    # The same two as the review of a pull request, so a trigger file that passes the read token
+    # passes it to each job by the same name.
     central = REVIEW_TEXT.split("  workflow_call:\n    secrets:\n", 1)[1].split("\npermissions:")[0]
     for name in SECRETS:
         assert f"      {name}:\n        required: false\n" in central
@@ -347,6 +348,17 @@ def test_the_range_times_out_as_the_review_and_cancels_the_older_run_of_its_ref(
 
 def test_the_steps_come_in_their_order() -> None:
     assert [name for name, _block in range_steps()] == STEPS
+
+
+def test_the_range_does_not_wait_as_the_review_of_a_pull_request_does() -> None:
+    """A run on a range follows a merge, which no edit follows, so it takes no step of the
+    minute that the review of a pull request waits after its Gate (step 6.2 of .github 0.5.0)."""
+    review = [name for name, _block in review_steps()]
+    waits = [name for name in review if name.startswith("Wait ")]
+    assert len(waits) == 1
+    assert waits[0] not in STEPS
+    assert not any(name.startswith("Wait ") for name, _block in range_steps())
+    assert "sleep" not in TEXT
 
 
 def test_the_key_is_checked_before_the_commit_is_checked_out() -> None:

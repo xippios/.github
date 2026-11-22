@@ -51,6 +51,10 @@ jobs:
           READ_TOKEN_UNUSED: ${{ secrets.DOCUMENTS_READ_TOKEN != '' && github.event.repository.private != true }}
         run: python3 -I "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" gate
 
+      - name: Wait 60 seconds before reading the pull request
+        if: steps.gate.outputs.run == 'true'
+        run: sleep 60
+
       - name: Check out the pull request head with full history
         if: steps.gate.outputs.run == 'true'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
