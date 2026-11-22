@@ -397,11 +397,20 @@ at most {max_turns} turns, one turn being one response of yours.
    record is held to, and only where `quote` holds the sentence that states the rule, word
    for word as the document that `document` names holds it. So a case that the wording of
    the documents leaves open is a finding that does not block, on every pull request alike.
-   A finding against a rule that a document states as one blocks wherever a decision on the
-   pull request placed it: a decision of the opener that places it in a later package or
-   patch does not stop it from blocking. A departure from a recommendation, or a document
-   the change leaves stale, is a finding that does not block. Name the document and the
-   section the change goes against.
+   A finding blocks only where the range itself breaks the rule: in a line that it adds or
+   changes, in a file that it adds or removes, in a commit of the pull request's own branch,
+   or in the description. A rule broken in a line that the range left as it was is a finding
+   that does not block, on every pull request alike, and it stays a finding. A finding on a
+   commit that the default branch already holds, its subject, its message or its place in
+   the order, does not block either, since no later commit mends it, and it stays a finding;
+   a finding on a commit of the pull request's own branch still blocks. Where the default
+   branch already holds part of the range, the first message names the commit up to which it
+   holds it, and the commits after that commit are the pull request's own. A finding against
+   a rule that a document states as one, where the range itself breaks it, blocks wherever a
+   decision on the pull request placed it: a decision of the opener that places it in a later
+   package or patch does not stop it from blocking. A departure from a recommendation, or a
+   document the change leaves stale, is a finding that does not block. Name the document and
+   the section the change goes against.
 3. Judge the description (`body` in `{review}/pr.json`) by what the documents ask of a
    pull request, where they ask anything: its sections, its decisions, its proof. Read the
    `ci` result from `{review}/checks.json`; a `ci` still pending, or a file that reports
@@ -419,7 +428,8 @@ at most {max_turns} turns, one turn being one response of yours.
    `decided` only where the decision shows that no written rule is broken, with that reason
    in one sentence in `reason`; where the rule is still broken it is `open`, and `reason`
    says in one sentence why the rule stands against the decision. `reason` is empty where no
-   decision of the opener concerns the finding.
+   decision of the opener concerns the finding, but where a finding that blocked is carried by
+   one that does not block: `reason` then says in one sentence why it no longer blocks.
 6. When you are done, call `submit_verdict` once with the verdict, `ready` or `not ready`
    (any blocking finding makes it `not ready`), every finding: the document and the
    section it goes against (empty when none), its file (empty when it concerns the pull
@@ -453,6 +463,14 @@ EARLIER_MESSAGE = """\
  The run before judged head {head} and gave {count}: `{review}/earlier.json` holds them, \
 numbered from 1, with the opener's decisions on the pull request. Give each of them its state \
 in `earlier`."""
+
+# Appended to the first message of a pull request where the default branch already holds part of
+# its range, as on a release pull request (step 6.3 of .github 0.5.0, .github#152): the judge
+# tells a commit that no later commit mends from one of the pull request's own branch. Where the
+# default branch holds none of it, the first message is as before.
+HELD_MESSAGE = """\
+ The default branch already holds the range up to the commit {held}, and the commits after it \
+are the pull request's own."""
 
 # A review that builds on an earlier run (step 4 of .github 0.5.0): its instructions are those
 # above with this paragraph after them, and its first message is its own, so the texts of a run
@@ -530,8 +548,16 @@ at most {max_turns} turns, one turn being one response of yours.
    record is held to, and only where `quote` holds the sentence that states the rule, word
    for word as the document that `document` names holds it. So a case that the wording of
    the documents leaves open is a finding that does not block, on every range alike. A
-   departure from a recommendation, or a document the change leaves stale, is a finding
-   that does not block. Name the document and the section the change goes against.
+   finding blocks only where the range itself breaks the rule: in a line that it adds or
+   changes, in a file that it adds or removes, or in a commit that the default branch does not
+   hold yet. A rule broken in a line that the range left as it was is a finding that does not
+   block, on every range alike, and it stays a finding. A finding on a commit that the
+   default branch already holds, its subject, its message or its place in the order, does not
+   block either, since no later commit mends it, and it stays a finding. A range of the
+   default branch holds no other commit; only a range dispatched on another branch holds
+   commits that the default branch does not hold yet. A departure from a recommendation, or
+   a document the change leaves stale, is a finding that does not block. Name the document
+   and the section the change goes against.
 3. Judge the commit messages in `{review}/log.txt` by what the documents ask of a commit,
    where they ask anything. What they ask of a pull request alone, its title, its
    description, its checks, is judged on the release pull request, not here.
@@ -1969,6 +1995,7 @@ def prepare(
         "version": version,
         "built": built.meta() if built is not None else None,
         "unread": unread,
+        "held": held_commit(workspace, main, since, head),
     }
     (review / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     for name in sorted(p.name for p in review.iterdir()):
@@ -2020,6 +2047,23 @@ def _merge_base(workspace: Path, base: str, head: str) -> str | None:
     proc = _run(["git", "-C", str(workspace), "merge-base", base, head])
     line = proc.stdout.decode("utf-8", errors="replace").strip()
     return line if proc.returncode == 0 and SHA.fullmatch(line) else None
+
+
+def held_commit(workspace: Path, main: str, since: str, head: str) -> str | None:
+    """The commit up to which the default branch already holds the range, or None.
+
+    It is the merge base of ``main`` and ``head`` where the range holds it, which is where that
+    merge base does not reach ``since``, the start of the range: the commits of the range up to
+    it are on the default branch, and those after it are the pull request's own (step 6.3 of
+    .github 0.5.0). None where the default branch holds no commit of the range, or where git
+    gives no answer.
+    """
+    held = _merge_base(workspace, main, head)
+    if held is None or held == since:
+        return None
+    # 1 is git's word for not an ancestor; any other answer names no commit.
+    proc = _run(["git", "-C", str(workspace), "merge-base", "--is-ancestor", held, since])
+    return held if proc.returncode == 1 else None
 
 
 def _fresh_review(workspace: Path) -> Path:
@@ -2954,6 +2998,9 @@ class Material:
     # not be read where they could not (step 4 of .github 0.5.0).
     built: dict[str, object] | None = None
     unread: str | None = None
+    # The commit up to which the default branch already holds the range of a pull request
+    # (``held_commit``); None where it holds none of it, and on a range.
+    held: str | None = None
 
 
 def _label(path: Path, workspace: Path) -> str:
@@ -2973,13 +3020,17 @@ def load_material(workspace: Path, review: Path) -> Material:
         repo, pr, base, head = meta["repo"], meta["pr"], meta["base"], meta["head"]
         release, since, tag = bool(meta.get("release")), meta.get("since") or base, meta.get("tag")
         main = str(meta.get("main") or "main")
-        version = meta.get("version")
+        version, held = meta.get("version"), meta.get("held")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise PrepareError(f"{review_label}/meta.json is missing or unreadable") from exc
     if not (isinstance(repo, str) and REPO_NAME.fullmatch(repo) and isinstance(pr, int)):
         raise PrepareError(f"{review_label}/meta.json names no pull request")
     if not all(isinstance(sha, str) and SHA.fullmatch(sha) for sha in (base, head, since)):
         raise PrepareError(f"{review_label}/meta.json names no base and head")
+    if held is not None and not (isinstance(held, str) and SHA.fullmatch(held)):
+        raise PrepareError(
+            f"{review_label}/meta.json names no commit that the default branch holds"
+        )
     if tag is not None and not isinstance(tag, str):
         raise PrepareError(f"{review_label}/meta.json names no release tag")
     if version is not None and not (isinstance(version, str) and VERSION.fullmatch(version)):
@@ -3005,6 +3056,7 @@ def load_material(workspace: Path, review: Path) -> Material:
         head_files=head_files,
         built=built,
         unread=unread,
+        held=held,
     )
 
 
@@ -3194,6 +3246,7 @@ def first_message(material: Material) -> dict[str, object]:
         since=material.since,
         version=f" It releases version {material.version}." if material.version else "",
     )
+    text += held_message(material)
     if material.earlier is not None and material.earlier.findings:
         found = len(material.earlier.findings)
         text += EARLIER_MESSAGE.format(
@@ -3248,6 +3301,7 @@ def _built_message(material: Material, template: str, earlier: str) -> dict[str,
         review=material.review_label,
         documents=f"{count} document{'s' if count != 1 else ''}",
     )
+    text += held_message(material)
     if material.earlier is not None and material.earlier.findings:
         found = len(material.earlier.findings)
         # Whose findings they are: the run built on, the pull request's own run before alone,
@@ -3265,6 +3319,17 @@ def _built_message(material: Material, template: str, earlier: str) -> dict[str,
             review=material.review_label,
         )
     return {"role": "user", "content": text}
+
+
+def held_message(material: Material) -> str:
+    """The sentence that names where the default branch holds the range, or nothing.
+
+    Nothing where the default branch holds none of the range, and on a range, whose first
+    message is as step 3.1 and step 4 left it.
+    """
+    if material.is_range or material.held is None:
+        return ""
+    return HELD_MESSAGE.format(held=material.held)
 
 
 def run_named(built: Mapping[str, object]) -> str:

@@ -346,6 +346,22 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     placed it. A decision of the opener that places it in a later package or patch does not
     stop it from blocking, and the judge's instructions say so. Of a finding of the run
     before that blocked, a decision settles nothing by itself, as the run before says.
+  - **What the range itself breaks** (https://github.com/xippios/.github/issues/151,
+    https://github.com/xippios/.github/issues/152): a finding blocks only where the range
+    itself breaks the rule, in a line that it adds or changes, in a file that it adds or
+    removes, in a commit of the pull request's own branch or in the description. A rule broken
+    in a line that the range left as it was does not block, on every pull request alike, and
+    neither does a finding on a commit that the default branch already holds, its subject, its
+    message or its place in the order, since no later commit mends it. Both stay in the comment
+    as findings that do not block. A placed finding blocks where the range itself breaks its
+    rule. So a release, whose range holds what the default branch merged since the last
+    release, is held to a rule on commits on its pull request's own commits alone, where a
+    commit can still be changed. Where the default branch already holds part of the range, the
+    first message names the commit up to which it holds it, and `meta.json` carries it as
+    `held`, so the judge can tell the commits that no later commit mends from the pull
+    request's own. The judge's instructions hold both rules, and the script holds neither by
+    itself: it does not check that a finding lies on a line that the range changed, and a
+    finding names no commit.
   - **The line** (https://github.com/xippios/.github/issues/85): a finding names a line only
     where its file has that line at the head, counted as `read_file` counts lines; where it
     has not, as in a file the head lacks or one the tools refuse, the finding keeps its file
@@ -480,6 +496,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     where no finding blocks once these rules are applied, and `not ready` exactly where one
     blocks, whatever verdict the judge gave. A range has no pull request, so no decision
     places a finding of it.
+  - **What the range itself breaks** (https://github.com/xippios/.github/issues/151,
+    https://github.com/xippios/.github/issues/152): a finding of a range blocks only where the
+    range itself breaks the rule, in a line that it adds or changes, in a file that it adds or
+    removes, or in a commit that the default branch does not hold yet. A rule broken in a line
+    that the range left as it was does not block, on every range alike, and neither does a
+    finding on a commit that the default branch already holds, its subject, its message or its
+    place in the order, since no later commit mends it. Both stay in the comment as findings
+    that do not block. A range of the default branch holds no other commit, so a finding on the
+    subject, the message or the place in the order of one of its commits never blocks; only a
+    dispatch on another branch judges commits that the default branch does not hold yet. The
+    judge's instructions hold both rules, and the script holds neither by itself.
   - **The key**: where `ANTHROPIC_API_KEY` is empty, the step `Key`, `conventions.py range-key`,
     fails the job with the Gate's sentence before the commit is checked out. The keys of
     several lines, the failover, the redaction, the public log and the line of an API error,
