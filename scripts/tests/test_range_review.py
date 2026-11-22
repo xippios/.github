@@ -61,14 +61,15 @@ LABELS = ["sdk-usda-psd: docs/conventions.md", "sdk-core: docs/conventions.md"]
 # again: item 2 says that a finding blocks only where the range itself breaks the rule, so not
 # in a line that the range left as it was (.github#151) nor on a commit that the default branch
 # already holds (.github#152), where a document asks something of the change itself it blocks
-# in what the range leaves out, and it holds the placed finding to that; item 5 says that a
+# in what the range leaves out, though not in what the repository lacked before the range, and
+# it holds the placed finding to that; item 5 says that a
 # finding that blocked, carried by one that does not block, gives its reason. It added the three
 # sentences of the first message that name the pull request's own commits where the default
 # branch holds part of the range, HELD_MESSAGE, HELD_MANY_MESSAGE and HELD_ALL_MESSAGE; the
 # first messages themselves stay word for word. It changed the tools too: the description of
 # `reason` says the case of item 5.
 PULL_REQUEST_TEXTS = {
-    "INSTRUCTIONS": "fe31a529c5cdcb7ff64f56faa2d7dc92cceb06ed030a65529e5281895c45cfe7",
+    "INSTRUCTIONS": "e6f9e839c2222e31e460dbf23615931f7da61a1f7c75f5c919413b390f1cc8f4",
     "FIRST_MESSAGE": "638c83c4687ee9d60c56f5c9895836dd0b4cd3141ee8f18194b01caaa5d193ca",
     "RELEASE_MESSAGE": "c8891680e57375b08676e8d571571bb18e6c8eb2d3651bf286246a241e996d27",
     "UNTAGGED_MESSAGE": "445e8c847bc8b9a748f643fd36aa5b306330b8b2a7332fa5640ef754e757c6ed",
@@ -84,9 +85,10 @@ TOOLS_DIGEST = "7bcbd737d271f7d2128ab048028fb14bde8417e2ce4a6772dc93adbcd816000c
 # .github 0.5.0 changed the instructions, whose item 2 says that a finding blocks only with its
 # quote and whose item 5 asks for it, and the tools, whose finding has the field `quote`. Step
 # 6.3 changed the instructions again, whose item 2 says the two rules and what the range leaves
-# out in a range's words, and the tools, whose description of `reason` says the carried case.
+# out, though not what the repository lacked before it, in a range's words, and the tools, whose
+# description of `reason` says the carried case.
 RANGE_TEXTS = {
-    "RANGE_INSTRUCTIONS": "357187020227b2ffd2a707d8899ca1a62c7b29f3022d3e53e2076d27191443ba",
+    "RANGE_INSTRUCTIONS": "2a657bcae63b1e6c2868ad935cc9473f911a737f795ce1b870914f66b05ef9c6",
     "RANGE_MESSAGE": "6d4ed76c302fbd06cf9ce9a7f481bf88e30ac5996fdf5d295c5d3c9a66192b4a",
     "UNTAGGED_RANGE_MESSAGE": "c2d9cf7dd74463aadd9c0806d2cf09330adbc2d903db9f7cf82bb3cc2fc99d72",
     "PARENTLESS_RANGE_MESSAGE": "fa4b2a35f41381f4357352eb3ccfe0db7340b068cd87ce4fff50ec138d24297a",

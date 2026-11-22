@@ -1069,14 +1069,20 @@ def test_a_quote_shows_only_where_its_document_holds_it(
 # request state them, and the sentence that tells the judge where the first message names the
 # commits that the default branch already holds.
 # What the range leaves out where a document asks something of the change itself is a place of
-# its own, and code or text that the range left as it was is no such case (fix round 1 of #154).
+# its own, and code or text that the range left as it was is no such case (fix round 1 of #154),
+# nor is what the repository lacked before the range where a document asks it of every
+# repository rather than of the change (fix round 2 of #154).
+NOR_LACKED = (
+    ", nor is what the repository lacked before the range where a document asks it of every "
+    "repository rather than of the change, since the range left that as it was."
+)
 PULL_REQUEST_ONLY = (
     "A finding blocks only where the range itself breaks the rule: in a line that it adds or "
     "changes, in a file that it adds or removes, in a commit of the pull request's own branch, "
     "in the description, or in what it leaves out where a document asks something of the change "
     "itself, such as a changelog entry, a raised version, a record or a test beside the behavior "
     "it adds; code or text that the range left as it was and that does not follow a rule is no "
-    "such case, since it breaks the rule in lines that the range left."
+    "such case, since it breaks the rule in lines that the range left" + NOR_LACKED
 )
 UNCHANGED_LINE = (
     "A rule broken in a line that the range left as it was is a finding that does not block, on "
@@ -1101,7 +1107,7 @@ RANGE_ONLY = (
     "such as a changelog entry, a record or a test beside the behavior it adds, though not the "
     "release's own changes, which come after it; code or text that the range left as it was and "
     "that does not follow a rule is no such case, since it breaks the rule in lines that the "
-    "range left."
+    "range left" + NOR_LACKED
 )
 RANGE_UNCHANGED_LINE = (
     "A rule broken in a line that the range left as it was is a finding that does not block, on "
@@ -1174,10 +1180,10 @@ def test_the_readme_says_both_rules_in_both_entries() -> None:
         # A public repository's README cites no record that its reader cannot open.
         bullet = text.split("- **What the range itself breaks**", 1)[1].split(" - **", 1)[0]
         assert "coordinate-core" not in bullet
-        # What the range leaves out, and its counter-case (fix round 1 of #154).
+        # What the range leaves out, and its counter-case (fix rounds 1 and 2 of #154).
         assert (
             "Code or text that the range left as it was and that does not follow a rule is no "
-            "such case: it breaks the rule in lines that the range left."
+            "such case, since it breaks the rule in lines that the range left" + NOR_LACKED
         ) in text
     assert (
         "a finding blocks only where the range itself breaks the rule, in a line that it adds or "
