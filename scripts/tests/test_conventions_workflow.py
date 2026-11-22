@@ -13,7 +13,9 @@ the style of docs/style/reviews.md on every run that reviewed the pull request, 
 the environment the runner gives a step, and evaluate the job's own condition as the file holds it
 with `expressions.py`. A release PR is told by its label `release` or by its title
 `<version> Release` alone, and the older title form is no release PR's (step 2.1 of
-.github 0.5.0)."""
+.github 0.5.0). Where the Gate lets a review run, the job waits 60 seconds before it checks the
+head out and prepares its material, so a push or an edit within that minute cancels the run
+before it made a model call (step 6.2 of .github 0.5.0, .github#147)."""
 
 import json
 import os
@@ -700,6 +702,8 @@ def checkout_of(block: str) -> list[str]:
 
 SCRIPT_STEP = "Check out the review script from xippios/.github"
 HEAD_STEP = "Check out the pull request head with full history"
+WAIT_STEP = "Wait 60 seconds before reading the pull request"
+GATE_CHECKOUT = "Check out the script for the gate from xippios/.github"
 
 
 def test_the_script_is_checked_out_before_the_gate_with_no_condition() -> None:
@@ -725,10 +729,67 @@ def test_everything_after_the_gate_waits_for_its_output() -> None:
     checkout of the head, no key and no model call. The head's checkout empties the workspace,
     so the script is checked out again after it, where Prepare's check of a link reads it."""
     names = [name for name, _block in job_steps()]
-    assert names[2:5] == [HEAD_STEP, SCRIPT_STEP, "Install uv"]
+    assert names[2:6] == [WAIT_STEP, HEAD_STEP, SCRIPT_STEP, "Install uv"]
     assert names[-3:] == ["Prepare the review material", "Review", "Verdict"]
     for name, block in job_steps()[2:]:
         assert "steps.gate.outputs.run == 'true'" in str(condition_of(block)), name
+
+
+# --- the wait (step 6.2 of .github 0.5.0, .github#147) -----------------------------------
+
+
+def test_the_wait_stands_after_the_gate_and_before_the_head_and_the_material() -> None:
+    """No step but the Gate's own comes before it, the script's checkout and the Gate, and the
+    run that judges checks the head out and prepares its material after it, so it reads the pull
+    request as it stands a minute after the Gate."""
+    names = [name for name, _block in job_steps()]
+    assert names[:3] == [GATE_CHECKOUT, "Gate", WAIT_STEP]
+    assert names.count(WAIT_STEP) == 1
+    wait = names.index(WAIT_STEP)
+    assert wait < names.index(HEAD_STEP) < names.index("Prepare the review material")
+    assert wait < names.index("Review")
+
+
+def test_the_wait_carries_the_gates_condition_and_a_skipped_run_does_not_wait() -> None:
+    """The wait carries the condition of the steps after the Gate, so a run that the Gate turns
+    away ends without it, and a run that it lets through waits."""
+    condition = condition_of(step_block(WAIT_STEP))
+    assert condition == "steps.gate.outputs.run == 'true'"
+    assert condition == condition_of(step_block(HEAD_STEP))
+    for run, waits in (("true", True), ("false", False), ("", False)):
+        assert holds(condition, {"steps": {"gate": {"outputs": {"run": run}}}}) is waits, run
+
+
+def test_the_wait_sleeps_60_seconds_fixed_and_nothing_else() -> None:
+    """A fixed minute after the Gate, not measured from the event: the step is its name, its
+    condition and one call of `sleep`, with no id, no environment and no time read. The job's
+    concurrency group of the pull request cancels the waiting run on a newer push or edit."""
+    block = step_block(WAIT_STEP)
+    keys = [line.strip().split(":", 1)[0] for line in block.splitlines() if line.strip()]
+    assert keys == ["if", "run"]
+    assert step(WAIT_STEP) == "sleep 60\n"
+    assert WORKFLOW.count("sleep") == 1
+    group = "conventions-${{ github.repository }}-${{ github.event.pull_request.number }}"
+    assert f"    concurrency:\n      group: {group}\n      cancel-in-progress: true\n" in WORKFLOW
+
+
+def test_the_readme_says_the_wait_where_and_why() -> None:
+    """The entry of conventions.yml says the wait in two plain sentences: what it is, where it
+    stands, that a skipped run and a run on a range do not wait, and why."""
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    section = section.split("\n  - **The events**", 1)[0]
+    flat = " ".join(section.split())
+    assert (
+        "Where the Gate lets a review run, the step after it waits 60 seconds before the head is "
+        "checked out and the material prepared" in flat
+    )
+    assert "a run that the Gate skips does not wait" in flat
+    assert "neither does a run on a range, since no edit follows the merge it judges" in flat
+    assert "cancels the run before it made a model call" in flat
+    assert "the run that judges reads the pull request as it then stands" in flat
+    assert "(https://github.com/xippios/.github/issues/147)" in flat
+    # The timeout's sentence stays true with a minute less.
+    assert "The job times out after 45 minutes" in flat
 
 
 def test_the_readme_names_the_gate_and_the_verdict_of_the_script() -> None:
@@ -939,8 +1000,9 @@ def test_no_notice_on_the_read_token_where_it_is_used_or_nothing_is_read(
 def test_the_readme_lays_out_the_read_token_and_its_caller() -> None:
     """The documents' text names the token, that only a private caller's check uses it and
     why, and what a pull request cannot choose of what the check reads, which bounds the
-    check and not the secret; the caller passes it by name, beside the key (.github#62,
-    .github#83)."""
+    check and not the secret (.github#62, .github#83). The sample trigger file passes the key
+    alone, and the README names no caller's secret `DOCUMENTS_READ_TOKEN`: a trigger file fills
+    the workflows' secret of that name from its workspace's own (.github#149)."""
     section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
     flat = " ".join(section.split())
@@ -955,9 +1017,11 @@ def test_the_readme_lays_out_the_read_token_and_its_caller() -> None:
     assert "the organization's setting" in flat
     wiring = README.split("## Wiring and check contexts", 1)[1].split("\n## ", 1)[0]
     caller = wiring.split("```yaml\n", 1)[1].split("```", 1)[0]
-    # The trigger file `conventions.yml` passes both by name to each of its two jobs.
+    # The trigger file `conventions.yml` passes the key by name to each of its two jobs, and
+    # leaves the read token's line out, as a repository that reads no private document does.
     assert caller.count("      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}\n") == 2
-    assert caller.count("      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}\n") == 2
+    assert "DOCUMENTS_READ_TOKEN" not in caller
+    assert "secrets.DOCUMENTS_READ_TOKEN" not in README
     assert "inherit" not in caller
     assert "exactly one secret" not in " ".join(wiring.split())
     # Where the read token is needed is prose, since a trigger file carries no comment.
