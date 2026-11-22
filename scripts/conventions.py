@@ -78,7 +78,8 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   range up to ``--commit`` (``prepare_range``): the commits since the last release tag
   reachable from it, or every commit from the repository's first where none is, the documents
   as ``prepare`` reads them, and no pull request, so no ``pr.json``, no ``checks.json`` and no
-  version. The material says it is a range, so ``review`` gives the judge the range's own
+  version; a commit that carries the last release tag has nothing to judge and writes
+  ``review=false``. The material says it is a range, so ``review`` gives the judge the range's own
   instructions, first message and tools, and the texts of a pull request's review stay as
   they are. ``range-verdict`` writes the check's comment to the job summary and to one comment
   on the pull request whose merge made the commit, which a second run on the same commit
@@ -1751,13 +1752,26 @@ def prepare_range(
     the empty tree holds too; the job summary says which. No pull request is read: the material
     holds no ``pr.json``, no ``checks.json`` and no version, and ``meta.json`` says it is a
     range (step 3.1 of .github 0.5.0). The documents are read as ``prepare`` reads them, pinned
-    by the requirements of ``commit``. PrepareError where the material cannot be written;
-    returns how many documents the README links, and the step output ``review`` says whether
-    there is anything to judge.
+    by the requirements of ``commit``. A commit that carries the last release tag holds no commit
+    after it: ``.review`` stays empty, the job summary says so, and the step output ``review`` is
+    ``false``, so no model call is made (finding 2 of the review of .github#137). PrepareError
+    where the material cannot be written; returns how many documents there are to judge by,
+    none for an empty range, and the step output ``review`` says whether there is anything to
+    judge.
     """
     review = _fresh_review(workspace)
     tag = last_release_tag(workspace, commit)
     since = first = None
+    if tag is not None:
+        since = _git(workspace, "rev-parse", f"{tag}^{{commit}}").decode().strip()
+    if since == commit:
+        _notice(
+            f"conventions: the commit {commit} carries the last release tag {printable(tag)}; no "
+            "commit came after it, so the range holds nothing to judge",
+            summary,
+        )
+        _output("review", "false")
+        return 0
     if tag is None:
         first = _git(workspace, "rev-list", "--reverse", "--max-parents=0", commit).split()[0]
         first = first.decode()
@@ -1769,7 +1783,6 @@ def prepare_range(
             summary,
         )
     else:
-        since = _git(workspace, "rev-parse", f"{tag}^{{commit}}").decode().strip()
         diff, log = (f"{since}...{commit}",), (f"{since}..{commit}",)
         _notice(
             f"conventions: the review judges the range from {printable(tag)} to the commit "

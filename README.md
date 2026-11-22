@@ -362,15 +362,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     version's bump, the changelog's section and the tag, come with the release pull request, so
     their absence is no finding. Where no release tag is reachable from the commit, the range
     holds every commit from the repository's first commit, and the job summary says so. A
-    README that links no documents passes with its notice and makes no model call, as for a
-    pull request. Each run judges the whole range as a first run, whatever comment stands on
-    the pull request.
+    commit that carries the last release tag holds no commit after it: the job passes with its
+    notice, makes no model call and posts no comment. A README that links no documents passes
+    with its notice and makes no model call, as for a pull request. Each run judges the whole
+    range as a first run, whatever comment stands on the pull request.
   - **The check** `range / range` on the commit of the event is in one of three states.
-    passed: the range was judged `ready`, or the README links no documents to judge by;
-    failed: the range was judged `not ready`, the review returned no verdict, or a step failed
-    before it, the step `Key` without a key among them; skipped: the job reports as skipped
-    where the gate did not let the range be judged or failed, and no runner starts for it. So a
-    check that passed stands for a judged range, a README without documents aside.
+    passed: the range was judged `ready`, or nothing was there to judge, a README that links no
+    documents, or a commit that carries the last release tag, each with its notice and no model
+    call; failed: the range was judged `not ready`, the review returned no verdict, or a step
+    failed before it, the step `Key` without a key among them; skipped: the job reports as
+    skipped where the gate did not let the range be judged or failed, and no runner starts for
+    it. So a check that passed stands for a judged range but in those two cases.
   - **The verdict** (`conventions.py range-verdict`) goes to the job summary and, in the form
     of the check's comment on a pull request with its hidden last line, whose head is the judged
     commit, to one comment on the pull request whose merge made the commit, the gate's `pr`. A
