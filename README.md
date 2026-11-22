@@ -178,7 +178,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     CHANGELOG and the bump. Without a tag it judges the pull request's own diff and says so. Any
     other pull request is judged on its own diff, merge base to head. The head is checked out
     with its full history, which brings the default branch, where the README and its documents
-    are read, and the release tags, where a release's range starts.
+    are read, and the release tags, where a release's range starts. Where a run judged a commit
+    of that range, the review judges only what came after it (what a run builds on, below).
   - **The version**: the review names the version a release pull request ships, read from its
     title, else from the `[project]` version of the head's `pyproject.toml`, taken from the
     commit and in a version's characters only. Where neither names one, the job summary says
@@ -270,7 +271,39 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     line does not read, judges as a first run and lists nothing; the job summary names the
     run before, or says that no run before was found, or that its comment does not read, and
     that the run judges as a first run. No permission, secret or input is added, so a caller
-    changes nothing.
+    changes nothing. Where the head that the run before judged lies on the first-parent line of
+    the new head, the run builds on it and judges only the commits after it (below). Whatever
+    commit the run builds on, each finding of the run before gets its state, so a finding that
+    blocked never leaves the comment unsaid.
+  - **What a run builds on**: before it writes its range, a run looks along the first parents
+    of the head, from the head down to where its range starts, the last release tag on a release
+    pull request or the merge base on any other, for the newest commit that a run judged, and
+    judges only what came after it. A commit counts as judged where its check `range / range`
+    passed or failed and the comment of that run, whose hidden line names the commit, stands on
+    the pull request whose merge made it, with the same verdict; on a pull request, the head
+    that its own run before judged counts too where it lies on that line, and the newer of the
+    two counts. A skipped check counts for nothing, and so does a check whose comment is missing
+    or names another commit, since a failed check also stands for no verdict and for a step that
+    failed before the review, and a run that ends green with no model call posts no comment.
+    The run judges the commits after the commit, and the description and the checks as on every
+    run, and each finding of that run, ready or not, gets its state, as after a run before, with
+    the opener's decisions on this pull request, so a ready run's findings stay in the comment.
+    The pull request's own run before keeps its states where it is another run, on the very
+    head, off the line or below the commit built on: both runs' findings get their states, each
+    finding once, and the comment lists each run's findings under the commit it judged. What a
+    run builds on decides the range it judges, never whether an earlier finding gets its state.
+    Where no commit of the line was judged, the run judges the whole range as before. A head
+    that does not descend from a judged commit by its first parents, as on a branch cut before
+    it or after a rewritten history, builds on none for that commit, and a run on the very head
+    that the run before judged never builds on that head. The reads take at most 30 seconds a call, 120
+    seconds together and 100 commits of the line, with the workflow's token and its
+    `checks: read`; where one fails or runs out, the run builds on none, judges the whole range
+    and says in its job summary that it could not read the runs before, so a failed read never
+    fails a review and the run never builds on a commit it could not verify. The first message
+    tells the judge which case it is in and names the commit, and that nothing up to it is
+    judged again; a run that builds on none gets the instructions and the first message it got
+    before. The job summary says which of the three the run did, and the comment says it on its
+    line `Built on:` after `Judged:`, naming the run and the commit it built on.
   - **The line** (https://github.com/xippios/.github/issues/85): a finding names a line only
     where its file has that line at the head, counted as `read_file` counts lines; where it
     has not, as in a file the head lacks or one the tools refuse, the finding keeps its file
@@ -368,8 +401,18 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     judged by no run until the first tag exists. A commit with no parent is judged on its own
     change, and the job summary says which. A commit that carries the last release tag holds no commit after it: the job passes with its
     notice, makes no model call and posts no comment. A README that links no documents passes
-    with its notice and makes no model call, as for a pull request. Each run judges the whole
-    range as a first run, whatever comment stands on the pull request.
+    with its notice and makes no model call, as for a pull request.
+  - **What a run builds on**: a run on a range builds on the newest commit of its line after the
+    tag that a run on a range judged, as the review of a pull request does (above): it judges the
+    commits after that commit, and it gives each of its findings its state, fixed or open,
+    whatever that run's verdict, since a range has no opener whose decision settles one. A commit
+    counts as judged where its check `range / range` passed or failed and its run's comment, which
+    names it in its hidden line, stands on the pull request whose merge made it with the same
+    verdict; a skipped check, a missing comment, a comment of another commit, and the two cases
+    of a passed check without a model call, which post no comment, count for nothing. Where no
+    release tag is reachable, the run judges the commit's change against its first parent and
+    builds on none. The reads, their limits and a read that fails are as for a pull request,
+    and the job summary and the comment say what the run built on.
   - **The check** `range / range` on the commit of the event is in one of three states.
     passed: the range was judged `ready`, or nothing was there to judge, a README that links no
     documents, or a commit that carries the last release tag, each with its notice and no model
@@ -391,8 +434,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     fails the job with the Gate's sentence before the commit is checked out. The keys of
     several lines, the failover, the redaction and the public log hold as for a pull request,
     by the same code.
-  - **The job** narrows the workflow token to `contents: read` and `pull-requests: write`,
-    times out after 45 minutes as the review of a pull request does, and runs in a concurrency
+  - **The job** narrows the workflow token to `contents: read`, `pull-requests: write` and
+    `checks: read`, the last for the runs before it builds on, times out after 45 minutes as the
+    review of a pull request does, and runs in a concurrency
     group of its repository and ref, in which a newer run cancels the older one. It checks the
     script out and runs the step `Key`, then checks the commit out with its full history and no
     credential kept, which empties the workspace, then the script again, uv, and one call each
@@ -686,7 +730,9 @@ file that an earlier dry run wrote with `--out`, which names the pull request an
 that run judged, and stands for the check's comment, so a dry run judges as a later run before
 any comment carries the hidden line. It refuses, before any clone, the file of a run that
 returned no verdict and that of another pull request. It prints the states and the marks as the comment shows them, after the
-findings. It needs
+findings. Both forms below look for the judged commit to build on as the workflow does: each
+reads the runs before with gh's login and prints which judged commit it builds on, or that it
+builds on none and why, before the review starts. It needs
 `gh` signed in, whose login stands for the workflow's token, and a `DOCUMENTS_READ_TOKEN` in the
 environment of the command is read as a private caller's workflow reads the secret, whatever the
 repository's visibility, since a dry run posts nothing. It needs the key in the

@@ -243,7 +243,14 @@ def test_two_tool_calls_then_the_verdict(
     assert result["effort"] == "xhigh"
     assert result["cost_estimate_usd"] == pytest.approx(0.0074, abs=1e-4)
     assert result["summary"] == line
-    assert result["range"] == {"release": False, "since": BASE, "tag": None}
+    # A review that builds on no judged commit says so (step 4 of .github 0.5.0).
+    assert result["range"] == {
+        "release": False,
+        "since": BASE,
+        "tag": None,
+        "built": None,
+        "unread": False,
+    }
     assert result["documents"] == [label for label, _, _ in DOCUMENTS]
     captured = capsys.readouterr()
     assert captured.out == line + "\n"
@@ -1374,7 +1381,8 @@ API_CALL = (
 @pytest.fixture
 def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """A gh on PATH: `pr view` prints PR_JSON (or the SHAs and the title), `pr checks`
-    CHECKS_JSON or 8, `api repos/…/git/trees/…` tree.json or a 404, `api repos/…/tags?…`
+    CHECKS_JSON or 8, `api repos/…/check-runs?…` no check run (step 4 of .github 0.5.0),
+    `api repos/…/git/trees/…` tree.json or a 404, `api repos/…/tags?…`
     tags.txt or a 502, `api repos/…/contents/
     pyproject.toml?…` other-pyproject.toml, or pyproject-fail's error, or a 404 (api-fail, or
     no other-pyproject.toml), and `api repos/…/contents/…?ref=<ref>` at-<ref>.md, else
@@ -1407,6 +1415,7 @@ def fake_gh(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         '{ cat "$here/pyproject-fail" >&2; exit 1; }; '
         'if [ -f "$here/api-fail" ] || [ ! -f "$here/other-pyproject.toml" ]; then '
         f'{not_found} fi; cat "$here/other-pyproject.toml" ;;\n'
+        '  "api repos/"*"/check-runs?"*) echo \'{"total_count": 0, "check_runs": []}\' ;;\n'
         '  "api repos/"*"/git/trees/"*) [ -f "$here/tree.json" ] && '
         f'{{ cat "$here/tree.json"; exit 0; }}; {not_found} ;;\n'
         f'  "api repos/"*) [ -f "$here/api-fail" ] && {{ {not_found} }}; ref=${{2##*ref=}}; '
@@ -1490,6 +1499,8 @@ def test_prepare_writes_the_review_material(
         "since": base,
         "tag": None,
         "version": None,
+        "built": None,
+        "unread": None,
     }
     calls = (fake_gh / "calls").read_text().splitlines()
     assert calls == [
@@ -1533,9 +1544,12 @@ def test_prepare_writes_the_review_material(
     ]
     for line in read_at:
         assert line in out
+    # The head is the pull request's one commit: no commit of the line is read, and the review
+    # builds on none (step 4 of .github 0.5.0).
     assert actions["summary"].read_text().splitlines() == [
         *read_at,
         "conventions: 3 documents of README.md on main",
+        fr.NONE_JUDGED,
         NO_RUN,
     ]
     assert actions["output"].read_text() == "review=true\n"
@@ -1764,7 +1778,12 @@ def test_a_dependencys_documents_are_read_at_the_release_the_heads_pin_allows(
     assert summary[0] == resolved
     assert f"conventions: document {LABELS[1]}, read at v0.3.10, {len(AT_RELEASE)} bytes" in summary
     assert f"conventions: document {adr}, read at v0.3.10, {len(AT_RELEASE)} bytes" in summary
-    assert summary[-2:] == ["conventions: 4 documents of README.md on main", NO_RUN]
+    # Then that the review builds on no judged commit (step 4 of .github 0.5.0).
+    assert summary[-3:] == [
+        "conventions: 4 documents of README.md on main",
+        fr.NONE_JUDGED,
+        NO_RUN,
+    ]
     assert resolved in capsys.readouterr().out
 
 
@@ -2550,7 +2569,13 @@ def test_dry_run_prepares_and_reviews(
     result = json.loads(out_file.read_text())
     assert result["verdict"] == "not ready"
     assert result["documents"] == LABELS
-    assert result["range"] == {"release": False, "since": base, "tag": None}
+    assert result["range"] == {
+        "release": False,
+        "since": base,
+        "tag": None,
+        "built": None,
+        "unread": False,
+    }
     # The documents came from the clone's origin/main, not from the head.
     labels = [
         block["text"].split("\n", 1)[0] for block in client.messages.requests[0]["system"][1:]
@@ -2603,6 +2628,8 @@ def test_dry_run_judges_a_pr_of_the_older_title_form_as_no_release(
         "release": False,
         "since": base,
         "tag": None,
+        "built": None,
+        "unread": False,
     }
 
 
@@ -3249,7 +3276,14 @@ def test_dry_run_judges_as_the_run_after_an_earlier_dry_runs_verdict_file(
     argv = ["dry-run", "--repo", REPO, "--pr", "7", "--out", str(out_file), "--earlier", str(first)]
     assert fr.main(argv) == 1
     text = client.messages.requests[0]["messages"][0]["content"]
-    assert f"The run before judged head {earlier} and gave 1 finding: " in text
+    # The head judged before lies on the line of the head and was not ready: the dry run builds
+    # on it as the workflow does (step 4 of .github 0.5.0), and its finding gets its state.
+    assert (
+        f"This review builds on this pull request's run before, which judged the commit {earlier} "
+        "not ready: everything up to that commit was judged and is not judged again"
+    ) in text
+    assert " That run gave 1 finding: `.review/earlier.json` holds them" in text
+    assert f"from {earlier} to the head" in text
     result = json.loads(out_file.read_text())
     assert result["head"] == head
     assert result["earlier"]["findings"] == [

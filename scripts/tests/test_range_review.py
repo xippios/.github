@@ -62,6 +62,29 @@ PULL_REQUEST_TEXTS = {
     "REPROMPT": "3a3b08dc41ef68f0d74ef1c73c44812b8f9bd8279a2023b213f09c215074cfcd",
 }
 TOOLS_DIGEST = "a2fac6c1130a61e6883ad18df931a032b248619f59996cba2c04ad1db03cf7c2"
+# The texts of the review of a range as step 3.1 left them, which a range that builds on no judged
+# commit keeps word for word (step 4 of .github 0.5.0), and the tools of a range.
+RANGE_TEXTS = {
+    "RANGE_INSTRUCTIONS": "f1bd23217743c0693d53a8a0562ef3a837da258bff693cf360b35058242b7657",
+    "RANGE_MESSAGE": "6d4ed76c302fbd06cf9ce9a7f481bf88e30ac5996fdf5d295c5d3c9a66192b4a",
+    "UNTAGGED_RANGE_MESSAGE": "c2d9cf7dd74463aadd9c0806d2cf09330adbc2d903db9f7cf82bb3cc2fc99d72",
+    "PARENTLESS_RANGE_MESSAGE": "fa4b2a35f41381f4357352eb3ccfe0db7340b068cd87ce4fff50ec138d24297a",
+}
+RANGE_TOOLS_DIGEST = "2422606b64549bcfe02b5b499d1b8e5e4e00338790cc9020e96499a4d86d8849"
+# The texts of a run that builds on a judged commit (step 4 of .github 0.5.0), as fix round 1 of
+# #142 settled them: BUILT_INSTRUCTIONS, BUILT_EARLIER_MESSAGE and RANGE_BUILT_INSTRUCTIONS changed.
+BUILT_TEXTS = {
+    "BUILT_INSTRUCTIONS": "de0280fe73e0172df9dd32c9890253dfa9de9df6bb60eff193b4125d944e5ac4",
+    "BUILT_MESSAGE": "ea3abc826cc8d96ad90eb3ea4f9aa4613226361027aee1e628dac4773729def7",
+    "BUILT_EARLIER_MESSAGE": "f07b3e555cd84192376acc02788f258dee319756f4c984cf635c2db84b1845ba",
+    "RANGE_BUILT_INSTRUCTIONS": "6513a71bc5ef233a4f8c1cd002261cc66d4bcbf9a65348002919d2806395f8a4",
+    "RANGE_BUILT_MESSAGE": "3879bea11166716899a4dffb117e41f75c4fdc0b5fd806fbbe415a92cab0fa15",
+    "RANGE_BUILT_EARLIER_MESSAGE": (
+        "dfde0c07347fbd1358cc3d9cc8d8b821b023366a1ee3e591f127b4166dece32c"
+    ),
+}
+# The read of the checks of a commit of the line, as the run before it asks GitHub (step 4).
+CHECK_RUNS = "check-runs?check_name=range%20%2F%20range&per_page=100"
 
 
 def digest(text: str) -> str:
@@ -155,6 +178,14 @@ def test_the_review_of_a_pull_request_keeps_its_texts_word_for_word() -> None:
     assert digest(json.dumps(fr.TOOLS, sort_keys=True)) == TOOLS_DIGEST
 
 
+def test_a_run_that_builds_on_nothing_keeps_its_texts_and_the_new_ones_are_held() -> None:
+    """The texts of a range as step 3.1 left them stay word for word, and the texts of a run that
+    builds on a judged commit are held as step 4 of .github 0.5.0 settled them."""
+    for name, expected in {**RANGE_TEXTS, **BUILT_TEXTS}.items():
+        assert digest(getattr(fr, name)) == expected, name
+    assert digest(json.dumps(fr.RANGE_TOOLS, sort_keys=True)) == RANGE_TOOLS_DIGEST
+
+
 def test_prepare_writes_the_material_of_a_range_without_a_pull_request(
     tmp_path: Path, gh: Path, actions: dict[str, Path], capsys
 ) -> None:
@@ -181,6 +212,8 @@ def test_prepare_writes_the_material_of_a_range_without_a_pull_request(
         "main": "main",
         "since": first,
         "tag": "v0.1.0",
+        "built": None,
+        "unread": None,
     }
     diff = (review / "diff.patch").read_text()
     assert "-VALUE = 1\n+VALUE = 2" in diff
@@ -192,21 +225,24 @@ def test_prepare_writes_the_material_of_a_range_without_a_pull_request(
     assert f"commit {second}\n" in log
     assert "\n\nfeat: a step's change\n\nWith a body.\n" in log
     assert first not in log
-    # Nothing is asked of a pull request: the one call reads the other repository's document.
+    # Nothing is asked of a pull request: the checks of the one commit of the line between the
+    # tag and the commit are read (step 4 of .github 0.5.0), then the other repository's document.
     assert stub_gh.calls(gh) == [
+        ["api", f"repos/{REPO}/commits/{second}/{CHECK_RUNS}"],
         [
             "api",
             "repos/xippios/sdk-core/contents/docs/conventions.md?ref=main",
             "-H",
             "Accept: application/vnd.github.raw+json",
-        ]
+        ],
     ]
     documents = json.loads((review / "documents.json").read_text())
     assert [entry["label"] for entry in documents] == LABELS
     notice = f"conventions: the review judges the range from v0.1.0 to the commit {third}"
     summary = actions["summary"].read_text().splitlines()
     assert summary[0] == notice
-    assert summary[-1] == "conventions: 2 documents of README.md on main"
+    assert summary[-2] == "conventions: 2 documents of README.md on main"
+    assert summary[-1] == fr.NONE_JUDGED
     assert "version" not in actions["summary"].read_text()
     assert actions["output"].read_text() == "review=true\n"
     assert notice in capsys.readouterr().out
@@ -253,7 +289,8 @@ def test_a_merge_without_a_release_tag_is_judged_against_its_first_parent(
     review = ws / ".review"
     meta = json.loads((review / "meta.json").read_text())
     assert (meta["since"], meta["tag"]) == (shas["other"], None)
-    assert set(meta) == {"kind", "repo", "commit", "main", "since", "tag"}
+    assert set(meta) == {"kind", "repo", "commit", "main", "since", "tag", "built", "unread"}
+    assert (meta["built"], meta["unread"]) == (None, None)
     diff = (review / "diff.patch").read_text()
     assert "+NEW = 2" in diff
     assert "version = " in diff
@@ -610,6 +647,8 @@ def test_the_review_of_a_range_runs_the_judge_of_a_release_pr_on_its_material(
         "commit": third,
         "since": first,
         "tag": "v0.1.0",
+        "built": None,
+        "unread": False,
     }
     assert (result["repo"], result["pr"], result["head"]) == (REPO, None, third)
     assert result["documents"] == LABELS
@@ -971,8 +1010,15 @@ def test_a_dry_run_of_a_commit_judges_its_range_and_posts_nothing(
     assert lines[-2].startswith("conventions: verdict=not ready findings=1 blocking=1 ")
     assert lines[-1] == "the range [blocking] A finding."
     assert json.loads(out.read_text())["range"]["kind"] == "range"
-    # It reads the other repository's document and asks nothing of a pull request.
-    assert all(call[0] == "api" and "/contents/" in call[1] for call in stub_gh.calls(gh))
+    # It reads the checks of the line (step 4 of .github 0.5.0) and the other repository's
+    # document, and asks nothing of a pull request.
+    # The one commit of the line between the tag's commit and the commit is read.
+    calls = stub_gh.calls(gh)
+    checked = [call[1] for call in calls if call[1].endswith(f"/{CHECK_RUNS}")]
+    assert len(checked) == 1
+    assert first not in checked[0]
+    assert third not in checked[0]
+    assert all(call[0] == "api" and "/contents/" in call[1] for call in calls[1:])
     assert stub_gh.written(gh) == []
 
 
@@ -1017,6 +1063,8 @@ def test_a_dry_run_of_a_merge_without_a_release_tag_judges_it_against_its_first_
         "commit": shas["merge"],
         "since": shas["other"],
         "tag": None,
+        "built": None,
+        "unread": False,
     }
 
 
