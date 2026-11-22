@@ -76,15 +76,15 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   two. ``range-key`` fails where the caller passed no key, with the sentence of ``gate``,
   before the caller's commit is checked out. ``range-prepare`` writes the material of the
   range up to ``--commit`` (``prepare_range``): the commits since the last release tag
-  reachable from it, or every commit from the repository's first where none is, the documents
-  as ``prepare`` reads them, and no pull request, so no ``pr.json``, no ``checks.json`` and no
-  version; a commit that carries the last release tag has nothing to judge and writes
-  ``review=false``. The material says it is a range, so ``review`` gives the judge the range's own
-  instructions, first message and tools, and the texts of a pull request's review stay as
-  they are. ``range-verdict`` writes the check's comment to the job summary and to one comment
-  on the pull request whose merge made the commit, which a second run on the same commit
-  rewrites, found by its hidden line; none without such a pull request and none on a release
-  PR.
+  reachable from it, or where none is what the commit changed against its first parent
+  (.github#138), the documents as ``prepare`` reads them, and no pull request, so no
+  ``pr.json``, no ``checks.json`` and no version; a commit that carries the last release tag
+  has nothing to judge and writes ``review=false``. The material says it is a range, so
+  ``review`` gives the judge the range's own instructions, first message and tools, and the
+  texts of a pull request's review stay as they are. ``range-verdict`` writes the check's
+  comment to the job summary and to one comment on the pull request whose merge made the
+  commit, which a second run on the same commit rewrites, found by its hidden line; none
+  without such a pull request and none on a release PR.
 - ``dry-run`` runs ``prepare`` in a temporary (or given) directory and then ``review``, and
   prints the summary line and the findings, for a terminal. A pull request labeled
   ``release`` or titled as a release is judged on its release's range, as in the workflow.
@@ -371,7 +371,8 @@ judge; you run no command and no check, and you change nothing: no edits, no com
 comments. Your only output is the verdict.
 
 The first message names a commit and the range you judge: the commits since the last release
-tag reachable from that commit, or every commit up to it where no release tag is reachable.
+tag reachable from that commit, or, where no release tag is reachable, what that commit changed
+against its first parent, which for a merge is the merged pull request's whole change.
 You judge no pull request: there is no title, no description, no comment and no check
 result, and their absence is no finding. The range comes before its release: the release's
 own changes, the version's bump, the changelog's section of the version and the tag, come
@@ -429,12 +430,20 @@ the release that follows it is not in it yet. Its material is under `{review}/`,
 {documents} under `{review}/documents/`. Read what you need with the tools, then call \
 `submit_verdict`."""
 
+# Where no release tag is reachable, the range is the commit's change against its first parent
+# (.github#138), or, for a commit with no parent, its own change.
 UNTAGGED_RANGE_MESSAGE = """\
-Review the range of {repo} up to the commit {commit}: every commit up to it, from the \
-repository's first commit {first}, since no release tag is reachable from it. It is no pull \
-request, and the release that follows it is not in it yet. Its material is under `{review}/`, \
-the {documents} under `{review}/documents/`. Read what you need with the tools, then call \
-`submit_verdict`."""
+Review the range of {repo} up to the commit {commit}: no release tag is reachable from it, so \
+the range is what it changed against its first parent {since}, for a merge the merged pull \
+request's whole change. It is no pull request, and the release that follows it is not in it \
+yet. Its material is under `{review}/`, the {documents} under `{review}/documents/`. Read what \
+you need with the tools, then call `submit_verdict`."""
+
+PARENTLESS_RANGE_MESSAGE = """\
+Review the range of {repo} up to the commit {commit}: no release tag is reachable from it, and \
+it has no parent, so the range is its own change. It is no pull request, and the release that \
+follows it is not in it yet. Its material is under `{review}/`, the {documents} under \
+`{review}/documents/`. Read what you need with the tools, then call `submit_verdict`."""
 
 # What a finding's file is in a range's verdict, where a pull request's says "the pull request".
 RANGE_FILE = "The file, empty when the finding concerns the range as a whole."
@@ -1737,6 +1746,12 @@ def _fresh_review(workspace: Path) -> Path:
     return review
 
 
+def first_parent(workspace: Path, commit: str) -> str | None:
+    """The first parent of ``commit``; None for a commit with no parent."""
+    line = _git(workspace, "rev-list", "--parents", "-n", "1", commit).decode().split()
+    return line[1] if len(line) > 1 else None
+
+
 def prepare_range(
     repo: str,
     commit: str,
@@ -1747,9 +1762,12 @@ def prepare_range(
 ) -> int:
     """Write the material of the range up to ``commit`` to ``workspace/.review``.
 
-    The range is the commits since the last release tag reachable from ``commit``, or, where
-    none is, every commit up to it from the repository's first, whose own changes the diff from
-    the empty tree holds too; the job summary says which. No pull request is read: the material
+    The range is the commits since the last release tag reachable from ``commit``. Where none is,
+    it is what ``commit`` changed against its first parent, which for a merge is the merged pull
+    request's whole change, and a commit with no parent is judged on its own change, the diff
+    from the empty tree (the answer of .github#138); the job summary says which. ``since`` in
+    ``meta.json`` is where the range starts, the tag's commit or the first parent, and None for
+    a commit with no parent. No pull request is read: the material
     holds no ``pr.json``, no ``checks.json`` and no version, and ``meta.json`` says it is a
     range (step 3.1 of .github 0.5.0). The documents are read as ``prepare`` reads them, pinned
     by the requirements of ``commit``. A commit that carries the last release tag holds no commit
@@ -1761,10 +1779,11 @@ def prepare_range(
     """
     review = _fresh_review(workspace)
     tag = last_release_tag(workspace, commit)
-    since = first = None
-    if tag is not None:
+    if tag is None:
+        since = first_parent(workspace, commit)
+    else:
         since = _git(workspace, "rev-parse", f"{tag}^{{commit}}").decode().strip()
-    if since == commit:
+    if tag is not None and since == commit:
         _notice(
             f"conventions: the commit {commit} carries the last release tag {printable(tag)}; no "
             "commit came after it, so the range holds nothing to judge",
@@ -1772,23 +1791,19 @@ def prepare_range(
         )
         _output("review", "false")
         return 0
-    if tag is None:
-        first = _git(workspace, "rev-list", "--reverse", "--max-parents=0", commit).split()[0]
-        first = first.decode()
+    untagged = "conventions: no release tag is reachable from the commit; the review judges what"
+    if since is None:
         empty = _git(workspace, "hash-object", "-t", "tree", os.devnull).decode().strip()
         diff, log = (empty, commit), (commit,)
-        _notice(
-            "conventions: no release tag is reachable from the commit; the range starts at the "
-            f"repository's first commit, {first}, and holds every commit up to {commit}",
-            summary,
-        )
+        _notice(f"{untagged} {commit} changed, since it has no parent", summary)
     else:
         diff, log = (f"{since}...{commit}",), (f"{since}..{commit}",)
-        _notice(
-            f"conventions: the review judges the range from {printable(tag)} to the commit "
-            f"{commit}",
-            summary,
-        )
+        if tag is None:
+            line = f"{untagged} {commit} changed against its first parent {since}"
+        else:
+            line = f"conventions: the review judges the range from {printable(tag)} to the commit"
+            line += f" {commit}"
+        _notice(line, summary)
     _git_to_file(workspace, review / "diff.patch", "diff", "--no-ext-diff", "--no-textconv", *diff)
     _git_to_file(
         workspace, review / "log.txt", "log", "--no-decorate", f"--format={LOG_FORMAT}", *log
@@ -1800,7 +1815,6 @@ def prepare_range(
         "main": main,
         "since": since,
         "tag": tag,
-        "first": first,
     }
     (review / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     for name in sorted(p.name for p in review.iterdir()):
@@ -2499,10 +2513,9 @@ class Material:
     # None where the checkout did not give that tree: every file named is then not compared.
     head_files: frozenset[str] | None = frozenset()
     # A range of commits, no pull request (step 3.1 of .github 0.5.0): ``head`` is its commit,
-    # ``pr`` 0 and ``base`` empty, ``since`` the release tag's commit, or empty with ``first``,
-    # the repository's first commit, where no release tag is reachable.
+    # ``pr`` 0 and ``base`` empty, ``since`` the release tag's commit, or where no release tag is
+    # reachable the commit's first parent (.github#138), and empty for a commit with no parent.
     is_range: bool = False
-    first: str | None = None
 
 
 def _label(path: Path, workspace: Path) -> str:
@@ -2587,14 +2600,14 @@ def _meta_kind(review: Path) -> object:
 def load_range_material(workspace: Path, review: Path) -> Material:
     """The material of a range from ``meta.json`` and ``documents.json`` (``prepare_range``).
 
-    The commit, and either the release tag with its commit or the repository's first commit;
-    PrepareError where ``meta.json`` names no range of that form.
+    The commit and where its range starts: the release tag with its commit, or without a tag the
+    commit's first parent, or nothing for a commit with no parent; PrepareError where
+    ``meta.json`` names no range of that form.
     """
     label = _label(review, workspace)
     try:
         meta = json.loads((review / "meta.json").read_text(encoding="utf-8"))
-        repo, commit, tag = meta["repo"], meta["commit"], meta["tag"]
-        since, first = meta["since"], meta["first"]
+        repo, commit, tag, since = meta["repo"], meta["commit"], meta["tag"], meta["since"]
         main = str(meta.get("main") or "main")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise PrepareError(f"{label}/meta.json is missing or unreadable") from exc
@@ -2602,9 +2615,8 @@ def load_range_material(workspace: Path, review: Path) -> Material:
         raise PrepareError(f"{label}/meta.json names no repository")
     if not (isinstance(commit, str) and SHA.fullmatch(commit)):
         raise PrepareError(f"{label}/meta.json names no commit")
-    tagged = isinstance(tag, str) and isinstance(since, str) and bool(SHA.fullmatch(since))
-    untagged = tag is None and since is None and isinstance(first, str) and SHA.fullmatch(first)
-    if not ((tagged and first is None) or untagged):
+    starts = since is None or (isinstance(since, str) and SHA.fullmatch(since) is not None)
+    if not (starts and (tag is None or (isinstance(tag, str) and since is not None))):
         raise PrepareError(f"{label}/meta.json names no range")
     return Material(
         workspace,
@@ -2618,7 +2630,6 @@ def load_range_material(workspace: Path, review: Path) -> Material:
         tag=tag,
         main=main,
         is_range=True,
-        first=first,
     )
 
 
@@ -2713,13 +2724,14 @@ def range_message(material: Material) -> dict[str, object]:
     It names no pull request and no version, and says that the release is not in it yet.
     """
     count = len(material.documents)
-    template = UNTAGGED_RANGE_MESSAGE if material.tag is None else RANGE_MESSAGE
+    template = RANGE_MESSAGE
+    if material.tag is None:
+        template = UNTAGGED_RANGE_MESSAGE if material.since else PARENTLESS_RANGE_MESSAGE
     text = template.format(
         repo=material.repo,
         commit=material.head,
         tag=material.tag,
         since=material.since,
-        first=material.first,
         review=material.review_label,
         documents=f"{count} document{'s' if count != 1 else ''}",
     )
@@ -2949,7 +2961,6 @@ def review(
             "commit": material.head,
             "since": material.since or None,
             "tag": material.tag,
-            "first": material.first,
         }
         outcome.pr = None
     outcome.documents = [label for label, _, _ in material.documents]
@@ -3509,8 +3520,16 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
             what = (
                 f"the commits from `{_plain(judged['tag'])}` to this commit, before their release"
             )
+        elif judged.get("since"):
+            what = (
+                "what this commit changed against its first parent, since no release tag is "
+                "reachable from it"
+            )
         else:
-            what = "every commit up to this commit, since no release tag is reachable from it"
+            what = (
+                "what this commit changed, since no release tag is reachable from it and it has "
+                "no parent"
+            )
     elif judged.get("release") and judged.get("tag"):
         what = f"the release's range from `{_plain(judged['tag'])}` to the head"
     elif judged.get("release"):

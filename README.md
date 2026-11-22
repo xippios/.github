@@ -360,9 +360,13 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     judges no pull request: its material holds no description and no checks and names no
     release version, and the judge is told so, and that the release's own changes, the
     version's bump, the changelog's section and the tag, come with the release pull request, so
-    their absence is no finding. Where no release tag is reachable from the commit, the range
-    holds every commit from the repository's first commit, and the job summary says so. A
-    commit that carries the last release tag holds no commit after it: the job passes with its
+    their absence is no finding. Where no release tag is reachable from the commit, the run
+    judges what the commit of the event changed against its first parent, which for a merge is
+    the merged pull request's whole change, as the review of a release pull request without a
+    tag judges the pull request's own diff (https://github.com/xippios/.github/issues/138). So
+    before a repository's first release, a step that merged before the merge a run judges is
+    judged by no run until the first tag exists. A commit with no parent is judged on its own
+    change, and the job summary says which. A commit that carries the last release tag holds no commit after it: the job passes with its
     notice, makes no model call and posts no comment. A README that links no documents passes
     with its notice and makes no model call, as for a pull request. Each run judges the whole
     range as a first run, whatever comment stands on the pull request.
@@ -699,7 +703,8 @@ unset K
 
 `--commit <sha>` in place of `--pr <n>`, a full commit SHA, clones the repository at that
 commit and judges its range as the job `range` does: from the last release tag reachable from
-it, or from the repository's first commit, with no pull request, no description and no checks.
+it, or, where none is, what the commit changed against its first parent, with no pull request,
+no description and no checks.
 It prints the summary line and the findings, posts nothing and takes no `--earlier`. No workflow
 can call a changed job `range` before its merge, so this is how a change of it is seen first:
 
