@@ -67,8 +67,18 @@ def finding(
     blocking=False,
     text="A finding.",
     document="sdk-core: docs/conventions.md#tests",
+    quote=None,
 ):
-    return {"document": document, "file": file, "line": line, "blocking": blocking, "text": text}
+    """A finding as the judge gives it; with ``quote``, the sentence it quotes (step 6 of .github
+    0.5.0), which a blocking finding needs."""
+    item = {"document": document, "file": file, "line": line, "blocking": blocking, "text": text}
+    if quote is not None:
+        item["quote"] = quote
+    return item
+
+
+# The rule each document of the prepared workspace states, which a blocking finding quotes.
+RULE = "Every change comes with its test."
 
 
 # The documents of the prepared workspace, as prepare writes them: the README's items on main.
@@ -162,7 +172,7 @@ def workspace(tmp_path: Path) -> Path:
     (review / "meta.json").write_text(json.dumps(meta))
     listed = []
     for label, source, name in DOCUMENTS:
-        (review / "documents" / name).write_text(f"# {label}\n")
+        (review / "documents" / name).write_text(f"# {label}\n\n{RULE}\n")
         listed.append({"label": label, "source": source, "file": f"documents/{name}"})
     (review / "documents.json").write_text(json.dumps(listed))
     source = ws / "src" / "pkg"
@@ -274,7 +284,7 @@ def test_two_tool_calls_then_the_verdict(
 
 @pytest.mark.parametrize(
     ("value", "reason"),
-    [("ready", None), ("not ready", None), (None, "API error: RateLimitError: rate limited")],
+    [("ready", None), ("not ready", None), (None, "API error: RateLimitError (request req_1)")],
 )
 def test_the_summary_line_carries_no_cost_figure(value, reason) -> None:
     """The line leaves the estimate out for every caller, whatever its visibility, and keeps
@@ -328,7 +338,7 @@ def test_the_request_caches_the_prefix_and_forces_nothing(
     assert labels == [
         f"The document `{label}`, read from {source}:" for label, source, _ in DOCUMENTS
     ]
-    assert system[1]["text"].endswith("# sdk-usda-psd: docs/conventions.md\n")
+    assert system[1]["text"].endswith(f"# sdk-usda-psd: docs/conventions.md\n\n{RULE}\n")
     assert request["model"] == "claude-opus-5-5"
     assert request["max_tokens"] == 64000
     assert request["output_config"] == {"effort": "xhigh"}
@@ -425,8 +435,9 @@ def test_end_turn_without_a_verdict_is_reprompted_once(
     text = {"type": "text", "text": "Done reading."}
     client = api(message([text], "end_turn"), message([verdict("not ready")]))
     code, result = run_review(workspace, tmp_path)
-    assert code == 1
-    assert result["verdict"] == "not ready"
+    # No finding blocks, so the verdict is ready (finding 2 of the review of #148).
+    assert code == 0
+    assert result["verdict"] == "ready"
     last = client.messages.requests[1]["messages"]
     assert last[-1] == {"role": "user", "content": "Call submit_verdict now."}
 
@@ -556,17 +567,17 @@ def test_a_finding_without_its_document_is_answered_as_an_error(
     answer = client.messages.requests[1]["messages"][-1]["content"][0]
     assert answer["is_error"] is True
     assert (
-        "each finding must have exactly document, file, line, blocking and text"
+        "each finding must have document, file, line, blocking, text and quote, and no other key"
         in (answer["content"])
     )
     schema = next(tool for tool in fr.TOOLS if tool["name"] == "submit_verdict")["input_schema"]
     item = schema["properties"]["findings"]["items"]
-    assert list(item["properties"]) == ["document", "file", "line", "blocking", "text"]
-    assert item["required"] == ["document", "file", "line", "blocking", "text"]
+    assert list(item["properties"]) == ["document", "file", "line", "blocking", "text", "quote"]
+    assert item["required"] == ["document", "file", "line", "blocking", "text", "quote"]
 
 
 def test_a_blocking_finding_makes_it_not_ready(workspace: Path, tmp_path: Path, api) -> None:
-    api(message([verdict("ready", [finding(blocking=True)])]))
+    api(message([verdict("ready", [finding(blocking=True, quote=RULE)])]))
     code, result = run_review(workspace, tmp_path)
     assert code == 1
     assert result["verdict"] == "not ready"
@@ -629,47 +640,59 @@ CREDIT = (
 def test_an_api_error_is_no_verdict_with_its_class(
     workspace: Path, tmp_path: Path, api, capsys, error, name
 ) -> None:
+    """The line names the class and, where the error carries one, the request's id, and no
+    text of the upstream's message (.github#121)."""
     api(error)
     code, result = run_review(workspace, tmp_path)
     out = capsys.readouterr().out
     assert code == 2
     assert result["verdict"] is None
-    assert out.startswith(f"conventions: no verdict (API error: {name}: ")
+    suffix = " (request req_test1)" if isinstance(error, anthropic.APIStatusError) else ""
+    assert result["reason"] == f"API error: {name}{suffix}"
+    assert out.startswith(f"conventions: no verdict (API error: {name}{suffix}) ")
     assert "turns=0 tool_calls=0 input=0 " in out
-    assert len(result["reason"]) <= len(f"API error: {name}: ") + fr.ERROR_CHARS + 30
+    assert fr._error_message(error) not in out
 
 
-def test_the_credit_message_reaches_the_summary_readable(
-    workspace: Path, tmp_path: Path, api, capsys
+def test_the_credit_message_reaches_neither_the_log_nor_the_summary(
+    workspace: Path, tmp_path: Path, api, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
+    """The upstream's message is its text and not the check's: the line names the class and the
+    request's id alone (.github#121)."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     api(status_error(anthropic.BadRequestError, 400, CREDIT))
     run_review(workspace, tmp_path)
-    out = capsys.readouterr().out
-    assert f"(API error: BadRequestError: {CREDIT} (request req_test1)) turns=0" in out
+    captured = capsys.readouterr()
+    assert "(API error: BadRequestError (request req_test1)) turns=0" in captured.out
+    assert "(API error: BadRequestError (request req_test1)) turns=0" in summary.read_text()
+    for text in (captured.out, captured.err, summary.read_text()):
+        assert "credit balance" not in text
+        assert "Plans & Billing" not in text
 
 
 @pytest.mark.parametrize("body", ["upstream connect error", {"detail": "no error key"}, None])
-def test_an_error_body_without_a_message_uses_the_sdks(
+def test_an_error_body_without_a_message_names_the_class_alone(
     workspace: Path, tmp_path: Path, api, body
 ) -> None:
     response = httpx2.Response(503, request=REQUEST, headers={"request-id": "req_test1"})
     api(anthropic.InternalServerError("upstream connect error", response=response, body=body))
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert result["reason"] == (
-        "API error: InternalServerError: upstream connect error (request req_test1)"
-    )
+    assert result["reason"] == "API error: InternalServerError (request req_test1)"
 
 
-def test_an_api_error_message_is_redacted_and_cut(workspace: Path, tmp_path: Path, api, capsys):
+def test_an_api_error_message_never_reaches_the_line(
+    workspace: Path, tmp_path: Path, api, capsys
+) -> None:
     api(status_error(anthropic.BadRequestError, 400, f"bad key {FAKE_KEY} " + "x" * 500))
     code, result = run_review(workspace, tmp_path)
     out = capsys.readouterr().out
     assert code == 2
+    assert result["reason"] == "API error: BadRequestError (request req_test1)"
     assert FAKE_KEY not in out
-    assert "[redacted]" in out
-    message = result["reason"].removeprefix("API error: BadRequestError: ")
-    assert len(message.split(" (request ")[0]) == fr.ERROR_CHARS
+    assert "bad key" not in out
+    assert "x" * 10 not in out
 
 
 @pytest.mark.parametrize(
@@ -688,8 +711,11 @@ def test_an_error_while_the_stream_is_read_is_no_verdict(
     api(MidStream(error))
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert result["reason"].startswith(f"API error: {name}: ")
-    assert capsys.readouterr().out.startswith(f"conventions: no verdict (API error: {name}: ")
+    suffix = " (request req_test1)" if isinstance(error, anthropic.APIStatusError) else ""
+    assert result["reason"] == f"API error: {name}{suffix}"
+    assert capsys.readouterr().out.startswith(
+        f"conventions: no verdict (API error: {name}{suffix})"
+    )
 
 
 def test_an_error_after_some_turns_keeps_their_usage(workspace: Path, tmp_path: Path, api) -> None:
@@ -715,7 +741,8 @@ def test_a_key_in_a_finding_is_redacted(
     )
     api(message([verdict("not ready", [leaky])]))
     code, result = run_review(workspace, tmp_path)
-    assert code == 1
+    # The finding does not block, so the verdict is ready (finding 2 of the review of #148).
+    assert code == 0
     written = (tmp_path / "verdict.json").read_text()
     assert FAKE_KEY not in written
     assert FAKE_TOKEN not in written
@@ -871,7 +898,9 @@ def test_an_api_error_that_refuses_no_key_tries_no_other(
     code, result = run_review(workspace, tmp_path)
     assert code == 2
     assert made == [KEYS[0]]
-    assert result["reason"].startswith(f"API error: {error_name(error)}: ")
+    assert result["reason"].startswith(f"API error: {error_name(error)}")
+    # The class, and the request's id where the error carries one: no message after a colon.
+    assert ": " not in result["reason"].removeprefix("API error: ")
     assert result["summary"].endswith(" key=1/2")
     assert "refused" not in capsys.readouterr().err
 
@@ -914,9 +943,7 @@ def test_one_key_refused_ends_as_before_on_key_1_of_1(
     api(REFUSED)
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert result["reason"] == (
-        "API error: AuthenticationError: invalid x-api-key (request req_test1)"
-    )
+    assert result["reason"] == "API error: AuthenticationError (request req_test1)"
     assert result["summary"].endswith(" key=1/1")
     assert "refused" not in capsys.readouterr().err
 
@@ -987,9 +1014,7 @@ def test_every_key_of_the_secret_is_redacted_whatever_its_form(
     captured = capsys.readouterr()
     assert code == 2
     assert made == list(KEYS[:2])
-    assert result["reason"] == (
-        "API error: InternalServerError: echo [redacted] and [redacted] (request req_test1)"
-    )
+    assert result["reason"] == "API error: InternalServerError (request req_test1)"
     written = (tmp_path / "verdict.json").read_text()
     for key in KEYS:
         assert key not in captured.out + captured.err + written + summary.read_text()
@@ -1321,6 +1346,8 @@ HEAD_CHANGES = {
     "docs/new.md": "# planted by the pull request\n",
 }
 DOCUMENT = "# conventions of sdk-core, main\n"
+# The sentence of sdk-core's document that a blocking finding of a prepared run quotes.
+CORE_RULE = "# conventions of sdk-core, main"
 LABELS = [
     "sdk-usda-psd: docs/conventions.md",
     "sdk-core: docs/conventions.md",
@@ -2549,7 +2576,7 @@ def test_dry_run_prepares_and_reviews(
 
     monkeypatch.setattr(fr, "clone_pull_request", clone)
     # The head's src/pkg/mod.py has one line (.github#85).
-    leaky = finding(line=1, text=f"Key {FAKE_KEY} here.", blocking=True)
+    leaky = finding(line=1, text=f"Key {FAKE_KEY} here.", blocking=True, quote=CORE_RULE)
     client = api(
         message([call("toolu_1", "read_file", {"path": ".review/diff.patch"})]),
         message([verdict("not ready", [leaky, finding(file="", line=None, document="")])]),
@@ -2558,11 +2585,13 @@ def test_dry_run_prepares_and_reviews(
     code = fr.main(["dry-run", "--repo", REPO, "--pr", "7", "--out", str(out_file)])
     assert code == 1
     out = capsys.readouterr().out.splitlines()
-    assert out[-3].startswith("conventions: verdict=not ready findings=2 blocking=1 turns=2 ")
+    assert out[-4].startswith("conventions: verdict=not ready findings=2 blocking=1 turns=2 ")
     assert (
-        out[-2]
+        out[-3]
         == "src/pkg/mod.py:1 [blocking] sdk-core: docs/conventions.md#tests: Key [redacted] here."
     )
+    # The sentence it quotes, under it, as the comment shows it (step 6 of .github 0.5.0).
+    assert out[-2] == f"   > {CORE_RULE}"
     assert out[-1] == "the pull request [non-blocking] A finding."
     answer = client.messages.requests[1]["messages"][-1]["content"][0]["content"]
     assert "+VALUE = 2" in answer
@@ -3008,7 +3037,9 @@ def test_each_finding_of_the_run_before_gets_what_became_of_it(
     workspace: Path, tmp_path: Path, api
 ) -> None:
     with_earlier(workspace, BEFORE)
-    new = finding(file="src/pkg/mod.py", line=1, blocking=True, text="A stray value, still.")
+    new = finding(
+        file="src/pkg/mod.py", line=1, blocking=True, text="A stray value, still.", quote=RULE
+    )
     stands = "The value is still there."
     answers = [state(3, "fixed"), state(1, "open", 1, stands), state(2, "decided", reason=REASON)]
     api(message([judged("not ready", [new], answers)]))
@@ -3202,10 +3233,12 @@ def test_a_finding_names_a_line_only_where_its_file_has_it_at_the_head(
     ]
     api(message([verdict("not ready", findings)]))
     code, result = run_review(workspace, tmp_path)
-    assert code == 1
+    # None of the seven blocks: the verdict is ready, though the judge said not ready, by the
+    # one rule of finding 2 of the review of #148.
+    assert code == 0
     assert [f["line"] for f in result["findings"]] == [2, None, None, None, None, None, None]
     assert [f["file"] for f in result["findings"]] == [f["file"] for f in findings]
-    assert result["summary"].startswith("conventions: verdict=not ready findings=7 blocking=0 ")
+    assert result["summary"].startswith("conventions: verdict=ready findings=7 blocking=0 ")
 
 
 @pytest.mark.parametrize(
@@ -3270,7 +3303,13 @@ def test_dry_run_judges_as_the_run_after_an_earlier_dry_runs_verdict_file(
             }
         )
     )
-    new = finding(file="src/pkg/mod.py", line=1, blocking=True, text="A stray value, still.")
+    new = finding(
+        file="src/pkg/mod.py",
+        line=1,
+        blocking=True,
+        text="A stray value, still.",
+        quote=CORE_RULE,
+    )
     client = api(message([judged("not ready", [new], [state(1, "open", 1)])]))
     out_file = tmp_path / "second.json"
     argv = ["dry-run", "--repo", REPO, "--pr", "7", "--out", str(out_file), "--earlier", str(first)]
@@ -3290,19 +3329,20 @@ def test_dry_run_judges_as_the_run_after_an_earlier_dry_runs_verdict_file(
         {**before, "state": "open", "finding": 1, "reason": ""}
     ]
     out = capsys.readouterr().out.splitlines()
-    assert out[-4:] == [
-        out[-4],
+    assert out[-5:] == [
+        out[-5],
         (
             "src/pkg/mod.py:1 [blocking] sdk-core: docs/conventions.md#tests: A stray value, "
             "still. Its file changed since the head judged before."
         ),
+        f"   > {CORE_RULE}",
         f"The run before judged {earlier} and gave 1 finding:",
         (
             "1. src/pkg/mod.py:1 [blocking] sdk-core: docs/conventions.md#tests: A stray value. "
             "Open: finding 1 above."
         ),
     ]
-    assert out[-4].startswith("conventions: verdict=not ready findings=1 blocking=1 ")
+    assert out[-5].startswith("conventions: verdict=not ready findings=1 blocking=1 ")
 
 
 @pytest.mark.parametrize("content", ['{"verdict": "ready", "findings": []}', "not json", None])
@@ -3363,7 +3403,9 @@ def test_an_earlier_finding_that_blocked_and_still_blocks_needs_no_reason(
     workspace: Path, tmp_path: Path, api
 ) -> None:
     with_earlier(workspace, BEFORE, decisions=0)
-    carrier = finding(file="docs/conventions.md", line=None, blocking=True, text="Still.")
+    carrier = finding(
+        file="docs/conventions.md", line=None, blocking=True, text="Still.", quote=RULE
+    )
     answers = [state(1, "fixed"), state(2, "open", 1), state(3, "fixed")]
     api(message([judged("not ready", [carrier], answers)]))
     code, result = run_review(workspace, tmp_path)

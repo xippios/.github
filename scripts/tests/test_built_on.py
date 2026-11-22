@@ -1049,7 +1049,9 @@ def test_two_runs_before_state_each_finding_once(
         {"number": 2, "state": "fixed", "finding": None, "reason": ""},
         {"number": 3, "state": "open", "finding": 1, "reason": ""},
     ]
-    verdict = submitted("not ready", [BLOCKS])
+    # The finding that carries it blocks with the sentence it quotes (step 6 of .github 0.5.0).
+    carried = {**BLOCKS, "document": LABELS[0], "quote": FIRST_FILES["docs/conventions.md"]}
+    verdict = submitted("not ready", [carried])
     verdict["input"]["earlier"] = states
     api(message([verdict]))
     out = tmp_path / "verdict.json"

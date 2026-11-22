@@ -14,7 +14,8 @@ release PR. A missing key fails before the caller's commit is checked out. `dry-
 judges a commit's range as the job does and posts nothing.
 
 The review of a pull request keeps its texts word for word: the instructions, the first messages
-and the tools, held by their digests as they stood before this step.
+and the tools, held by their digests as they stood before this step, but for the instructions
+and the tools, which step 6 of .github 0.5.0 changed on purpose.
 
 The tests run the script's commands on real temporary git repositories, with a fake Messages
 client and a stub `gh` (stub_gh.py); no test needs a key or the network."""
@@ -52,25 +53,30 @@ FIRST_FILES = {
 PYPROJECT = '[project]\nname = "sdk-usda-psd"\nversion = "0.2.0"\n'
 LABELS = ["sdk-usda-psd: docs/conventions.md", "sdk-core: docs/conventions.md"]
 # The texts of the review of a pull request as they stood before this step, by their digests:
-# the instructions, the first message of each kind, the reprompt and the tools.
+# the instructions, the first message of each kind, the reprompt and the tools. Step 6 of
+# .github 0.5.0 changed two on purpose: the instructions, whose item 2 says that a finding
+# blocks only with its quote and wherever a decision placed it and whose item 6 asks for the
+# quote, and the tools, whose finding has the field `quote`.
 PULL_REQUEST_TEXTS = {
-    "INSTRUCTIONS": "2e3864fa57eaad07d2d3c41bc0ab73277faf023af93225da158ee27faf9c6c0f",
+    "INSTRUCTIONS": "680b07f3caa858fc999b97a0ec6cffc0d59d4eb8a25f5c32e711648954149974",
     "FIRST_MESSAGE": "638c83c4687ee9d60c56f5c9895836dd0b4cd3141ee8f18194b01caaa5d193ca",
     "RELEASE_MESSAGE": "c8891680e57375b08676e8d571571bb18e6c8eb2d3651bf286246a241e996d27",
     "UNTAGGED_MESSAGE": "445e8c847bc8b9a748f643fd36aa5b306330b8b2a7332fa5640ef754e757c6ed",
     "EARLIER_MESSAGE": "51b77f5d6ead3b26ef6162497646f1ca2782d2a062c51a8c9e4b831e5f8a3c8b",
     "REPROMPT": "3a3b08dc41ef68f0d74ef1c73c44812b8f9bd8279a2023b213f09c215074cfcd",
 }
-TOOLS_DIGEST = "a2fac6c1130a61e6883ad18df931a032b248619f59996cba2c04ad1db03cf7c2"
+TOOLS_DIGEST = "edf3964bd4504110f4586b33f1d88ab9d997345d7b430fa31d3972f63b9537b1"
 # The texts of the review of a range as step 3.1 left them, which a range that builds on no judged
-# commit keeps word for word (step 4 of .github 0.5.0), and the tools of a range.
+# commit keeps word for word (step 4 of .github 0.5.0), and the tools of a range. Step 6 of
+# .github 0.5.0 changed the instructions, whose item 2 says that a finding blocks only with its
+# quote and whose item 5 asks for it, and the tools, whose finding has the field `quote`.
 RANGE_TEXTS = {
-    "RANGE_INSTRUCTIONS": "f1bd23217743c0693d53a8a0562ef3a837da258bff693cf360b35058242b7657",
+    "RANGE_INSTRUCTIONS": "be0ab5b987cc590ac4cce0e1cf3c0dfa3e0e171d83b0d9a813d338f094439e18",
     "RANGE_MESSAGE": "6d4ed76c302fbd06cf9ce9a7f481bf88e30ac5996fdf5d295c5d3c9a66192b4a",
     "UNTAGGED_RANGE_MESSAGE": "c2d9cf7dd74463aadd9c0806d2cf09330adbc2d903db9f7cf82bb3cc2fc99d72",
     "PARENTLESS_RANGE_MESSAGE": "fa4b2a35f41381f4357352eb3ccfe0db7340b068cd87ce4fff50ec138d24297a",
 }
-RANGE_TOOLS_DIGEST = "2422606b64549bcfe02b5b499d1b8e5e4e00338790cc9020e96499a4d86d8849"
+RANGE_TOOLS_DIGEST = "816e86bb34f9d596211448ea0646059ca8fb213d6d70395e0a782e2db0ce1117"
 # The texts of a run that builds on a judged commit (step 4 of .github 0.5.0), as fix round 1 of
 # #142 settled them: BUILT_INSTRUCTIONS, BUILT_EARLIER_MESSAGE and RANGE_BUILT_INSTRUCTIONS changed.
 BUILT_TEXTS = {
@@ -171,16 +177,18 @@ def range_prepare(ws: Path, sha: str) -> int:
 
 
 def test_the_review_of_a_pull_request_keeps_its_texts_word_for_word() -> None:
-    """The instructions, the first messages, the reprompt and the tools of the review of a pull
-    request are what they were before the range got its own (.github#129)."""
+    """The first messages and the reprompt of the review of a pull request are what they were
+    before the range got its own (.github#129); the instructions and the tools are held as step 6
+    of .github 0.5.0 changed them."""
     for name, expected in PULL_REQUEST_TEXTS.items():
         assert digest(getattr(fr, name)) == expected, name
     assert digest(json.dumps(fr.TOOLS, sort_keys=True)) == TOOLS_DIGEST
 
 
 def test_a_run_that_builds_on_nothing_keeps_its_texts_and_the_new_ones_are_held() -> None:
-    """The texts of a range as step 3.1 left them stay word for word, and the texts of a run that
-    builds on a judged commit are held as step 4 of .github 0.5.0 settled them."""
+    """The texts of a range as step 3.1 left them stay word for word, but for the instructions and
+    the tools, held as step 6 of .github 0.5.0 changed them, and the texts of a run that builds on
+    a judged commit are held as step 4 of .github 0.5.0 settled them."""
     for name, expected in {**RANGE_TEXTS, **BUILT_TEXTS}.items():
         assert digest(getattr(fr, name)) == expected, name
     assert digest(json.dumps(fr.RANGE_TOOLS, sort_keys=True)) == RANGE_TOOLS_DIGEST
@@ -581,8 +589,15 @@ def submitted(value: str = "ready", findings: tuple = ()) -> dict:
     }
 
 
-def finding(file="src/pkg/new.py", line=1, blocking=False, text="A finding.", document=""):
-    return {"document": document, "file": file, "line": line, "blocking": blocking, "text": text}
+def finding(
+    file="src/pkg/new.py", line=1, blocking=False, text="A finding.", document="", quote=None
+):
+    """A finding as the judge gives it; with ``quote``, the sentence it quotes (step 6 of
+    .github 0.5.0), which a blocking finding needs."""
+    item = {"document": document, "file": file, "line": line, "blocking": blocking, "text": text}
+    if quote is not None:
+        item["quote"] = quote
+    return item
 
 
 class FakeStream:
@@ -700,7 +715,7 @@ def result(
     return {
         "verdict": verdict,
         "findings": findings,
-        "reason": None if verdict else "API error: APIConnectionError: Connection error.",
+        "reason": None if verdict else "API error: APIConnectionError",
         "range": {"kind": "range", "commit": COMMIT, "since": since, "tag": tag},
         "documents": LABELS,
         "repo": REPO,
@@ -997,7 +1012,14 @@ def test_a_dry_run_of_a_commit_judges_its_range_and_posts_nothing(
     tmp_path: Path, gh: Path, api, cloned, capsys
 ) -> None:
     first, third, clones = cloned
-    client = api(message([submitted("not ready", [finding(file="", line=None, blocking=True)])]))
+    blocks = finding(
+        file="",
+        line=None,
+        blocking=True,
+        document=LABELS[1],
+        quote="# conventions of sdk-core",
+    )
+    client = api(message([submitted("not ready", [blocks])]))
     out = tmp_path / "dry.json"
     code = fr.main(["dry-run", "--repo", REPO, "--commit", third, "--out", str(out)])
     assert code == 1
@@ -1007,8 +1029,9 @@ def test_a_dry_run_of_a_commit_judges_its_range_and_posts_nothing(
     assert f"release tag v0.1.0 ({first})" in first_message
     assert client.messages.requests[0]["tools"] == fr.RANGE_TOOLS
     lines = capsys.readouterr().out.splitlines()
-    assert lines[-2].startswith("conventions: verdict=not ready findings=1 blocking=1 ")
-    assert lines[-1] == "the range [blocking] A finding."
+    assert lines[-3].startswith("conventions: verdict=not ready findings=1 blocking=1 ")
+    assert lines[-2] == f"the range [blocking] {LABELS[1]}: A finding."
+    assert lines[-1] == "   > # conventions of sdk-core"
     assert json.loads(out.read_text())["range"]["kind"] == "range"
     # It reads the checks of the line (step 4 of .github 0.5.0) and the other repository's
     # document, and asks nothing of a pull request.

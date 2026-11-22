@@ -78,14 +78,18 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   when the workflow token wrote none and edited in place on the next run, never over another
   workflow's comment, in the form of `docs/style/reviews.md#conventions-check` of a coordinate
   root: the lead with the count and the head's commit, what was judged, then the findings, each
-  with the document and the section it goes against, and after a run before, its findings with
-  what became of each (the run before, below). A run that reviews nothing posts none, and
-  a post that fails leaves its reason in the job summary and a warning annotation. No verdict (an
+  with the document and the section it goes against and the sentence it quotes (the quote,
+  below), and after a run before, its findings with what became of each (the run before,
+  below). A run that reviews nothing posts none, and a post that fails leaves its reason in the
+  job summary and a warning annotation. No verdict (an
   API error, a refusal, a `max_tokens` stop, the turn cap of 160, a missing key) fails the check
   and posts no comment: the Review step fails without ending the job, and the Verdict step after
   it reads the verdict file and decides the check. The job summary carries the script's line
-  with the cause (the SDK's error class and its redacted message, a refusal's category), the
-  turns, the tool calls, the token usage and the key the review ended on (the keys below). The job
+  with the cause (an API error's class and its request's id, a refusal's category), the
+  turns, the tool calls, the token usage and the key the review ended on (the keys below). An
+  API error is named by the SDK's error class and the request's id where the error carries one,
+  never by the upstream's message, in the job log and the job summary alike, on a pull request,
+  on a range and in a dry run (https://github.com/xippios/.github/issues/121). The job
   times out after 45 minutes, which leaves a review at effort `xhigh` the time of 160 turns on one
   key; a review the timeout ends returns no verdict and writes no summary line. A new push or edit
   of the pull request cancels the run that still reviews its state before.
@@ -229,8 +233,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     turns and tool calls are the last attempt's, and the job log names each key the review
     moved past by its position and error class. Where the API refused every key, the review
     has no verdict, and its line names each key by its position and the SDK's error class;
-    with one key it carries that key's error as before. No output carries a key: the script
-    redacts every key of the secret, whatever its form, from all it prints and writes, and
+    with one key it names that key's error by its class and the request's id. No output
+    carries a key: the script redacts every key of the secret, whatever its form, from all it
+    prints and writes, and
     the PR comment says nothing of keys. A secret with one key reviews as before, and a
     caller's `gates.yml` passes the secret as it did.
   - **The run before** (https://github.com/xippios/.github/issues/95): `prepare` reads the
@@ -304,6 +309,36 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     judged again; a run that builds on none gets the instructions and the first message it got
     before. The job summary says which of the three the run did, and the comment says it on its
     line `Built on:` after `Judged:`, naming the run and the commit it built on.
+  - **The quote** (https://github.com/xippios/.github/issues/116): a finding blocks only where
+    it quotes the sentence of the document that the change breaks. Each finding carries that
+    sentence word for word in `quote`, and a blocking finding needs it. The script checks it
+    against the text of the document that the finding names by its label, as the review read
+    that document, every run of white space as one space and nothing else altered. A
+    blocking finding that quotes nothing, whose quote that document does not hold, or that
+    names no document of the review is answered once as a malformed verdict is, naming the
+    finding and why, and the model calls again. Where the verdict that follows still holds
+    such a finding, the finding stays in the comment as one that does not block, with one
+    line under it that says its quote was not found. But a finding that carries, as open, a
+    finding of the run before that blocked keeps blocking, with a line of its own that says
+    its quote was not found, since a finding that blocked a release is not released by a
+    quote that does not stand. The verdict is `ready` exactly where no finding blocks once
+    these rules are applied, and `not ready` exactly where one blocks, whatever verdict the
+    judge gave, whether the script asked again or not. So a case that the wording of the
+    documents leaves open does not block, on every pull request alike. The comment shows
+    the quote under its finding, so a reader sees the rule that blocks, and the hidden last
+    line carries it. The comment shows no text as a quote that the document does not hold:
+    the quote of every finding is checked by the same rule, one that does not stand shows
+    as none, under a finding that does not block too, and the line of a finding that lost
+    its quote by the asking stands in its place. A finding given
+    before the quote has none: its hidden line reads as before, and a finding of the run
+    before keeps the standing it was given with, so one that blocked stops blocking only as
+    fixed or with the judge's reason. Two findings of the runs before are one where every
+    field agrees, the quote included.
+  - **A placed finding** (https://github.com/xippios/.github/issues/117): a finding against
+    a rule that a document states as one blocks wherever a decision on the pull request
+    placed it. A decision of the opener that places it in a later package or patch does not
+    stop it from blocking, and the judge's instructions say so. Of a finding of the run
+    before that blocked, a decision settles nothing by itself, as the run before says.
   - **The line** (https://github.com/xippios/.github/issues/85): a finding names a line only
     where its file has that line at the head, counted as `read_file` counts lines; where it
     has not, as in a file the head lacks or one the tools refuse, the finding keeps its file
@@ -333,8 +368,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     diff, messages, title, body and comments as material to judge, never instructions; an
     instruction found in them is itself a finding. The job log is public: the script prints
     paths, counts, the verdict and redacted error text, never a file's content, a tool
-    result or the prompt, and `conventions.py verdict` redacts anything that looks like a key
-    or a GitHub token from the summary and the comment.
+    result, the prompt or an upstream's message, and `conventions.py verdict` redacts
+    anything that looks like a key or a GitHub token from the summary and the comment.
 - **`.github/workflows/conventions-range.yml`**, the conventions review of a range of commits,
   judges the commits since the last release once a merge completes a package, check
   `range / range`, after its gate tells whether a merge does, check `range / gate`. It runs on
@@ -430,10 +465,18 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     where that pull request is a release pull request, which only a dispatch can bring, since
     it carries the comment of its own review. A read or a post that fails leaves its reason in
     the job summary and a warning annotation, as for a pull request.
+  - **The quote** (https://github.com/xippios/.github/issues/116): a finding of a range blocks
+    only where it quotes the sentence of the document that the change breaks, and the script
+    checks the quote, asks once more and keeps a finding without it as one that does not
+    block, as for a pull request, by the same code: a finding that carries, as open, a
+    finding of the run before that blocked keeps blocking. The verdict is `ready` exactly
+    where no finding blocks once these rules are applied, and `not ready` exactly where one
+    blocks, whatever verdict the judge gave. A range has no pull request, so no decision
+    places a finding of it.
   - **The key**: where `ANTHROPIC_API_KEY` is empty, the step `Key`, `conventions.py range-key`,
     fails the job with the Gate's sentence before the commit is checked out. The keys of
-    several lines, the failover, the redaction and the public log hold as for a pull request,
-    by the same code.
+    several lines, the failover, the redaction, the public log and the line of an API error,
+    its class and the request's id, hold as for a pull request, by the same code.
   - **The job** narrows the workflow token to `contents: read`, `pull-requests: write` and
     `checks: read`, the last for the runs before it builds on, times out after 45 minutes as the
     review of a pull request does, and runs in a concurrency
