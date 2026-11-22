@@ -188,8 +188,8 @@ def test_each_job_passes_declared_secrets_by_name_and_the_required_inputs(name: 
 
 
 def test_the_conventions_trigger_file_passes_the_key_alone_to_each_job() -> None:
-    """The sample is the file as most repositories take it: the read token's line left out
-    reads as none (.github#149)."""
+    """The sample is the file as a repository that reads no private document takes it: the read
+    token's line left out reads as none (.github#149)."""
     for job in trigger_file("conventions.yml")["jobs"].values():
         assert job["secrets"] == {"ANTHROPIC_API_KEY": "${{ secrets.ANTHROPIC_API_KEY }}"}
 
@@ -277,8 +277,12 @@ def test_the_readme_says_that_a_trigger_file_fills_the_read_token_from_its_own_s
     sample = WIRING.split("### The trigger files", 1)[1].split("```yaml\n", 1)[0]
     sample = " ".join(sample.split())
     assert (
-        "Both jobs pass `ANTHROPIC_API_KEY` by name and leave the read token's line out" in sample
+        "Both jobs pass `ANTHROPIC_API_KEY` by name and leave the read token's line out, as a "
+        "repository that reads no private document takes the file" in sample
     )
+    # Every trigger file `conventions.yml` of today passes a read token, so the README counts
+    # none (finding 2 of the review of .github#150).
+    assert "most repositories" not in " ".join(README.split())
     assert "`DOCUMENTS_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}`" in sample
     assert "secrets.DOCUMENTS_READ_TOKEN" not in README
 

@@ -1007,6 +1007,13 @@ def test_the_readme_lays_out_the_read_token_and_its_caller() -> None:
     section = section.split("**`.github/workflows/site-tests.yml`**", 1)[0]
     flat = " ".join(section.split())
     assert "`DOCUMENTS_READ_TOKEN`" in flat
+    # The name is the workflow's own secret, which a caller fills from its own (finding 1 of the
+    # review of .github#150).
+    assert "an optional secret of the caller" not in flat
+    assert (
+        "`DOCUMENTS_READ_TOKEN`, an optional secret of the workflow's own call, which a trigger "
+        "file fills from the secret of its workspace" in flat
+    )
     assert "fails the check on a private one" not in flat
     assert "only where the calling repository is private" in flat
     assert "`github.event.repository.private`" in flat
