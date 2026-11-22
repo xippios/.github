@@ -369,7 +369,10 @@ def test_a_finding_that_does_not_block_needs_no_quote(
     code, result = review(workspace, tmp_path)
     assert code == 0
     assert len(client.messages.requests) == 1
-    assert result["findings"] == [finding(blocking=False, quote=quote)]
+    # A quote that its document does not hold is marked, so the comment shows it as none (fix
+    # round 2 of #148); the finding's standing does not change.
+    mark = {"quote_stands": False} if quote == "A sentence of no document." else {}
+    assert result["findings"] == [{**finding(blocking=False, quote=quote), **mark}]
 
 
 def test_a_quote_of_a_range_is_checked_as_a_pull_requests(
@@ -973,3 +976,80 @@ def test_a_range_keeps_both_rules(range_workspace: Path, tmp_path: Path, api, ca
         assert code == 0
         assert result["verdict"] == "ready"
     assert result["range"]["kind"] == "range"
+
+
+# --- fix round 2 of #148: a quote shows only where its document holds it -----------------
+
+HELD_NOT = "Every change must be reviewed twice."
+
+
+def no_blocking(quote: str, document: str = f"{OWN}#tests", where: str = "pull request") -> dict:
+    """A finding that does not block, with its file as each kind of review names one."""
+    if where == "range":
+        return finding(blocking=False, quote=quote, document=document, file="", line=None)
+    return finding(blocking=False, quote=quote, document=document)
+
+
+@pytest.mark.parametrize("where", ["pull request", "range"])
+@pytest.mark.parametrize(
+    "case",
+    [
+        "a quote that stands",
+        "a quote its document does not hold",
+        "no document of the review",
+        "taken back after the asking",
+    ],
+)
+def test_a_quote_shows_only_where_its_document_holds_it(
+    workspace: Path,
+    range_workspace: Path,
+    tmp_path: Path,
+    api,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    where: str,
+    case: str,
+) -> None:
+    """The quote of every finding is checked by the rule of a blocking one, and the comment and
+    the dry run show it only where its document holds it, under a finding that does not block
+    too. Where it does not stand under such a finding, no quote shows and no line is added, since
+    its standing does not change; the hidden last line carries the quote as before (finding 1 of
+    the re-review of #148)."""
+    ws = workspace if where == "pull request" else range_workspace
+    if case == "a quote that stands":
+        script = [[no_blocking(RULE, where=where)]]
+    elif case == "a quote its document does not hold":
+        script = [[no_blocking(HELD_NOT, where=where)]]
+    elif case == "no document of the review":
+        script = [[no_blocking(RULE, document="docs/conventions.md#tests", where=where)]]
+    else:
+        refused = {**no_blocking(HELD_NOT, where=where), "blocking": True}
+        script = [[refused], [no_blocking(HELD_NOT, where=where)]]
+    api(*(message([submit("not ready", findings)]) for findings in script))
+    monkeypatch.setattr(fr, "_prepare", lambda args, summary: (ws, 2))
+    monkeypatch.setattr(fr, "_prepare_range", lambda args, summary: (ws, 2))
+    out = tmp_path / "dry.json"
+    target = ["--pr", "7"] if where == "pull request" else ["--commit", HEAD]
+    assert fr.main(["dry-run", "--repo", REPO, *target, "--out", str(out)]) == 0
+    printed = capsys.readouterr().out.splitlines()
+    result = json.loads(out.read_text())
+    given = script[-1][0]
+    stands = case == "a quote that stands"
+    assert result["verdict"] == "ready"
+    assert result["findings"][0]["blocking"] is False
+    assert result["findings"][0]["quote"] == given["quote"]
+    assert "unquoted" not in result["findings"][0]
+    assert ("quote_stands" not in result["findings"][0]) is stands
+    lines = comment_lines(result)
+    item = next(n for n, line in enumerate(lines) if line.startswith("1. "))
+    if stands:
+        assert lines[item + 1] == f"   > {RULE}"
+        assert printed[-1] == f"   > {fr.printable(RULE)}"
+    else:
+        assert lines[item + 1] == ""
+        assert not any(line.lstrip().startswith(">") for line in lines)
+        assert "[non-blocking]" in printed[-1]
+        assert not any(line.lstrip().startswith(">") for line in printed)
+    # The hidden last line carries the quote as it is written today.
+    run = json.loads(lines[-1].removeprefix("<!-- conventions-run: ").removesuffix(" -->"))
+    assert run["findings"][0]["quote"] == given["quote"]
