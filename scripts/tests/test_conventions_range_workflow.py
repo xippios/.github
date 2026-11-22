@@ -543,6 +543,29 @@ def prepare_env(tmp_path: Path) -> tuple[dict[str, str], str]:
     return env, sha
 
 
+def test_a_commit_that_carries_the_last_release_tag_skips_the_review_and_the_verdict(
+    tmp_path: Path,
+) -> None:
+    """Prepare writes `review=false` with its sentence, so Review and Verdict do not run: no
+    model call, no comment, and the job passes (finding 2 of the review of .github#137)."""
+    env, sha = prepare_env(tmp_path)
+    git(Path(env["GITHUB_WORKSPACE"]), "tag", "v0.2.0", sha)
+    done = run_step("Prepare the range material", env, env["RUNNER_TEMP"])
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "output.txt").read_text() == "review=false\n"
+    notice = (
+        f"conventions: the commit {sha} carries the last release tag v0.2.0; no commit came "
+        "after it, so the range holds nothing to judge"
+    )
+    assert (tmp_path / "summary.md").read_text().splitlines() == [notice]
+    context = {"steps": {"prepare": {"outputs": {"review": "false"}}}}
+    review = re.search(r"^        if: (.*)$", range_step("Review"), re.M).group(1)
+    assert not holds(review, context)
+    verdict = re.search(r"^        if: (.*)$", range_step("Verdict"), re.M).group(1)
+    assert verdict == "${{ !cancelled() && " + review + " }}"
+    assert stub_gh.calls(tmp_path / "bin") == []
+
+
 def test_prepare_writes_the_range_material_by_the_steps_own_script(tmp_path: Path) -> None:
     env, sha = prepare_env(tmp_path)
     done = run_step("Prepare the range material", env, env["RUNNER_TEMP"])
@@ -673,9 +696,17 @@ def test_the_readme_says_what_the_range_judges_and_what_its_check_means() -> Non
         "the version's bump, the changelog's section and the tag",
         "from the repository's first commit, and the job summary says so",
         "links no documents passes with its notice and makes no model call",
+        # A commit that carries the last release tag (finding 2 of the review of .github#137).
+        (
+            "A commit that carries the last release tag holds no commit after it: the job passes "
+            "with its notice, makes no model call and posts no comment"
+        ),
         "as a first run",
         "**The check** `range / range`",
         "passed: the range was judged `ready`",
+        # The two cases in which a passed check stands for no judged range (finding 3).
+        "a README that links no documents, or a commit that carries the last release tag",
+        "So a check that passed stands for a judged range but in those two cases",
         "failed:",
         "skipped:",
         "**The verdict** (`conventions.py range-verdict`)",

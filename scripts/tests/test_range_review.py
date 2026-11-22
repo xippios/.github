@@ -255,6 +255,46 @@ def test_a_readme_without_documents_ends_green_with_its_notice(
     assert stub_gh.calls(gh) == []
 
 
+def empty_notice(sha: str, tag: str) -> str:
+    """The sentence of a commit that carries the last release tag (finding 2 of the review of
+    .github#137)."""
+    return (
+        f"conventions: the commit {sha} carries the last release tag {tag}; no commit came after "
+        "it, so the range holds nothing to judge"
+    )
+
+
+def test_a_commit_that_carries_the_last_release_tag_ends_green_with_nothing_to_judge(
+    tmp_path: Path, gh: Path, actions: dict[str, Path], capsys
+) -> None:
+    """The range is empty: no material for the judge, `review=false`, so the job makes no model
+    call, posts no comment and passes with its sentence in the job summary."""
+    ws, _first, _second, third = make_range(tmp_path)
+    git(ws, "tag", "v0.2.0", third)
+    assert range_prepare(ws, third) == 0
+    notice = empty_notice(third, "v0.2.0")
+    assert actions["summary"].read_text().splitlines() == [notice]
+    assert notice in capsys.readouterr().out
+    assert actions["output"].read_text() == "review=false\n"
+    assert stub_gh.calls(gh) == []
+    assert sorted(p.name for p in (ws / ".review").iterdir()) == []
+
+
+def test_a_commit_one_after_the_release_tag_is_still_judged(
+    tmp_path: Path, gh: Path, actions: dict[str, Path]
+) -> None:
+    ws, _first, second, third = make_range(tmp_path)
+    git(ws, "tag", "v0.2.0", second)
+    assert range_prepare(ws, third) == 0
+    meta = json.loads((ws / ".review" / "meta.json").read_text())
+    assert (meta["since"], meta["tag"]) == (second, "v0.2.0")
+    log = (ws / ".review" / "log.txt").read_text()
+    assert log.startswith(f"commit {third}\n")
+    assert second not in log
+    assert "+NEW = 1" in (ws / ".review" / "diff.patch").read_text()
+    assert actions["output"].read_text() == "review=true\n"
+
+
 @pytest.mark.parametrize("sha", ["c" * 7, "main", ""])
 def test_range_prepare_takes_a_full_commit_alone(
     tmp_path: Path, gh: Path, actions: dict[str, Path], sha: str, capsys
@@ -824,6 +864,24 @@ def test_a_dry_run_of_a_commit_whose_readme_links_no_documents_ends_green(
     monkeypatch.setattr(fr, "clone_commit", clone)
     api()
     assert fr.main(["dry-run", "--repo", REPO, "--commit", third]) == 0
+
+
+def test_a_dry_run_of_a_commit_that_carries_the_last_release_tag_makes_no_model_call(
+    tmp_path: Path, gh: Path, monkeypatch: pytest.MonkeyPatch, capsys
+) -> None:
+    source, _first, _second, third = make_range(tmp_path)
+    git(source, "tag", "v0.2.0", third)
+
+    def clone(repo: str, sha: str, workdir: Path) -> None:
+        git(tmp_path, "clone", "-q", str(source), str(workdir))
+        git(workdir, "checkout", "-q", "--detach", sha)
+
+    monkeypatch.setattr(fr, "clone_commit", clone)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-for-tests")
+    monkeypatch.setattr(fr, "make_client", lambda *key: pytest.fail("no model call"))
+    assert fr.main(["dry-run", "--repo", REPO, "--commit", third]) == 0
+    assert empty_notice(third, "v0.2.0") in capsys.readouterr().out
+    assert stub_gh.calls(gh) == []
 
 
 @pytest.mark.parametrize(
