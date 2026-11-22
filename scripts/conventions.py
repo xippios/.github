@@ -45,7 +45,15 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   head, its findings and the opener's decisions, and ``changed.json``, the files whose text
   differs between that head and this one by their two trees, not by ancestry, or that the
   head judged before could not be read; without such a comment, the review judges as a first
-  run.
+  run. Before the range is written, the run looks for the judged commit it builds on
+  (``find_built``, step 4 of .github 0.5.0): the newest commit on the first-parent line of the
+  head, after where its range starts and the head left out, that a run judged, a commit whose
+  check ``range / range`` passed or failed and whose run's comment names it on the pull request
+  whose merge made it, or the head the pull request's own run before judged. A run built on a
+  ready one judges the commits after that commit alone; one built on a run that was not ready
+  judges them too, and ``earlier.json`` holds that run's findings for their states. Where no
+  commit on the line was judged, or the reads of the runs before fail or outlast their limits,
+  the run builds on none and judges the whole range, and the job summary says which.
 - ``review`` runs the review on the Messages API with ``claude-opus-5-5``, at effort ``xhigh``
   (.github#93), within the turn cap of 160, each turn streamed with ``max_tokens`` 64,000
   (thinking counts against it): the instructions and the documents in the system
@@ -79,7 +87,9 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   reachable from it, or where none is what the commit changed against its first parent
   (.github#138), the documents as ``prepare`` reads them, and no pull request, so no
   ``pr.json``, no ``checks.json`` and no version; a commit that carries the last release tag
-  has nothing to judge and writes ``review=false``. The material says it is a range, so
+  has nothing to judge and writes ``review=false``. It builds on the judged commit of its line
+  as ``prepare`` does, a range having no run before of its own. The material says it is a
+  range, so
   ``review`` gives the judge the range's own instructions, first message and tools, and the
   texts of a pull request's review stay as they are. ``range-verdict`` writes the check's
   comment to the job summary and to one comment on the pull request whose merge made the
@@ -91,7 +101,8 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   ``--earlier`` takes the verdict file of an earlier dry run, which names the head it judged,
   as the run before, and the dry run prints the states and the marks as the comment does.
   ``--commit`` in place of ``--pr`` clones the repository at that commit and judges its range
-  as the job ``range`` does, with ``range-prepare``.
+  as the job ``range`` does, with ``range-prepare``. Both read the runs before with gh's
+  login and print which judged commit they build on, or that they build on none.
 
 The tools read inside the workspace only: a path is resolved (``realpath``) and must lie
 under the workspace's real path; ``.git`` at any depth, ``.envrc``, ``.env`` and ``.env.*``,
@@ -266,6 +277,48 @@ MARKS = {
     "changed": "Its file changed since the head judged before.",
     "not compared": "Its file was not compared: the head judged before could not be read.",
 }
+# What a run builds on (step 4 of .github 0.5.0): the check of a run on a range, and who judged
+# the commit, a run on a range or the pull request's own run before.
+RANGE_CHECK = "range / range"
+BY_RANGE = "range"
+BY_PULL = "pull request"
+OWN_RUN = "this pull request's run before"
+# The URL of a check run as GitHub gives it, the one form the first message and the comment name.
+RUN_URL = re.compile(
+    r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/"
+    r"(?:actions/runs/[0-9]{1,20}(?:/job/[0-9]{1,20})?|runs/[0-9]{1,20})"
+)
+# The leads of the check's comment on a ready verdict; `**Blocked.**` opens one not ready.
+READY_LEADS = ("**Approved.**", "**Findings.**")
+BLOCKED_LEAD = "**Blocked.**"
+# The reads of the runs before: at most LINE_COMMITS commits of the line, a call of gh at most
+# LINE_CALL_SECONDS and all of them together LINE_SECONDS. A test shortens either by its
+# variable, and no value lengthens them.
+LINE_COMMITS = 100
+LINE_CALL_SECONDS = 30
+LINE_SECONDS = 120
+LINE_CALL_LIMIT_ENV = "CONVENTIONS_LINE_CALL_SECONDS"
+LINE_LIMIT_ENV = "CONVENTIONS_LINE_SECONDS"
+NONE_JUDGED = (
+    "conventions: no run before judged a commit of the range; the review builds on none and "
+    "judges the whole range"
+)
+UNREAD = (
+    "conventions: the runs before could not be read ({why}); the review builds on none and "
+    "judges the whole range"
+)
+BUILT_NOTICE = (
+    "conventions: the review builds on {run}, which judged the commit {commit} {verdict}; it "
+    "judges the commits from {commit} to {end}"
+)
+# The comment's line after `Judged:`, which says which of the three the run did.
+BUILT_LINE = (
+    "Built on: {run}, which judged {commit} {verdict}. Nothing up to that commit was judged again."
+)
+NONE_LINE = (
+    "Built on: nothing. No run before judged a commit of this range, so the whole range was judged."
+)
+UNREAD_LINE = "Built on: nothing. The runs before could not be read, so the whole range was judged."
 
 INSTRUCTIONS = """\
 You are the `conventions` check of a repository of the xippios organization. You read and
@@ -360,6 +413,31 @@ EARLIER_MESSAGE = """\
 numbered from 1, with the opener's decisions on the pull request. Give each of them its state \
 in `earlier`."""
 
+# A review that builds on an earlier run (step 4 of .github 0.5.0): its instructions are those
+# above with this paragraph after them, and its first message is its own, so the texts of a run
+# that builds on nothing stay word for word as they are.
+BUILT_INSTRUCTIONS = """
+This review builds on an earlier run, which the first message names with the commit it judged.
+Everything up to that commit was judged by that run and is not judged again: the range is the
+commits after that commit to the head, and `{review}/diff.patch` and `{review}/log.txt` hold
+them alone. Read the files around a change where you need their context, but a finding concerns
+what the range changed, or a document it leaves stale. The description and the checks are
+judged as on every run. Where the first message says that the earlier run was not ready,
+`{review}/earlier.json` holds its findings, and you give each of them its state as item 5 says.
+"""
+
+BUILT_MESSAGE = """\
+Review {subject} {repo}#{pr}: base {base}, head {head}.{version} This review builds on {run}, \
+which judged the commit {built} {verdict}: everything up to that commit was judged and is not \
+judged again, so the range is the commits after it, from {built} to the head. Its material is \
+under `{review}/`, the {documents} under `{review}/documents/`. Read what you need with the \
+tools, then call `submit_verdict`."""
+
+# Appended where the run it builds on was not ready and gave findings.
+BUILT_EARLIER_MESSAGE = """\
+ That run gave {count}: `{review}/earlier.json` holds them, numbered from 1, with the opener's \
+decisions on the pull request. Give each of them its state in `earlier`."""
+
 # The run on a range (step 3.1 of .github 0.5.0): its material says so in `meta.json`, and the
 # judge gets instructions, a first message and tools of their own, so those of a pull request
 # stay word for word as they are.
@@ -444,6 +522,35 @@ Review the range of {repo} up to the commit {commit}: no release tag is reachabl
 it has no parent, so the range is its own change. It is no pull request, and the release that \
 follows it is not in it yet. Its material is under `{review}/`, the {documents} under \
 `{review}/documents/`. Read what you need with the tools, then call `submit_verdict`."""
+
+# A range that builds on an earlier run (step 4 of .github 0.5.0), as a pull request's does.
+RANGE_BUILT_INSTRUCTIONS = """
+This review builds on an earlier run, which the first message names with the commit it judged.
+Everything up to that commit was judged by that run and is not judged again: the range is the
+commits after that commit to the commit of this review, and `{review}/diff.patch` and
+`{review}/log.txt` hold them alone. Read the files around a change where you need their context,
+but a finding concerns what the range changed, or a document it leaves stale. Where the first
+message says that the earlier run was not ready, `{review}/earlier.json` holds its findings,
+numbered from 1, each with `file_changed`, whether its file changed since that commit. Give each
+of them one state in `earlier`: `fixed` where the commit no longer holds what it names, `open`
+where it still stands; no finding is `decided`, since a range has no pull request and no opener.
+An open one is judged again: it is also a finding of this review, and `finding` names that
+finding's number, counted from 1. `reason` is empty, but where a finding that blocked is carried
+by one that does not block: `reason` then says in one sentence why it no longer blocks. Call
+`submit_verdict` with `earlier` then.
+"""
+
+RANGE_BUILT_MESSAGE = """\
+Review the range of {repo} up to the commit {commit}: this review builds on {run}, which judged \
+the commit {built} {verdict}, so everything up to that commit was judged and is not judged \
+again, and the range is the commits after it, from {built} to the commit. It is no pull \
+request, and the release that follows it is not in it yet. Its material is under `{review}/`, \
+the {documents} under `{review}/documents/`. Read what you need with the tools, then call \
+`submit_verdict`."""
+
+RANGE_BUILT_EARLIER_MESSAGE = """\
+ That run gave {count}: `{review}/earlier.json` holds them, numbered from 1. Give each of them \
+its state in `earlier`."""
 
 # What a finding's file is in a range's verdict, where a pull request's says "the pull request".
 RANGE_FILE = "The file, empty when the finding concerns the range as a whole."
@@ -1383,12 +1490,14 @@ def write_documents(
 class EarlierRun:
     """The run before, as the check's comment carries it: the head it judged, its findings.
 
-    ``decisions`` counts the opener's decisions on the pull request, which ``decided`` needs.
+    ``decisions`` counts the opener's decisions on the pull request, which ``decided`` needs;
+    ``ready`` says whether that run was ready, None where its comment does not tell.
     """
 
     head: str
     findings: list[dict[str, object]]
     decisions: int = 0
+    ready: bool | None = None
 
 
 def finding_problem(finding: object) -> str | None:
@@ -1454,7 +1563,24 @@ def run_state(body: str) -> EarlierRun | None:
         return None
     if any(finding_problem(finding) for finding in findings):
         return None
-    return EarlierRun(head, [dict(finding) for finding in findings])
+    return EarlierRun(
+        head, [dict(finding) for finding in findings], ready=run_ready(body, findings)
+    )
+
+
+def run_ready(body: str, findings: Sequence[Mapping[str, object]]) -> bool | None:
+    """Whether the run of a comment of the check was ready, by its lead and its findings.
+
+    A lead ``**Blocked.**`` or a finding that blocks is a run that was not ready, a lead
+    ``**Approved.**`` or ``**Findings.**`` one that was; None where the lead says neither.
+    """
+    lines = body.splitlines()
+    lead = lines[1] if len(lines) > 1 else ""
+    if lead.startswith(BLOCKED_LEAD) or any(
+        finding.get("blocking") is True for finding in findings
+    ):
+        return False
+    return True if lead.startswith(READY_LEADS) else None
 
 
 def opener_decisions(data: object) -> list[dict[str, str]]:
@@ -1560,7 +1686,8 @@ def run_from_verdict(path: Path, repo: str, pr: int) -> EarlierRun:
         raise PrepareError(
             f"--earlier names the verdict file of another pull request than {repo}#{pr}"
         )
-    return EarlierRun(head, findings)
+    ready = data["verdict"] == "ready" and not any(finding["blocking"] for finding in findings)
+    return EarlierRun(head, findings, ready=ready)
 
 
 def write_earlier(
@@ -1661,19 +1788,32 @@ def prepare(
     since, tag = base, None
     if release:
         tag = last_release_tag(workspace, base)
-        if tag is None:
-            _notice(
-                "conventions: a release PR without a release tag reachable from the base; the "
-                "review judges the PR's own diff",
-                summary,
-            )
-        else:
+        if tag is not None:
             since = _git(workspace, "rev-parse", f"{tag}^{{commit}}").decode().strip()
-            _notice(
-                f"conventions: a release PR: the review judges the range from {printable(tag)} "
-                "to the head",
-                summary,
-            )
+    pr_json = _checked(["gh", "pr", "view", str(pr), "--repo", repo, "--json", PR_FIELDS])
+    # The judged commit to build on (step 4 of .github 0.5.0), only where there is anything to
+    # judge: after the start of the range as today, the tag's commit or the merge base.
+    links = _links_documents(workspace, main, repo)
+    built, unread = None, None
+    if links:
+        own = earlier if earlier is not None else _own_run(pr_json)
+        start = since if tag is not None else _merge_base(workspace, base, head)
+        built, unread = find_built(repo, workspace, start, head, own)
+    if built is not None:
+        _notice(built_notice(built, "the head"), summary)
+        since = built.commit
+    elif release and tag is None:
+        _notice(
+            "conventions: a release PR without a release tag reachable from the base; the "
+            "review judges the PR's own diff",
+            summary,
+        )
+    elif release:
+        _notice(
+            f"conventions: a release PR: the review judges the range from {printable(str(tag))} "
+            "to the head",
+            summary,
+        )
     _git_to_file(
         workspace,
         review / "diff.patch",
@@ -1690,7 +1830,6 @@ def prepare(
         f"--format={LOG_FORMAT}",
         f"{since}..{head}",
     )
-    pr_json = _checked(["gh", "pr", "view", str(pr), "--repo", repo, "--json", PR_FIELDS])
     (review / "pr.json").write_bytes(pr_json)
     version = None
     if release:
@@ -1721,18 +1860,53 @@ def prepare(
         "since": since,
         "tag": tag,
         "version": version,
+        "built": built.meta() if built is not None else None,
+        "unread": unread,
     }
     (review / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     for name in sorted(p.name for p in review.iterdir()):
         size = (review / name).stat().st_size
         print(f"conventions: {REVIEW_DIR}/{name} {size} bytes", flush=True)
     count = write_documents(workspace, main, repo, review, summary, head)
-    if count:
+    if count and built is None:
+        _notice(UNREAD.format(why=unread) if unread else NONE_JUDGED, summary)
         # Read before the Verdict step rewrites the check's comment (.github#95); nothing
         # to judge needs no run before. ``earlier`` is a dry run's --earlier.
         write_earlier(workspace, repo, review, pr_json, head, summary, earlier)
+    elif count and built is not None and not built.ready:
+        # The run built on was not ready: its findings get their states (step 4).
+        given = EarlierRun(built.commit, built.findings)
+        write_earlier(workspace, repo, review, pr_json, head, summary, given)
     _output("review", "true" if count else "false")
     return count
+
+
+def _links_documents(workspace: Path, main: str, repo: str) -> bool:
+    """Whether the README on ``main`` links any document, read before any of them is."""
+    if _object_type(workspace, main, "README.md") != "blob":
+        return False
+    readme = _git(workspace, "cat-file", "blob", f"{main}:README.md")
+    try:
+        return bool(linked_documents(readme.decode("utf-8", errors="replace"), repo))
+    except PrepareError:
+        return False
+
+
+def _own_run(pr_json: bytes) -> EarlierRun | None:
+    """The run that the check's last comment on the pull request carries; None without one."""
+    try:
+        data = json.loads(pr_json)
+    except ValueError:
+        return None
+    body = check_comment(data)
+    return run_state(body) if body is not None else None
+
+
+def _merge_base(workspace: Path, base: str, head: str) -> str | None:
+    """The merge base of ``base`` and ``head``, where a pull request's own range starts."""
+    proc = _run(["git", "-C", str(workspace), "merge-base", base, head])
+    line = proc.stdout.decode("utf-8", errors="replace").strip()
+    return line if proc.returncode == 0 and SHA.fullmatch(line) else None
 
 
 def _fresh_review(workspace: Path) -> Path:
@@ -1772,10 +1946,13 @@ def prepare_range(
     range (step 3.1 of .github 0.5.0). The documents are read as ``prepare`` reads them, pinned
     by the requirements of ``commit``. A commit that carries the last release tag holds no commit
     after it: ``.review`` stays empty, the job summary says so, and the step output ``review`` is
-    ``false``, so no model call is made (finding 2 of the review of .github#137). PrepareError
-    where the material cannot be written; returns how many documents there are to judge by,
-    none for an empty range, and the step output ``review`` says whether there is anything to
-    judge.
+    ``false``, so no model call is made (finding 2 of the review of .github#137). Where a run
+    judged a commit of the line after where the range starts (``find_built``, step 4 of .github
+    0.5.0), the range is the commits after that commit, ``since`` is that commit, and where that
+    run was not ready ``earlier.json`` holds its findings, with no decision of an opener.
+    PrepareError where the material cannot be written; returns how many documents there are to
+    judge by, none for an empty range, and the step output ``review`` says whether there is
+    anything to judge.
     """
     review = _fresh_review(workspace)
     tag = last_release_tag(workspace, commit)
@@ -1791,8 +1968,15 @@ def prepare_range(
         )
         _output("review", "false")
         return 0
+    # The judged commit to build on (step 4 of .github 0.5.0), after where the range starts.
+    links = _links_documents(workspace, main, repo)
+    built, unread = find_built(repo, workspace, since, commit, None) if links else (None, None)
     untagged = "conventions: no release tag is reachable from the commit; the review judges what"
-    if since is None:
+    if built is not None:
+        since = built.commit
+        diff, log = (f"{since}...{commit}",), (f"{since}..{commit}",)
+        _notice(built_notice(built, f"the commit {commit}"), summary)
+    elif since is None:
         empty = _git(workspace, "hash-object", "-t", "tree", os.devnull).decode().strip()
         diff, log = (empty, commit), (commit,)
         _notice(f"{untagged} {commit} changed, since it has no parent", summary)
@@ -1815,12 +1999,21 @@ def prepare_range(
         "main": main,
         "since": since,
         "tag": tag,
+        "built": built.meta() if built is not None else None,
+        "unread": unread,
     }
     (review / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     for name in sorted(p.name for p in review.iterdir()):
         size = (review / name).stat().st_size
         print(f"conventions: {REVIEW_DIR}/{name} {size} bytes", flush=True)
     count = write_documents(workspace, main, repo, review, summary, commit)
+    if count and built is None:
+        _notice(UNREAD.format(why=unread) if unread else NONE_JUDGED, summary)
+    elif count and built is not None and not built.ready:
+        # The run built on was not ready: its findings get their states, with no decision of an
+        # opener, since a range has no pull request.
+        given = EarlierRun(built.commit, built.findings)
+        write_earlier(workspace, repo, review, b"{}", commit, summary, given)
     _output("review", "true" if count else "false")
     return count
 
@@ -2516,6 +2709,11 @@ class Material:
     # ``pr`` 0 and ``base`` empty, ``since`` the release tag's commit, or where no release tag is
     # reachable the commit's first parent (.github#138), and empty for a commit with no parent.
     is_range: bool = False
+    # The judged commit the review builds on, as ``Built.meta`` gives it, and ``since`` is then
+    # that commit; None where it builds on none, and ``unread`` says why the runs before could
+    # not be read where they could not (step 4 of .github 0.5.0).
+    built: dict[str, object] | None = None
+    unread: str | None = None
 
 
 def _label(path: Path, workspace: Path) -> str:
@@ -2548,6 +2746,7 @@ def load_material(workspace: Path, review: Path) -> Material:
         raise PrepareError(f"{review_label}/meta.json names no release version")
     documents = _documents(review, review_label)
     earlier, changed, head_files = _load_earlier(review, review_label)
+    built, unread = _built_meta(meta, review_label)
     return Material(
         workspace,
         repo,
@@ -2564,7 +2763,35 @@ def load_material(workspace: Path, review: Path) -> Material:
         earlier=earlier,
         changed=changed,
         head_files=head_files,
+        built=built,
+        unread=unread,
     )
+
+
+def _built_meta(meta: object, label: str) -> tuple[dict[str, object] | None, str | None]:
+    """The judged commit that ``meta.json`` says the review builds on, and why it could not read.
+
+    Both are None where it names neither; PrepareError where it names them in another form.
+    """
+    built = meta.get("built") if isinstance(meta, dict) else None
+    unread = meta.get("unread") if isinstance(meta, dict) else None
+    if unread is not None and not isinstance(unread, str):
+        raise PrepareError(f"{label}/meta.json names no run it builds on")
+    if built is None:
+        return None, unread
+    run = built.get("run") if isinstance(built, dict) else None
+    readable = (
+        isinstance(built, dict)
+        and set(built) == {"commit", "ready", "run", "by"}
+        and isinstance(built["commit"], str)
+        and SHA.fullmatch(built["commit"]) is not None
+        and isinstance(built["ready"], bool)
+        and (run is None or (isinstance(run, str) and RUN_URL.fullmatch(run) is not None))
+        and built["by"] in (BY_RANGE, BY_PULL)
+    )
+    if not readable:
+        raise PrepareError(f"{label}/meta.json names no run it builds on")
+    return dict(built), unread
 
 
 def _documents(review: Path, review_label: str) -> list[tuple[str, str, str]]:
@@ -2618,6 +2845,9 @@ def load_range_material(workspace: Path, review: Path) -> Material:
     starts = since is None or (isinstance(since, str) and SHA.fullmatch(since) is not None)
     if not (starts and (tag is None or (isinstance(tag, str) and since is not None))):
         raise PrepareError(f"{label}/meta.json names no range")
+    documents = _documents(review, label)
+    earlier, changed, head_files = _load_earlier(review, label)
+    built, unread = _built_meta(meta, label)
     return Material(
         workspace,
         repo,
@@ -2625,11 +2855,16 @@ def load_range_material(workspace: Path, review: Path) -> Material:
         "",
         commit,
         label,
-        _documents(review, label),
+        documents,
         since=since or "",
         tag=tag,
         main=main,
+        earlier=earlier,
+        changed=changed,
+        head_files=head_files,
         is_range=True,
+        built=built,
+        unread=unread,
     )
 
 
@@ -2679,6 +2914,9 @@ def system_prompt(material: Material, max_turns: int) -> list[dict[str, object]]
     range's instructions are its own, and name no commit.
     """
     template = RANGE_INSTRUCTIONS if material.is_range else INSTRUCTIONS
+    if material.built is not None:
+        # A review that builds on an earlier run (step 4); one that builds on none is as before.
+        template += RANGE_BUILT_INSTRUCTIONS if material.is_range else BUILT_INSTRUCTIONS
     instructions = template.format(review=material.review_label, max_turns=max_turns)
     blocks: list[dict[str, object]] = [{"type": "text", "text": instructions}]
     for label, source, text in material.documents:
@@ -2694,6 +2932,8 @@ def first_message(material: Material) -> dict[str, object]:
     if material.is_range:
         return range_message(material)
     count = len(material.documents)
+    if material.built is not None:
+        return _built_message(material, BUILT_MESSAGE, BUILT_EARLIER_MESSAGE)
     template = FIRST_MESSAGE
     if material.release:
         template = UNTAGGED_MESSAGE if material.tag is None else RELEASE_MESSAGE
@@ -2723,6 +2963,8 @@ def range_message(material: Material) -> dict[str, object]:
 
     It names no pull request and no version, and says that the release is not in it yet.
     """
+    if material.built is not None:
+        return _built_message(material, RANGE_BUILT_MESSAGE, RANGE_BUILT_EARLIER_MESSAGE)
     count = len(material.documents)
     template = RANGE_MESSAGE
     if material.tag is None:
@@ -2736,6 +2978,56 @@ def range_message(material: Material) -> dict[str, object]:
         documents=f"{count} document{'s' if count != 1 else ''}",
     )
     return {"role": "user", "content": text}
+
+
+def _built_message(material: Material, template: str, earlier: str) -> dict[str, object]:
+    """The request to review what came after the judged commit the review builds on (step 4).
+
+    It names the run and the commit it builds on and says which case it is: that run was ready,
+    or it was not and its findings are to get their states.
+    """
+    built = material.built or {}
+    count = len(material.documents)
+    text = template.format(
+        subject="the release pull request" if material.release else "pull request",
+        repo=material.repo,
+        pr=material.pr,
+        base=material.base,
+        head=material.head,
+        commit=material.head,
+        version=f" It releases version {material.version}." if material.version else "",
+        run=run_named(built),
+        built=built.get("commit"),
+        verdict="ready" if built.get("ready") is True else "not ready",
+        review=material.review_label,
+        documents=f"{count} document{'s' if count != 1 else ''}",
+    )
+    if material.earlier is not None and material.earlier.findings:
+        found = len(material.earlier.findings)
+        text += earlier.format(
+            count=f"{found} finding{'' if found == 1 else 's'}", review=material.review_label
+        )
+    return {"role": "user", "content": text}
+
+
+def run_named(built: Mapping[str, object]) -> str:
+    """The run a review builds on, in its words: its URL, or the pull request's run before."""
+    run = built.get("run")
+    if isinstance(run, str) and RUN_URL.fullmatch(run):
+        return f"the run {run}"
+    if built.get("by") == BY_PULL:
+        return OWN_RUN
+    return f"the run of the check `{RANGE_CHECK}`"
+
+
+def built_notice(built: Built, end: str) -> str:
+    """The job summary's line of a review that builds on ``built``, judging up to ``end``."""
+    return BUILT_NOTICE.format(
+        run=run_named(built.meta()),
+        commit=built.commit,
+        verdict="ready" if built.ready else "not ready",
+        end=end,
+    )
 
 
 def _error_message(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
@@ -2952,7 +3244,14 @@ def review(
     if outcome.verdict is not None:
         sandbox = Sandbox(material.workspace, hidden)
         outcome.findings = [settled(f, material, sandbox) for f in outcome.findings]
-    outcome.range = {"release": material.release, "since": material.since, "tag": material.tag}
+    # What the review built on, for the comment's line after `Judged:` (step 4).
+    built = {"built": material.built, "unread": material.unread is not None}
+    outcome.range = {
+        "release": material.release,
+        "since": material.since,
+        "tag": material.tag,
+        **built,
+    }
     outcome.repo, outcome.pr, outcome.head = material.repo, material.pr, material.head
     if material.is_range:
         # The Verdict step tells a range's comment by its kind; no pull request was judged.
@@ -2961,6 +3260,7 @@ def review(
             "commit": material.head,
             "since": material.since or None,
             "tag": material.tag,
+            **built,
         }
         outcome.pr = None
     outcome.documents = [label for label, _, _ in material.documents]
@@ -3433,6 +3733,160 @@ def range_gate(summary: str | None) -> int:
     return 0
 
 
+# --- what a run builds on (step 4 of .github 0.5.0) --------------------------------------
+
+
+@dataclass
+class Built:
+    """The judged commit a run builds on, and what the run that judged it gave.
+
+    ``run`` is the URL of the run of its check ``range / range``, or None for the pull request's
+    own run before, whose comment the new run's replaces; ``by`` says which of the two judged it.
+    """
+
+    commit: str
+    ready: bool
+    run: str | None
+    by: str
+    findings: list[dict[str, object]]
+
+    def meta(self) -> dict[str, object]:
+        """The commit, whether its run was ready, the run and who judged it, for ``meta.json``."""
+        return {"commit": self.commit, "ready": self.ready, "run": self.run, "by": self.by}
+
+
+class LineBudget(Budget):
+    """The time of the reads of the runs before, as the gate's time is counted."""
+
+    def ran_out(self) -> str:
+        """The class of the error where the reads' time ran out."""
+        return f"the reads of the runs before ran out of their {self.total:g} seconds"
+
+
+def line_commits(workspace: Path, start: str | None, head: str) -> list[str] | None:
+    """The commits on the first-parent line of ``head`` after ``start``, newest first.
+
+    The head is left out: a run before on the head itself judged no commit before it. The line
+    ends at the first commit that does not descend from ``start``, such as the merge of a branch
+    that carries the tag, since a run on a commit before it judged the release before. Empty
+    without a start; None where git cannot tell.
+    """
+    if start is None:
+        return []
+    line = _run(["git", "-C", str(workspace), "rev-list", "--first-parent", f"{start}..{head}"])
+    below = _run(["git", "-C", str(workspace), "rev-list", "--ancestry-path", f"{start}..{head}"])
+    if line.returncode or below.returncode:
+        return None
+    descendants = set(below.stdout.decode("utf-8", errors="replace").split())
+    commits: list[str] = []
+    for commit in line.stdout.decode("utf-8", errors="replace").split():
+        if commit not in descendants:
+            break
+        if commit != head:
+            commits.append(commit)
+    return commits
+
+
+def range_check(repo: str, commit: str, budget: Budget) -> dict[str, object] | None:
+    """The newest check ``range / range`` on ``commit``; None where the commit carries none."""
+    what = f"the checks of the commit {commit[:7]}"
+    name = quote(RANGE_CHECK, safe="")
+    endpoint = f"repos/{repo}/commits/{commit}/check-runs?check_name={name}&per_page={PAGE_SIZE}"
+    data = _answer(what, ["api", endpoint], graphql=False, budget=budget)
+    runs = data.get("check_runs") if isinstance(data, dict) else None
+    total = data.get("total_count") if isinstance(data, dict) else None
+    if not isinstance(runs, list) or isinstance(total, bool) or not isinstance(total, int):
+        raise _shape(what)
+    if total > len(runs) or not all(isinstance(run, dict) for run in runs):
+        raise _shape(what)
+    named = [run for run in runs if run.get("name") == RANGE_CHECK]
+    try:
+        return max(named, key=lambda run: _number(run.get("id"))) if named else None
+    except ShapeError as exc:
+        raise _shape(what) from exc
+
+
+def judged_comment(repo: str, pr: int, commit: str, budget: Budget) -> str | None:
+    """The last comment of the check on ``pr`` whose hidden line names ``commit``; None without.
+
+    The comment of the pull request's own review names its head, never the merge commit, and so
+    does a run on another commit: neither is taken for it. Every page is read.
+    """
+    what = f"the comments of #{pr}"
+    found = None
+    for page in range(1, MAX_PAGES + 1):
+        endpoint = f"repos/{repo}/issues/{pr}/comments?per_page={PAGE_SIZE}&page={page}"
+        data = _answer(what, ["api", endpoint], graphql=False, budget=budget)
+        if not isinstance(data, list):
+            raise _shape(what)
+        for item in data:
+            user = item.get("user") if isinstance(item, dict) else None
+            login = user.get("login") if isinstance(user, dict) else None
+            body = item.get("body") if isinstance(item, dict) else None
+            if login not in CHECK_AUTHORS or not isinstance(body, str):
+                continue
+            run = run_state(body) if body.startswith(CHECK_MARKERS) else None
+            if run is not None and run.head == commit:
+                found = body
+        if len(data) < PAGE_SIZE:
+            return found
+    raise GateError(f"reading {what} failed: more than {MAX_PAGES} pages")
+
+
+def judged_at(repo: str, commit: str, budget: Budget) -> Built | None:
+    """What the run on ``commit`` gave, where it judged; None where nothing counts as judged.
+
+    A commit counts where its newest check ``range / range`` completed as passed or failed and
+    the comment of that run, whose hidden line names the commit, is found on the pull request
+    whose merge made it, saying the same verdict: a skipped check, a check without its comment
+    and a comment of another verdict count for nothing (.github#139).
+    """
+    check = range_check(repo, commit, budget)
+    completed = check is not None and check.get("status") == "completed"
+    conclusion = check.get("conclusion") if check is not None and completed else None
+    if check is None or conclusion not in ("success", "failure"):
+        return None
+    pull = merged_pull(repo, commit, budget)
+    body = judged_comment(repo, pull.number, commit, budget) if pull is not None else None
+    run = run_state(body) if body is not None else None
+    if run is None or run.ready is None or run.ready != (conclusion == "success"):
+        return None
+    url = check.get("html_url")
+    url = url if isinstance(url, str) and RUN_URL.fullmatch(url) else None
+    return Built(commit, run.ready, url, BY_RANGE, run.findings)
+
+
+def find_built(
+    repo: str, workspace: Path, start: str | None, head: str, own: EarlierRun | None
+) -> tuple[Built | None, str | None]:
+    """The judged commit a run builds on, and why the runs before could not be read.
+
+    The commits of the line (``line_commits``) are read newest first: the head that the pull
+    request's own run before judged, ``own``, where it lies on the line, or a commit that a run
+    judged (``judged_at``); the newer of the two counts. A read that fails or outlasts its time,
+    or a line of more than LINE_COMMITS commits to read, builds on none and gives the reason.
+    """
+    commits = line_commits(workspace, start, head)
+    if commits is None:
+        return None, "git could not read the line of the head"
+    budget = LineBudget(
+        gate_limit(LINE_CALL_LIMIT_ENV, LINE_CALL_SECONDS), gate_limit(LINE_LIMIT_ENV, LINE_SECONDS)
+    )
+    own_head = own.head if own is not None and own.ready is not None else None
+    try:
+        for read, commit in enumerate(commits):
+            if own is not None and commit == own_head:
+                return Built(commit, bool(own.ready), None, BY_PULL, own.findings), None
+            if read == LINE_COMMITS:
+                return None, f"the line holds more than {LINE_COMMITS} commits to read"
+            built = judged_at(repo, commit, budget)
+            if built is not None:
+                return built, None
+    except GateError as exc:
+        return None, str(exc)
+    return None, None
+
+
 def _flat(value: object) -> str:
     """``value`` on one line, each run of whitespace one space."""
     return " ".join(str(value).split())
@@ -3499,7 +3953,9 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
     then the findings of the run before, each with what became of it (``became``), and the
     hidden last line (``run_line``). A blocking finding makes the verdict ``not ready``. A
     range's verdict file (its ``range`` of the kind ``range``) says what range was judged, and
-    a finding without a file concerns the range; ``head`` is then the judged commit.
+    a finding without a file concerns the range; ``head`` is then the judged commit. Where the
+    verdict file says what the run built on (``built``, step 4 of .github 0.5.0), a line after
+    ``Judged:`` names the run and the commit it built on, or says that it built on none and why.
     """
     commit = f"https://github.com/{repo}/commit/{head}"
     findings = [f for f in result.get("findings") or [] if isinstance(f, dict)]
@@ -3536,10 +3992,24 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
         what = "the pull request's own diff, since no release tag is reachable from the base"
     else:
         what = "the pull request's own diff"
+    built_line = None
+    if "built" in judged:
+        # What the run built on (step 4 of .github 0.5.0), from a verdict file that says it.
+        built = judged.get("built")
+        if isinstance(built, dict) and SHA.fullmatch(str(built.get("commit") or "")):
+            at = f"https://github.com/{repo}/commit/{built['commit']}"
+            end = "this commit, before their release" if whole == "the range" else "the head"
+            what = f"the commits from {at} to {end}"
+            verdict_word = "ready" if built.get("ready") is True else "not ready"
+            built_line = BUILT_LINE.format(run=run_named(built), commit=at, verdict=verdict_word)
+        else:
+            built_line = UNREAD_LINE if judged.get("unread") else NONE_LINE
     against = ""
     if documents is not None:
         against = f", against {_counted(len(documents), 'document')} of `README.md` on `main`"
     lines = [CHECK_MARKERS[0], lead, "", f"Judged: {what}{against}."]
+    if built_line is not None:
+        lines += ["", built_line]
     if findings:
         lines.append("")
     for number, finding in enumerate(findings, 1):
