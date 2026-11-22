@@ -76,7 +76,9 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   (``unquoted_findings``, .github#116): the script answers a verdict with a blocking finding
   without one once, as an invalid verdict, and keeps such a finding of the verdict after it
   as one that does not block, but one that carries a finding of the run before that blocked
-  keeps blocking (``carriers``). The verdict is ``ready`` exactly where no finding blocks then
+  keeps blocking (``carriers``). The quote of every finding is checked by that rule
+  (``quote_standing``), and the comment shows one only where it stands (``shown_quote``).
+  The verdict is ``ready`` exactly where no finding blocks then
   (``accept``). An API error is named by its class and the request's id alone (``api_error``,
   .github#121).
 - ``verdict`` reads the verdict file of ``review`` and writes the check's comment to the job
@@ -273,6 +275,9 @@ PATH_CHARACTER = re.compile(r"[A-Za-z0-9_./-]")
 # again, and the comment's line under it, by whether it still blocks: a finding that carries one
 # of the run before that blocked keeps blocking (fix round 1 of #148).
 UNQUOTED = "unquoted"
+# The mark of any other finding whose quote its document does not hold: it shows as none, and
+# nothing else changes (fix round 2 of #148).
+QUOTE_STANDS = "quote_stands"
 UNQUOTED_LINES = {
     (False, "missing"): "It does not block: it quotes no sentence of the document it names.",
     (False, "not found"): "It does not block: its quote was not found in the document it names.",
@@ -2536,15 +2541,28 @@ def unquoted_findings(
     """
     problems: dict[int, str] = {}
     for number, finding in enumerate(findings, 1):
-        if finding.get("blocking") is not True:
-            continue
-        quote = " ".join(str(finding.get(QUOTE) or "").split())
-        named = named_document(finding.get("document"), documents)
-        if not quote:
-            problems[number] = "missing"
-        elif named is None or quote not in " ".join(named[1].split()):
-            problems[number] = "not found"
+        why = quote_standing(finding, documents)
+        if finding.get("blocking") is True and why is not None:
+            problems[number] = why
     return problems
+
+
+def quote_standing(
+    finding: Mapping[str, object], documents: Sequence[tuple[str, str, str]]
+) -> str | None:
+    """Whether the quote of ``finding`` stands: None where it does, else why it does not.
+
+    ``missing`` where it quotes nothing, ``not found`` where the document it names does not
+    hold its quote or it names no document of the review, the two compared with every run of
+    white space as one space and nothing else altered: the one rule for every finding.
+    """
+    quote = " ".join(str(finding.get(QUOTE) or "").split())
+    if not quote:
+        return "missing"
+    named = named_document(finding.get("document"), documents)
+    if named is None or quote not in " ".join(named[1].split()):
+        return "not found"
+    return None
 
 
 def quote_problem(
@@ -2600,6 +2618,17 @@ def carriers(args: Mapping[str, object], earlier: EarlierRun | None) -> frozense
 def unquoted_line(finding: Mapping[str, object]) -> str | None:
     """The comment's line under a finding whose quote does not stand; None for another."""
     return UNQUOTED_LINES.get((finding.get("blocking") is True, str(finding.get(UNQUOTED))))
+
+
+def shown_quote(finding: Mapping[str, object]) -> str:
+    """The quote that the comment and the dry run show under ``finding``, empty for none.
+
+    Only a quote that its document holds shows, under a finding that does not block too
+    (fix round 2 of #148): a quoted line reads as the document's words.
+    """
+    if finding.get(UNQUOTED) is not None or finding.get(QUOTE_STANDS) is False:
+        return ""
+    return str(finding.get(QUOTE) or "")
 
 
 def _sentence(text: object) -> str:
@@ -3476,6 +3505,11 @@ def accept(
         else dict(finding)
         for number, finding in enumerate(findings, 1)
     ]
+    # The quote of every other finding is checked by the same rule; one that does not stand is
+    # marked, shows as none, and changes nothing of its standing (fix round 2 of #148).
+    for finding in outcome.findings:
+        if UNQUOTED not in finding and quote_standing(finding, material.documents) == "not found":
+            finding[QUOTE_STANDS] = False
     blocked = any(finding["blocking"] for finding in outcome.findings)
     outcome.verdict = "not ready" if blocked else "ready"
     entries = args.get("earlier") or []
@@ -4301,7 +4335,7 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
         # so and no text the document does not hold as a quote (fix round 1 of #148).
         under = " " * len(f"{number}. ")
         note = unquoted_line(finding)
-        quote = _flat(finding.get(QUOTE) or "")
+        quote = _flat(shown_quote(finding))
         if note:
             lines.append(f"{under}{note}")
         elif quote:
@@ -4646,7 +4680,7 @@ def _report(
         mark = MARKS.get(str(finding.get("since")))
         print(_listed(finding, whole) + (f" {mark}" if mark else ""))
         note = unquoted_line(finding)
-        quote = one_line(str(finding.get(QUOTE) or ""), 2000)
+        quote = one_line(shown_quote(finding), 2000)
         if note:
             print(f"   {note}")
         elif quote:

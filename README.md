@@ -327,7 +327,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     documents leaves open does not block, on every pull request alike. The comment shows
     the quote under its finding, so a reader sees the rule that blocks, and the hidden last
     line carries it. The comment shows no text as a quote that the document does not hold:
-    a quote that does not stand gets the line in its place. A finding given
+    the quote of every finding is checked by the same rule, one that does not stand shows
+    as none, under a finding that does not block too, and the line of a finding that lost
+    its quote by the asking stands in its place. A finding given
     before the quote has none: its hidden line reads as before, and a finding of the run
     before keeps the standing it was given with, so one that blocked stops blocking only as
     fixed or with the judge's reason. Two findings of the runs before are one where every
