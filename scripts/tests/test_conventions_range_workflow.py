@@ -328,9 +328,10 @@ def test_the_range_is_skipped_on_every_event_the_gate_skips(event: str) -> None:
 
 def test_the_range_narrows_its_permissions_to_what_it_uses() -> None:
     """It reads the commit and the documents, reads the merged pull request and its comments,
-    and writes one comment there; the checks and the issues are step 4's and the gate's."""
+    and writes one comment there; it reads the checks of the commits of its line, the runs
+    before it builds on (step 4 of .github 0.5.0); the issues are the gate's."""
     permissions = range_job()["permissions"]
-    assert permissions == {"contents": "read", "pull-requests": "write"}
+    assert permissions == {"contents": "read", "pull-requests": "write", "checks": "read"}
     assert permissions.items() <= workflow()["permissions"].items()
 
 
@@ -756,7 +757,8 @@ def test_the_readme_says_what_the_range_judges_and_what_its_check_means() -> Non
             "A commit that carries the last release tag holds no commit after it: the job passes "
             "with its notice, makes no model call and posts no comment"
         ),
-        "as a first run",
+        # What a run builds on (step 4 of .github 0.5.0).
+        "**What a run builds on**",
         "**The check** `range / range`",
         "passed: the range was judged `ready`",
         # The two cases in which a passed check stands for no judged range (finding 3).
@@ -774,7 +776,7 @@ def test_the_readme_says_what_the_range_judges_and_what_its_check_means() -> Non
         "before the commit is checked out",
         "the failover",
         "**The job**",
-        "`contents: read` and `pull-requests: write`",
+        "`contents: read`, `pull-requests: write` and `checks: read`",
         "45 minutes",
         "a newer run cancels the older one",
         "**What a caller needs**",
@@ -783,7 +785,11 @@ def test_the_readme_says_what_the_range_judges_and_what_its_check_means() -> Non
         assert text in flat, text
     assert "coordinate-core#" not in flat
     assert "coordinate-core/issues" not in flat
-    for old in ("every commit from the repository's first", "from the repository's first commit"):
+    for old in (
+        "every commit from the repository's first",
+        "from the repository's first commit",
+        "Each run judges the whole range as a first run, whatever comment stands on the pull",
+    ):
         assert old not in flat, old
 
 

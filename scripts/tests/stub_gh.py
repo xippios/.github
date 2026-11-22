@@ -4,7 +4,14 @@ labels (`view`); `api` on a comments endpoint prints the page that `page=` asks 
 one list per page), on a `contents` endpoint the document (`document`); `api --method` keeps what
 it was given on its standard input in `written`, a line per call. An answer the test gave as
 `None` fails the call, and `write_fails` fails every write with an error that carries a
-token-shaped text."""
+token-shaped text.
+
+For the runs before (step 4 of .github 0.5.0): `api` on a commit's `check-runs` prints the check
+runs that `checks` names for that commit, none where it names none or where the test gave no
+`checks`, and `sleep` seconds pass first; on a commit's `pulls` it prints the pull requests that
+`pulls` names for it; on a pull request's comments it prints the pages that `pr_comments` names
+for its number, else those of `comments`. `checks` as `None`, or a commit's runs as `None`,
+fails the call."""
 
 import json
 import sys
@@ -13,6 +20,7 @@ from pathlib import Path
 STUB = """\
 import json
 import sys
+import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -41,7 +49,24 @@ if "--method" in args:
 if "/contents/" in endpoint:
     print(answers.get("document", "# a document\\n"), end="")
     sys.exit(0)
+if "/check-runs" in endpoint:
+    time.sleep(answers.get("sleep", 0))
+    sha = endpoint.split("/commits/", 1)[1].split("/", 1)[0]
+    if "checks" in answers and answers["checks"] is None:
+        sys.exit("gh: Server Error (HTTP 502)")
+    runs = (answers.get("checks") or {}).get(sha, [])
+    if runs is None:
+        sys.exit("gh: Server Error (HTTP 502)")
+    print(json.dumps({"total_count": len(runs), "check_runs": runs}))
+    sys.exit(0)
+if "/pulls?" in endpoint:
+    sha = endpoint.split("/commits/", 1)[1].split("/", 1)[0]
+    print(json.dumps((answers.get("pulls") or {}).get(sha, [])))
+    sys.exit(0)
 pages = answers.get("comments")
+if "/issues/" in endpoint:
+    number = endpoint.split("/issues/", 1)[1].split("/", 1)[0]
+    pages = (answers.get("pr_comments") or {}).get(number, pages)
 if pages is None:
     sys.exit("gh: Server Error (HTTP 502)")
 page = int(endpoint.rsplit("page=", 1)[1])
