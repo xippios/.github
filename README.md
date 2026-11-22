@@ -318,10 +318,16 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     names no document of the review is answered once as a malformed verdict is, naming the
     finding and why, and the model calls again. Where the verdict that follows still holds
     such a finding, the finding stays in the comment as one that does not block, with one
-    line under it that says its quote was not found, and where no finding blocks then, the
-    verdict is `ready`. So a case that the wording of the documents leaves open does not
-    block, on every pull request alike. The comment shows the quote under its finding, so a
-    reader sees the rule that blocks, and the hidden last line carries it. A finding given
+    line under it that says its quote was not found. But a finding that carries, as open, a
+    finding of the run before that blocked keeps blocking, with a line of its own that says
+    its quote was not found, since a finding that blocked a release is not released by a
+    quote that does not stand. The verdict is `ready` exactly where no finding blocks once
+    these rules are applied, and `not ready` exactly where one blocks, whatever verdict the
+    judge gave, whether the script asked again or not. So a case that the wording of the
+    documents leaves open does not block, on every pull request alike. The comment shows
+    the quote under its finding, so a reader sees the rule that blocks, and the hidden last
+    line carries it. The comment shows no text as a quote that the document does not hold:
+    a quote that does not stand gets the line in its place. A finding given
     before the quote has none: its hidden line reads as before, and a finding of the run
     before keeps the standing it was given with, so one that blocked stops blocking only as
     fixed or with the judge's reason. Two findings of the runs before are one where every
@@ -460,8 +466,11 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   - **The quote** (https://github.com/xippios/.github/issues/116): a finding of a range blocks
     only where it quotes the sentence of the document that the change breaks, and the script
     checks the quote, asks once more and keeps a finding without it as one that does not
-    block, as for a pull request, by the same code. A range has no pull request, so no
-    decision places a finding of it.
+    block, as for a pull request, by the same code: a finding that carries, as open, a
+    finding of the run before that blocked keeps blocking. The verdict is `ready` exactly
+    where no finding blocks once these rules are applied, and `not ready` exactly where one
+    blocks, whatever verdict the judge gave. A range has no pull request, so no decision
+    places a finding of it.
   - **The key**: where `ANTHROPIC_API_KEY` is empty, the step `Key`, `conventions.py range-key`,
     fails the job with the Gate's sentence before the commit is checked out. The keys of
     several lines, the failover, the redaction, the public log and the line of an API error,

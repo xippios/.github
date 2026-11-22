@@ -75,8 +75,10 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   sentence that the document it names holds, every run of white space as one space
   (``unquoted_findings``, .github#116): the script answers a verdict with a blocking finding
   without one once, as an invalid verdict, and keeps such a finding of the verdict after it
-  as one that does not block. An API error is named by its class and the request's id alone
-  (``api_error``, .github#121).
+  as one that does not block, but one that carries a finding of the run before that blocked
+  keeps blocking (``carriers``). The verdict is ``ready`` exactly where no finding blocks then
+  (``accept``). An API error is named by its class and the request's id alone (``api_error``,
+  .github#121).
 - ``verdict`` reads the verdict file of ``review`` and writes the check's comment to the job
   summary, the log and the pull request.
 - ``range-gate`` reads the environment of the job ``gate`` of conventions-range.yml, with the
@@ -145,7 +147,7 @@ import sys
 import tempfile
 import time
 import tomllib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence, Set
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -268,11 +270,20 @@ QUOTE = "quote"
 # `document`, or before a character that is not one of these, such as `#` or a space.
 PATH_CHARACTER = re.compile(r"[A-Za-z0-9_./-]")
 # What became of a blocking finding without a quote its document holds, once the judge was asked
-# again, and the comment's line under it.
+# again, and the comment's line under it, by whether it still blocks: a finding that carries one
+# of the run before that blocked keeps blocking (fix round 1 of #148).
 UNQUOTED = "unquoted"
 UNQUOTED_LINES = {
-    "missing": "It does not block: it quotes no sentence of the document it names.",
-    "not found": "It does not block: its quote was not found in the document it names.",
+    (False, "missing"): "It does not block: it quotes no sentence of the document it names.",
+    (False, "not found"): "It does not block: its quote was not found in the document it names.",
+    (True, "missing"): (
+        "It blocks as the finding of the run before that it carries did, though it quotes no "
+        "sentence of the document it names."
+    ),
+    (True, "not found"): (
+        "It blocks as the finding of the run before that it carries did, though its quote was "
+        "not found in the document it names."
+    ),
 }
 # What became of a finding of the run before (.github#95): the head no longer holds what it
 # names, a decision of the opener answers it, or it stands.
@@ -2540,8 +2551,12 @@ def quote_problem(
     findings: Sequence[Mapping[str, object]],
     problems: Mapping[int, str],
     documents: Sequence[tuple[str, str, str]],
+    kept: Set[int] = frozenset(),
 ) -> str:
-    """The answer to a verdict whose blocking findings lack their quote: which finding and why."""
+    """The answer to a verdict whose blocking findings lack their quote: which finding and why.
+
+    ``kept`` are the findings that carry one of the run before that blocked: they keep blocking.
+    """
     said = []
     for number, why in problems.items():
         named = named_document(findings[number - 1].get("document"), documents)
@@ -2551,12 +2566,40 @@ def quote_problem(
             said.append(f"finding {number} names no document of this review")
         else:
             said.append(f"the quote of finding {number} does not stand in {named[0]}")
+        if number in kept:
+            said[-1] += (
+                f", and finding {number} carries a finding of the run before that blocked and "
+                "keeps blocking without it"
+            )
     labels = ", ".join(label for label, _source, _text in documents)
     return (
         "a finding blocks only where quote holds, word for word, a sentence of the document it "
         f"names: {'; '.join(said)}. Give that sentence and name the document by its label "
-        f"({labels}); a blocking finding without it stays as a finding that does not block"
+        f"({labels}); a blocking finding without it stays as a finding that does not block, "
+        "but one that carries a finding of the run before that blocked keeps blocking"
     )
+
+
+def carriers(args: Mapping[str, object], earlier: EarlierRun | None) -> frozenset[int]:
+    """The findings of ``args`` that carry as open a finding of the run before that blocked.
+
+    By their number from 1; ``args`` passed ``earlier_problem``. Such a finding keeps blocking
+    where its quote does not stand (fix round 1 of #148): a finding that blocked stops blocking
+    only as fixed or with the judge's reason.
+    """
+    entries = args.get("earlier") or []
+    if earlier is None or not isinstance(entries, list):
+        return frozenset()
+    return frozenset(
+        entry["finding"]
+        for entry in entries
+        if entry["state"] == "open" and earlier.findings[entry["number"] - 1]["blocking"] is True
+    )
+
+
+def unquoted_line(finding: Mapping[str, object]) -> str | None:
+    """The comment's line under a finding whose quote does not stand; None for another."""
+    return UNQUOTED_LINES.get((finding.get("blocking") is True, str(finding.get(UNQUOTED))))
 
 
 def _sentence(text: object) -> str:
@@ -3389,7 +3432,10 @@ def _loop(
                         # Once, as a malformed verdict is answered (.github#116).
                         asked = True
                         problem = quote_problem(
-                            call.input["findings"], unquoted, material.documents
+                            call.input["findings"],
+                            unquoted,
+                            material.documents,
+                            carriers(call.input, material.earlier),
                         )
                 if problem is None:
                     accept(outcome, call.input, material, unquoted)
@@ -3416,20 +3462,22 @@ def accept(
 ) -> None:
     """The verdict of a valid ``submit_verdict`` into ``outcome``.
 
-    A blocking finding makes it ``not ready``. A finding of ``unquoted``, still without a quote
-    its document holds after the judge was asked again, stays and does not block, marked with
-    why (.github#116); where it took the last finding that blocked, the verdict is ``ready``.
+    A finding of ``unquoted``, still without a quote its document holds after the judge was
+    asked again, stays and does not block, marked with why (.github#116), but where it carries
+    as open a finding of the run before that blocked: that one keeps blocking, marked too (fix
+    round 1 of #148). The verdict is ``not ready`` exactly where a finding blocks then, and
+    ``ready`` where none does, whatever the judge gave, asked again or not.
     """
     findings = args["findings"] if isinstance(args["findings"], list) else []
+    kept = carriers(args, material.earlier)
     outcome.findings = [
-        {**finding, "blocking": False, UNQUOTED: unquoted[number]}
+        {**finding, "blocking": number in kept, UNQUOTED: unquoted[number]}
         if number in unquoted
         else dict(finding)
         for number, finding in enumerate(findings, 1)
     ]
     blocked = any(finding["blocking"] for finding in outcome.findings)
-    given = "ready" if unquoted else str(args["verdict"])
-    outcome.verdict = "not ready" if blocked else given
+    outcome.verdict = "not ready" if blocked else "ready"
     entries = args.get("earlier") or []
     outcome.earlier = earlier_outcome(
         material.earlier, entries if isinstance(entries, list) else [], outcome.findings
@@ -4180,9 +4228,9 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
     commit, what was judged, then the findings, each with the document and section it goes
     against and, after a run before, whether its file changed since the head judged before;
     then the findings of the run before, each with what became of it (``became``), and the
-    hidden last line (``run_line``). Under a finding stand why it no longer blocks, where it
-    lost its quote (``UNQUOTED_LINES``), and the sentence it quotes (step 6 of .github
-    0.5.0). A blocking finding makes the verdict ``not ready``. A
+    hidden last line (``run_line``). Under a finding stands the sentence it quotes (step 6 of
+    .github 0.5.0), or, where its quote does not stand, one line that says so and whether it
+    still blocks (``unquoted_line``). A blocking finding makes the verdict ``not ready``. A
     range's verdict file (its ``range`` of the kind ``range``) says what range was judged, and
     a finding without a file concerns the range; ``head`` is then the judged commit. Where the
     verdict file says what the run built on (``built``, step 4 of .github 0.5.0), a line after
@@ -4248,14 +4296,15 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
         mark = MARKS.get(finding.get("since"))
         mark = f" {mark}" if mark else ""
         lines.append(f"{number}. {_described(finding, whole)} Blocks: {blocks}.{mark}")
-        # Under it, within its item: why it no longer blocks, and the sentence it quotes, so a
-        # reader sees the rule that blocks (step 6 of .github 0.5.0).
+        # Under it, within its item: the sentence it quotes, so a reader sees the rule that
+        # blocks (step 6 of .github 0.5.0), or, where its quote does not stand, one line that says
+        # so and no text the document does not hold as a quote (fix round 1 of #148).
         under = " " * len(f"{number}. ")
-        note = UNQUOTED_LINES.get(str(finding.get(UNQUOTED)))
+        note = unquoted_line(finding)
+        quote = _flat(finding.get(QUOTE) or "")
         if note:
             lines.append(f"{under}{note}")
-        quote = _flat(finding.get(QUOTE) or "")
-        if quote:
+        elif quote:
             lines.append(f"{under}> {quote}")
     earlier = result.get("earlier") if isinstance(result.get("earlier"), dict) else {}
     before_head = earlier.get("head")
@@ -4596,11 +4645,11 @@ def _report(
     for finding in outcome.redacted_findings():
         mark = MARKS.get(str(finding.get("since")))
         print(_listed(finding, whole) + (f" {mark}" if mark else ""))
-        note = UNQUOTED_LINES.get(str(finding.get(UNQUOTED)))
+        note = unquoted_line(finding)
+        quote = one_line(str(finding.get(QUOTE) or ""), 2000)
         if note:
             print(f"   {note}")
-        quote = one_line(str(finding.get(QUOTE) or ""), 2000)
-        if quote:
+        elif quote:
             print(f"   > {quote}")
     earlier = outcome.redacted_earlier()
     if earlier is None:
