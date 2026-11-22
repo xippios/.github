@@ -1068,10 +1068,15 @@ def test_a_quote_shows_only_where_its_document_holds_it(
 # The rule of .github#151 and the rule of .github#152, as the judge's instructions of a pull
 # request state them, and the sentence that tells the judge where the first message names the
 # commits that the default branch already holds.
+# What the range leaves out where a document asks something of the change itself is a place of
+# its own, and code or text that the range left as it was is no such case (fix round 1 of #154).
 PULL_REQUEST_ONLY = (
     "A finding blocks only where the range itself breaks the rule: in a line that it adds or "
     "changes, in a file that it adds or removes, in a commit of the pull request's own branch, "
-    "or in the description."
+    "in the description, or in what it leaves out where a document asks something of the change "
+    "itself, such as a changelog entry, a raised version, a record or a test beside the behavior "
+    "it adds; code or text that the range left as it was and that does not follow a rule is no "
+    "such case, since it breaks the rule in lines that the range left."
 )
 UNCHANGED_LINE = (
     "A rule broken in a line that the range left as it was is a finding that does not block, on "
@@ -1083,16 +1088,20 @@ HELD_COMMIT = (
     "a finding; a finding on a commit of the pull request's own branch still blocks."
 )
 HELD_NAMED = (
-    "Where the default branch already holds part of the range, the first message names the "
-    "commit up to which it holds it, and the commits after that commit are the pull request's "
-    "own."
+    "Where the default branch already holds part of the range, the first message names the pull "
+    "request's own commits, and the default branch already holds every other commit of the "
+    "range."
 )
 # The same two rules in a range's words: a range has no pull request and no description, and
 # on a dispatch on another branch it can hold commits that the default branch does not hold.
 RANGE_ONLY = (
     "A finding blocks only where the range itself breaks the rule: in a line that it adds or "
-    "changes, in a file that it adds or removes, or in a commit that the default branch does not "
-    "hold yet."
+    "changes, in a file that it adds or removes, in a commit that the default branch does not "
+    "hold yet, or in what it leaves out where a document asks something of the change itself, "
+    "such as a changelog entry, a record or a test beside the behavior it adds, though not the "
+    "release's own changes, which come after it; code or text that the range left as it was and "
+    "that does not follow a rule is no such case, since it breaks the rule in lines that the "
+    "range left."
 )
 RANGE_UNCHANGED_LINE = (
     "A rule broken in a line that the range left as it was is a finding that does not block, on "
@@ -1134,6 +1143,7 @@ def test_the_judges_instructions_of_a_pull_request_hold_both_rules_and_step_6s_t
     assert item.index(QUOTE_RULE) < item.index(PULL_REQUEST_ONLY) < item.index(PLACED_RULE)
     assert NO_LONGER_REASON in text.split(" 5. ", 1)[1].split(" 6. ", 1)[0]
     assert "`reason` is empty where no decision of the opener concerns the finding." not in text
+    assert "the commits after that commit" not in text
 
 
 def test_the_judges_instructions_of_a_range_hold_both_rules_in_a_ranges_words() -> None:
@@ -1164,17 +1174,30 @@ def test_the_readme_says_both_rules_in_both_entries() -> None:
         # A public repository's README cites no record that its reader cannot open.
         bullet = text.split("- **What the range itself breaks**", 1)[1].split(" - **", 1)[0]
         assert "coordinate-core" not in bullet
+        # What the range leaves out, and its counter-case (fix round 1 of #154).
+        assert (
+            "Code or text that the range left as it was and that does not follow a rule is no "
+            "such case: it breaks the rule in lines that the range left."
+        ) in text
     assert (
         "a finding blocks only where the range itself breaks the rule, in a line that it adds or "
-        "changes, in a file that it adds or removes, in a commit of the pull request's own branch "
-        "or in the description"
+        "changes, in a file that it adds or removes, in a commit of the pull request's own "
+        "branch, in the description, or in what it leaves out where a document asks something of "
+        "the change itself, such as a changelog entry, a raised version, a record or a test "
+        "beside the behavior it adds."
     ) in pull_request
     assert (
         "A rule broken in a line that the range left as it was does not block, on every pull "
         "request alike" in pull_request
     )
     assert "A placed finding blocks where the range itself breaks its rule." in pull_request
-    assert "the first message names the commit up to which it holds it" in pull_request
+    assert (
+        "the first message names the pull request's own commits, those of the range that the "
+        "merge base of the default branch and the head does not reach, a commit below a merge of "
+        "the default branch among them, and says that the default branch holds every other "
+        "commit of the range; `meta.json` carries them as `own`."
+    ) in pull_request
+    assert "the first message names the commit up to which it holds it" not in pull_request
     assert (
         "The judge's instructions hold both rules, and the script holds neither by itself: it "
         "does not check that a finding lies on a line that the range changed, and a finding names "
@@ -1182,8 +1205,10 @@ def test_the_readme_says_both_rules_in_both_entries() -> None:
     ) in pull_request
     assert (
         "a finding of a range blocks only where the range itself breaks the rule, in a line that "
-        "it adds or changes, in a file that it adds or removes, or in a commit that the default "
-        "branch does not hold yet"
+        "it adds or changes, in a file that it adds or removes, in a commit that the default "
+        "branch does not hold yet, or in what it leaves out where a document asks something of "
+        "the change itself, such as a changelog entry, a record or a test beside the behavior it "
+        "adds, though not the release's own changes."
     ) in ranged
     assert (
         "A rule broken in a line that the range left as it was does not block, on every range "
@@ -1193,6 +1218,53 @@ def test_the_readme_says_both_rules_in_both_entries() -> None:
     assert "The judge's instructions hold both rules, and the script holds neither by itself." in (
         ranged
     )
+
+
+REASON_DESCRIPTION = (
+    "One sentence where a decision of the opener concerns the finding: for a decided one, why the "
+    "decision shows that no written rule is broken; for an open one, why the rule stands against "
+    "it. One sentence too where a finding that blocked is carried by one that does not block: why "
+    "it no longer blocks. Empty otherwise."
+)
+
+
+@pytest.mark.parametrize("tools", [fr.TOOLS, fr.RANGE_TOOLS], ids=["pull request", "range"])
+def test_the_description_of_reason_says_the_carried_case_as_item_5_does(tools: list) -> None:
+    """The judge reads the description at the field: it asks the reason that the script asks
+    (finding 4 of the review of #154)."""
+    schema = next(tool for tool in tools if tool["name"] == "submit_verdict")["input_schema"]
+    entry_schema = schema["properties"]["earlier"]["items"]
+    assert entry_schema["properties"]["reason"]["description"] == REASON_DESCRIPTION
+
+
+MAIN_HELP = (
+    "the ref of the default branch: the README and its documents are read from it, and a pull "
+    "request's own commits are told from it (default origin/main)"
+)
+
+
+@pytest.mark.parametrize("command", ["prepare", "range-prepare", "dry-run"])
+def test_the_help_of_main_says_that_it_stands_for_the_default_branch(capsys, command: str) -> None:
+    """`--main` also decides the pull request's own commits, so its help and the README say that
+    it stands for the default branch (finding 5 of the review of #154)."""
+    with pytest.raises(SystemExit) as stop:
+        fr.main([command, "--help"])
+    assert stop.value.code == 0
+    assert MAIN_HELP in flat(capsys.readouterr().out)
+
+
+def test_the_readme_says_what_main_stands_for_and_what_a_merged_pull_request_is_told() -> None:
+    section = flat(README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0])
+    assert (
+        "the documents from the clone's `origin/main`, which also stands for the default branch "
+        "from which the pull request's own commits are told (`--main` names another ref for "
+        "both)"
+    ) in section
+    assert (
+        "On a pull request that merged, whose head the default branch already holds, the pull "
+        "request's own commits are read from the merge base of its base and its head, so the "
+        "judge is told the commits that a run on the open pull request was told."
+    ) in section
 
 
 UNCHANGED = "The range left the line as it was, so the rule does not block it (.github#151)."
