@@ -15,7 +15,8 @@ judges a commit's range as the job does and posts nothing.
 
 The review of a pull request keeps its texts word for word: the instructions, the first messages
 and the tools, held by their digests as they stood before this step, but for the instructions
-and the tools, which step 6 of .github 0.5.0 changed on purpose.
+and the tools, which step 6 of .github 0.5.0 changed on purpose, and the instructions again,
+which step 6.3 changed with the sentence of the first message that it added.
 
 The tests run the script's commands on real temporary git repositories, with a fake Messages
 client and a stub `gh` (stub_gh.py); no test needs a key or the network."""
@@ -56,22 +57,30 @@ LABELS = ["sdk-usda-psd: docs/conventions.md", "sdk-core: docs/conventions.md"]
 # the instructions, the first message of each kind, the reprompt and the tools. Step 6 of
 # .github 0.5.0 changed two on purpose: the instructions, whose item 2 says that a finding
 # blocks only with its quote and wherever a decision placed it and whose item 6 asks for the
-# quote, and the tools, whose finding has the field `quote`.
+# quote, and the tools, whose finding has the field `quote`. Step 6.3 changed the instructions
+# again: item 2 says that a finding blocks only where the range itself breaks the rule, so not
+# in a line that the range left as it was (.github#151) nor on a commit that the default branch
+# already holds (.github#152), and holds the placed finding to that, and item 5 says that a
+# finding that blocked, carried by one that does not block, gives its reason. It added
+# HELD_MESSAGE, the sentence of the first message that names the commit up to which the default
+# branch holds the range; the first messages themselves stay word for word.
 PULL_REQUEST_TEXTS = {
-    "INSTRUCTIONS": "680b07f3caa858fc999b97a0ec6cffc0d59d4eb8a25f5c32e711648954149974",
+    "INSTRUCTIONS": "e1374de5387cf79e0a843bfa80c9add8b88abf1676b3da68c4f4301f4556dee6",
     "FIRST_MESSAGE": "638c83c4687ee9d60c56f5c9895836dd0b4cd3141ee8f18194b01caaa5d193ca",
     "RELEASE_MESSAGE": "c8891680e57375b08676e8d571571bb18e6c8eb2d3651bf286246a241e996d27",
     "UNTAGGED_MESSAGE": "445e8c847bc8b9a748f643fd36aa5b306330b8b2a7332fa5640ef754e757c6ed",
     "EARLIER_MESSAGE": "51b77f5d6ead3b26ef6162497646f1ca2782d2a062c51a8c9e4b831e5f8a3c8b",
+    "HELD_MESSAGE": "f22332b7ed6a1769e71fe5e8c5b6103e75f9cfb0af24c66ef61ca13ea6e024ea",
     "REPROMPT": "3a3b08dc41ef68f0d74ef1c73c44812b8f9bd8279a2023b213f09c215074cfcd",
 }
 TOOLS_DIGEST = "edf3964bd4504110f4586b33f1d88ab9d997345d7b430fa31d3972f63b9537b1"
 # The texts of the review of a range as step 3.1 left them, which a range that builds on no judged
 # commit keeps word for word (step 4 of .github 0.5.0), and the tools of a range. Step 6 of
 # .github 0.5.0 changed the instructions, whose item 2 says that a finding blocks only with its
-# quote and whose item 5 asks for it, and the tools, whose finding has the field `quote`.
+# quote and whose item 5 asks for it, and the tools, whose finding has the field `quote`. Step
+# 6.3 changed the instructions again: item 2 says the two rules in a range's words.
 RANGE_TEXTS = {
-    "RANGE_INSTRUCTIONS": "be0ab5b987cc590ac4cce0e1cf3c0dfa3e0e171d83b0d9a813d338f094439e18",
+    "RANGE_INSTRUCTIONS": "70143c74bc6b4de958a71b3a0795e23bb537adefa5a4b0b892e4d6a231601552",
     "RANGE_MESSAGE": "6d4ed76c302fbd06cf9ce9a7f481bf88e30ac5996fdf5d295c5d3c9a66192b4a",
     "UNTAGGED_RANGE_MESSAGE": "c2d9cf7dd74463aadd9c0806d2cf09330adbc2d903db9f7cf82bb3cc2fc99d72",
     "PARENTLESS_RANGE_MESSAGE": "fa4b2a35f41381f4357352eb3ccfe0db7340b068cd87ce4fff50ec138d24297a",
@@ -178,17 +187,19 @@ def range_prepare(ws: Path, sha: str) -> int:
 
 def test_the_review_of_a_pull_request_keeps_its_texts_word_for_word() -> None:
     """The first messages and the reprompt of the review of a pull request are what they were
-    before the range got its own (.github#129); the instructions and the tools are held as step 6
-    of .github 0.5.0 changed them."""
+    before the range got its own (.github#129); the tools are held as step 6 of .github 0.5.0
+    changed them, and the instructions and the sentence of the commit that the default branch
+    holds as step 6.3 changed and added them."""
     for name, expected in PULL_REQUEST_TEXTS.items():
         assert digest(getattr(fr, name)) == expected, name
     assert digest(json.dumps(fr.TOOLS, sort_keys=True)) == TOOLS_DIGEST
 
 
 def test_a_run_that_builds_on_nothing_keeps_its_texts_and_the_new_ones_are_held() -> None:
-    """The texts of a range as step 3.1 left them stay word for word, but for the instructions and
-    the tools, held as step 6 of .github 0.5.0 changed them, and the texts of a run that builds on
-    a judged commit are held as step 4 of .github 0.5.0 settled them."""
+    """The texts of a range as step 3.1 left them stay word for word, but for the tools, held as
+    step 6 of .github 0.5.0 changed them, and the instructions, held as step 6.3 changed them,
+    and the texts of a run that builds on a judged commit are held as step 4 of .github 0.5.0
+    settled them."""
     for name, expected in {**RANGE_TEXTS, **BUILT_TEXTS}.items():
         assert digest(getattr(fr, name)) == expected, name
     assert digest(json.dumps(fr.RANGE_TOOLS, sort_keys=True)) == RANGE_TOOLS_DIGEST

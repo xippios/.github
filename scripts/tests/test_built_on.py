@@ -735,7 +735,8 @@ def test_a_release_pr_builds_on_the_judged_commit_of_its_line(
     tmp_path: Path, gh, actions: dict[str, Path]
 ) -> None:
     """Proof 5's case: the release PR's head descends from a commit with a passed `range / range`;
-    the review judges the commits since it, and the description as on every run."""
+    the review judges the commits since it, and the description as on every run. The default
+    branch holds the range up to its last merge, which the first message names (step 6.3)."""
     ws, shas = make_release(tmp_path)
     view = pull_request([])
     bin_dir = gh(answers(judged(shas["m2"], 12, "ready", []), view=view))
@@ -743,6 +744,7 @@ def test_a_release_pr_builds_on_the_judged_commit_of_its_line(
     meta = meta_of(ws)
     assert meta["built"] == {"commit": shas["m2"], "ready": True, "run": run_url(5), "by": "range"}
     assert (meta["since"], meta["tag"], meta["release"]) == (shas["m2"], "v0.1.0", True)
+    assert meta["held"] == shas["m3"]
     review = ws / ".review"
     diff = (review / "diff.patch").read_text()
     assert "CHANGELOG.md" in diff
@@ -765,7 +767,9 @@ def test_a_release_pr_builds_on_the_judged_commit_of_its_line(
         f"commit {shas['m2']} ready: everything up to that commit was judged and is not judged "
         f"again, so the range is the commits after it, from {shas['m2']} to the head. Its "
         "material is under `.review/`, the 2 documents under `.review/documents/`. Read what you "
-        "need with the tools, then call `submit_verdict`."
+        "need with the tools, then call `submit_verdict`. The default branch already holds the "
+        f"range up to the commit {shas['m3']}, and the commits after it are the pull request's "
+        "own."
     )
     system = fr.system_prompt(material, fr.MAX_TURNS)
     expected = fr.INSTRUCTIONS + fr.BUILT_INSTRUCTIONS
@@ -796,6 +800,93 @@ def test_a_release_pr_without_a_judged_commit_judges_its_whole_range(
     )
     system = fr.system_prompt(material, fr.MAX_TURNS)
     assert system[0]["text"] == fr.INSTRUCTIONS.format(review=".review", max_turns=160)
+
+
+# --- the commits that the default branch already holds (step 6.3 of .github 0.5.0) ---------
+
+HELD = (
+    " The default branch already holds the range up to the commit {held}, and the commits after it "
+    "are the pull request's own."
+)
+
+
+def test_a_release_prs_first_message_names_the_commit_up_to_which_main_holds_its_range(
+    tmp_path: Path, gh, actions: dict[str, Path]
+) -> None:
+    """A release PR with commits of its own: its range holds the steps that the default branch
+    merged since the tag and the release's own commits, and the first message names the last
+    merge, so the judge tells a commit that no later commit mends from one it can still change
+    (.github#152). The log lists the pull request's own commits above that one."""
+    ws, shas = make_release(tmp_path, rounds=2)
+    gh(answers(view=pull_request([])))
+    assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
+    meta = meta_of(ws)
+    assert (meta["since"], meta["built"], meta["held"]) == (shas["first"], None, shas["m3"])
+    log = (ws / ".review" / "log.txt").read_text()
+    order = [log.index(f"commit {shas[name]}\n") for name in ("rel2", "rel1", "m3", "one")]
+    assert order == sorted(order)
+    text = fr.first_message(fr.load_material(ws, ws / ".review"))["content"]
+    assert text == (
+        f"Review the release pull request {REPO}#7: base {shas['m3']}, head {shas['head']}. It "
+        f"releases version 0.2.0. The range is the release's, from v0.1.0 ({shas['first']}) to "
+        "the head: the pull request's own diff is the CHANGELOG and the version, and the diff "
+        "prepared for you holds everything the release ships. Its material is under `.review/`, "
+        "the 2 documents under `.review/documents/`. Read what you need with the tools, then call "
+        "`submit_verdict`." + HELD.format(held=shas["m3"])
+    )
+    # Where git names no merge base, as without the default branch, nothing is named.
+    assert fr.held_commit(ws, "no-such-branch", shas["first"], shas["head"]) is None
+
+
+def test_a_pull_request_that_is_no_release_names_no_commit_of_the_default_branch(
+    tmp_path: Path, gh, actions: dict[str, Path]
+) -> None:
+    """Its range is its own, from the merge base: the default branch holds none of it, and the
+    first message is word for word as before."""
+    ws, shas = make_release(tmp_path)
+    gh(answers(view=pull_request([], title="feat: a change")))
+    assert prepare(ws, shas["m3"], shas["head"]) == 0
+    meta = meta_of(ws)
+    assert (meta["since"], meta["release"], meta["held"]) == (shas["m3"], False, None)
+    text = fr.first_message(fr.load_material(ws, ws / ".review"))["content"]
+    assert text == fr.FIRST_MESSAGE.format(
+        repo=REPO,
+        pr=7,
+        base=shas["m3"],
+        head=shas["head"],
+        review=".review",
+        documents="2 documents",
+    )
+    assert "default branch" not in text
+
+
+def test_a_release_pr_that_builds_on_the_last_merge_names_no_commit_of_the_default_branch(
+    tmp_path: Path, gh, actions: dict[str, Path]
+) -> None:
+    """A run that builds on the commit up to which the default branch holds the range judges the
+    pull request's own commits alone: its first message names no commit of the default branch."""
+    ws, shas = make_release(tmp_path)
+    gh(answers(judged(shas["m3"], 13, "ready", []), view=pull_request([])))
+    assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
+    meta = meta_of(ws)
+    assert (meta["since"], meta["built"]["commit"], meta["held"]) == (shas["m3"], shas["m3"], None)
+    text = fr.first_message(fr.load_material(ws, ws / ".review"))["content"]
+    assert text.startswith(f"Review the release pull request {REPO}#7: ")
+    assert text.endswith("Read what you need with the tools, then call `submit_verdict`.")
+    assert "default branch" not in text
+
+
+@pytest.mark.parametrize("held", ["not a commit", 7, ""])
+def test_a_held_commit_outside_a_commits_form_is_refused(
+    tmp_path: Path, gh, actions: dict[str, Path], held: object
+) -> None:
+    ws, shas = make_release(tmp_path)
+    gh(answers(view=pull_request([])))
+    assert prepare(ws, shas["m3"], shas["head"], "--release") == 0
+    meta_file = ws / ".review" / "meta.json"
+    meta_file.write_text(json.dumps({**meta_of(ws), "held": held}))
+    with pytest.raises(fr.PrepareError, match="names no commit that the default branch holds"):
+        fr.load_material(ws, ws / ".review")
 
 
 def test_a_pull_requests_own_run_before_on_the_line_is_built_on(

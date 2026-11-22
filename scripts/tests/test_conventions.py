@@ -1528,6 +1528,8 @@ def test_prepare_writes_the_review_material(
         "version": None,
         "built": None,
         "unread": None,
+        # The default branch holds no commit of a pull request's own range (step 6.3).
+        "held": None,
     }
     calls = (fake_gh / "calls").read_text().splitlines()
     assert calls == [
