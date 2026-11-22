@@ -8,11 +8,10 @@ The forms generator is retired (.github#33). From coordinate-core 0.6.4 the coor
 workspace's adoption run writes the issue forms and the PR template from the style of the core's
 release (coordinate-core#371), so nothing runs `scripts/forms.py`, and it leaves with its tests.
 
-The merge-class gate is retired (.github#31, step 1 of .github 0.3.0). The sdk repositories merge
-by the reviewer's approval and their code owners, as every coordinate workspace does, and their
-callers name the workflow no more, so `merge-class.yml` leaves with `scripts/merge_class.py`, its
-tests and the names that only it used, `FAMILY_REPOSITORIES` and `FAMILY_TEST_FILES`. The README
-describes what stays, without the families, the merge classes and the classifier's local run.
+The merge-class gate is retired (.github#31, step 1 of .github 0.3.0). Its callers name the
+workflow no more, so `merge-class.yml` leaves with `scripts/merge_class.py`, its tests and the
+names that only it used, `FAMILY_REPOSITORIES` and `FAMILY_TEST_FILES`. The README describes
+what stays, without the families, the merge classes and the classifier's local run.
 
 The old name of the review's mode is retired (step 1.1 of .github 0.5.0, .github#111). The mode
 is the variable `WORKFLOW_CONVENTIONS_MODE` with the values `release` and `all`, and the switch

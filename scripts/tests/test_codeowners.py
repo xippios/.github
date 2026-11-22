@@ -1,6 +1,5 @@
-"""CODEOWNERS of this repository: every path is the human's, so the organization ruleset's
-code-owner review (gate coordinate#9) is the human's approval on every pull request here (C50).
-Read as text, like the workflows."""
+"""CODEOWNERS of this repository: every path is the human's, and the file is kept by hand. Read
+as text, like the workflows."""
 
 from pathlib import Path
 

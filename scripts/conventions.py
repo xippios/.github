@@ -71,7 +71,12 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   review gives each of its findings one state, ``fixed``, ``decided`` or ``open``, and the
   script refuses another (``earlier_problem``); each new finding then says whether its file
   changed since the head judged before. A finding names a line only where its file has that
-  line at the head (``settled``, .github#85).
+  line at the head (``settled``, .github#85). A finding blocks only where its ``quote`` is a
+  sentence that the document it names holds, every run of white space as one space
+  (``unquoted_findings``, .github#116): the script answers a verdict with a blocking finding
+  without one once, as an invalid verdict, and keeps such a finding of the verdict after it
+  as one that does not block. An API error is named by its class and the request's id alone
+  (``api_error``, .github#121).
 - ``verdict`` reads the verdict file of ``review`` and writes the check's comment to the job
   summary, the log and the pull request.
 - ``range-gate`` reads the environment of the job ``gate`` of conventions-range.yml, with the
@@ -114,9 +119,9 @@ line's first 4,000 characters, and a timer (``SIGALRM``) stops a search after 20
 inside a regular expression too, as an ``is_error`` result.
 
 The job log is public: the script prints paths, counts, the verdict and redacted error
-text, never a file's content, a tool result, the prompt or the cost estimate, which goes to
-``--out`` alone. Every key of ``ANTHROPIC_API_KEY``, and anything that looks like an
-Anthropic key or a GitHub token, is redacted from everything it prints or writes.
+text, never a file's content, a tool result, the prompt, an upstream's message or the cost
+estimate, which goes to ``--out`` alone. Every key of ``ANTHROPIC_API_KEY``, and anything that
+looks like an Anthropic key or a GitHub token, is redacted from everything it prints or writes.
 
 Exit status: 0 ``ready``, 1 ``not ready``, 2 no verdict (the review could not run, or ended
 without one: no key, an API error, a refusal, a ``max_tokens`` stop, the turn cap) and, for
@@ -255,6 +260,20 @@ NOT_FOUND = re.compile(r"\(HTTP 404\)")
 REPROMPT = "Call submit_verdict now."
 VERDICTS = ("ready", "not ready")
 FINDING_KEYS = ("document", "file", "line", "blocking", "text")
+# The sentence of its document that a finding quotes (step 6 of .github 0.5.0, .github#116): a
+# finding blocks only where the document it names holds it. A finding given before that step has
+# no quote and keeps the standing it was given with, so the five keys above stay its own.
+QUOTE = "quote"
+# A character of a path: the label that a finding names its document by ends at the end of its
+# `document`, or before a character that is not one of these, such as `#` or a space.
+PATH_CHARACTER = re.compile(r"[A-Za-z0-9_./-]")
+# What became of a blocking finding without a quote its document holds, once the judge was asked
+# again, and the comment's line under it.
+UNQUOTED = "unquoted"
+UNQUOTED_LINES = {
+    "missing": "It does not block: it quotes no sentence of the document it names.",
+    "not found": "It does not block: its quote was not found in the document it names.",
+}
 # What became of a finding of the run before (.github#95): the head no longer holds what it
 # names, a decision of the opener answers it, or it stands.
 STATES = ("fixed", "decided", "open")
@@ -359,9 +378,14 @@ at most {max_turns} turns, one turn being one response of yours.
    order.
 2. A change that goes against what a document states is a finding. It blocks when the
    change breaks a rule the document states as one: a must, a never, a refusal, a form the
-   record is held to. A departure from a recommendation, or a document the change leaves
-   stale, is a finding that does not block. Name the document and the section the change
-   goes against.
+   record is held to, and only where `quote` holds the sentence that states the rule, word
+   for word as the document that `document` names holds it. So a case that the wording of
+   the documents leaves open is a finding that does not block, on every pull request alike.
+   A finding against a rule that a document states as one blocks wherever a decision on the
+   pull request placed it: a decision of the opener that places it in a later package or
+   patch does not stop it from blocking. A departure from a recommendation, or a document
+   the change leaves stale, is a finding that does not block. Name the document and the
+   section the change goes against.
 3. Judge the description (`body` in `{review}/pr.json`) by what the documents ask of a
    pull request, where they ask anything: its sections, its decisions, its proof. Read the
    `ci` result from `{review}/checks.json`; a `ci` still pending, or a file that reports
@@ -383,8 +407,9 @@ at most {max_turns} turns, one turn being one response of yours.
 6. When you are done, call `submit_verdict` once with the verdict, `ready` or `not ready`
    (any blocking finding makes it `not ready`), every finding: the document and the
    section it goes against (empty when none), its file (empty when it concerns the pull
-   request as a whole), its line (null when there is none), whether it blocks, and its
-   text in one or two sentences; and `earlier` where the first message names a run before.
+   request as a whole), its line (null when there is none), whether it blocks, its text in
+   one or two sentences, and in `quote` the sentence of that document it breaks, empty where
+   it quotes none; and `earlier` where the first message names a run before.
    Call it in your last turn and nothing after it: the verdict is your only output.
 """
 
@@ -486,9 +511,11 @@ at most {max_turns} turns, one turn being one response of yours.
    order.
 2. A change that goes against what a document states is a finding. It blocks when the
    change breaks a rule the document states as one: a must, a never, a refusal, a form the
-   record is held to. A departure from a recommendation, or a document the change leaves
-   stale, is a finding that does not block. Name the document and the section the change
-   goes against.
+   record is held to, and only where `quote` holds the sentence that states the rule, word
+   for word as the document that `document` names holds it. So a case that the wording of
+   the documents leaves open is a finding that does not block, on every range alike. A
+   departure from a recommendation, or a document the change leaves stale, is a finding
+   that does not block. Name the document and the section the change goes against.
 3. Judge the commit messages in `{review}/log.txt` by what the documents ask of a commit,
    where they ask anything. What they ask of a pull request alone, its title, its
    description, its checks, is judged on the release pull request, not here.
@@ -497,9 +524,10 @@ at most {max_turns} turns, one turn being one response of yours.
 5. When you are done, call `submit_verdict` once with the verdict, `ready` or `not ready`
    (any blocking finding makes it `not ready`), every finding: the document and the
    section it goes against (empty when none), its file (empty when it concerns the range
-   as a whole), its line (null when there is none), whether it blocks, and its text in one
-   or two sentences. Call it in your last turn and nothing after it: the verdict is your
-   only output.
+   as a whole), its line (null when there is none), whether it blocks, its text in one or
+   two sentences, and in `quote` the sentence of that document it breaks, empty where it
+   quotes none. Call it in your last turn and nothing after it: the verdict is your only
+   output.
 """
 
 RANGE_MESSAGE = """\
@@ -582,8 +610,14 @@ VERDICT_SCHEMA: dict[str, object] = {
                     },
                     "blocking": {"type": "boolean"},
                     "text": {"type": "string", "description": "One or two sentences."},
+                    "quote": {
+                        "type": "string",
+                        "description": "The sentence of the document named in `document` that "
+                        "the change breaks, word for word as that document holds it; a finding "
+                        "that blocks needs it. Empty where the finding quotes none.",
+                    },
                 },
-                "required": ["document", "file", "line", "blocking", "text"],
+                "required": ["document", "file", "line", "blocking", "text", "quote"],
                 "additionalProperties": False,
             },
         },
@@ -1505,17 +1539,47 @@ class EarlierRun:
 
 
 def finding_problem(finding: object) -> str | None:
-    """Why ``finding`` is not a finding as ``submit_verdict`` takes one, or None when it is."""
-    if not isinstance(finding, Mapping) or set(finding) != set(FINDING_KEYS):
-        return "each finding must have exactly document, file, line, blocking and text"
+    """Why ``finding`` is not a finding as ``submit_verdict`` takes one, or None when it is.
+
+    The quote may be missing: a finding given before step 6 of .github 0.5.0 has none.
+    """
+    if not isinstance(finding, Mapping) or not (
+        set(FINDING_KEYS) <= set(finding) <= {*FINDING_KEYS, QUOTE}
+    ):
+        return (
+            "each finding must have document, file, line, blocking, text and quote, and no "
+            "other key"
+        )
     line = finding["line"]
     if line is not None and (isinstance(line, bool) or not isinstance(line, int)):
         return "line must be an integer or null"
-    if not all(isinstance(finding[key], str) for key in ("document", "file", "text")):
-        return "document, file and text must be strings"
+    strings = ("document", "file", "text", QUOTE)
+    if not all(isinstance(finding.get(key, ""), str) for key in strings):
+        return "document, file, text and quote must be strings"
     if not isinstance(finding["blocking"], bool):
         return "blocking must be true or false"
     return None
+
+
+def quoted(finding: Mapping[str, object]) -> dict[str, object]:
+    """``{"quote": …}`` where ``finding`` quotes a sentence, else empty.
+
+    A quote of white space alone is none, so a finding without one is written and compared as a
+    finding given before step 6 of .github 0.5.0 is: by its five keys alone.
+    """
+    quote = finding.get(QUOTE)
+    if quote is None or (isinstance(quote, str) and not quote.strip()):
+        return {}
+    return {QUOTE: quote}
+
+
+def finding_fields(finding: Mapping[str, object]) -> dict[str, object]:
+    """The fields that make a finding: the five keys, a missing one None, and its quote.
+
+    The hidden last line carries them, and two findings are one where they all agree (step 4 of
+    .github 0.5.0, kept in step with the quote).
+    """
+    return {**{key: finding.get(key) for key in FINDING_KEYS}, **quoted(finding)}
 
 
 def _comments(data: object) -> list[tuple[str, str, str]]:
@@ -1677,7 +1741,10 @@ def run_from_verdict(path: Path, repo: str, pr: int) -> EarlierRun:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
         head, findings = data["head"], data["findings"]
-        findings = [{key: finding[key] for key in FINDING_KEYS} for finding in findings]
+        findings = [
+            {**{key: finding[key] for key in FINDING_KEYS}, **quoted(finding)}
+            for finding in findings
+        ]
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise problem from exc
     if not (isinstance(head, str) and SHA.fullmatch(head)):
@@ -1760,8 +1827,9 @@ def write_earlier(
                 summary,
             )
         for finding in run.findings:
-            # A finding that two runs gave, the second carrying the first's, is stated once.
-            key = json.dumps([finding.get(name) for name in FINDING_KEYS])
+            # A finding that two runs gave, the second carrying the first's, is stated once:
+            # where every field agrees, its quote included (step 6 of .github 0.5.0).
+            key = json.dumps(finding_fields(finding), sort_keys=True)
             if key in seen:
                 continue
             seen.add(key)
@@ -2426,6 +2494,71 @@ def earlier_problem(args: Mapping[str, object], earlier: EarlierRun | None) -> s
     return None
 
 
+def named_document(
+    name: object, documents: Sequence[tuple[str, str, str]]
+) -> tuple[str, str] | None:
+    """The label and the text, as the review read it, of the document that ``name`` names.
+
+    ``name`` is a finding's ``document``: it names a document by its label at its start,
+    followed by its end or a character no path holds, as `#` before a section, and the longest
+    such label counts. None where it names none of ``documents``.
+    """
+    named = str(name or "").strip()
+    found: tuple[str, str] | None = None
+    for label, _source, text in documents:
+        rest = named[len(label) :]
+        if not named.startswith(label) or (rest and PATH_CHARACTER.match(rest[0])):
+            continue
+        if found is None or len(label) > len(found[0]):
+            found = (label, text)
+    return found
+
+
+def unquoted_findings(
+    findings: Sequence[Mapping[str, object]], documents: Sequence[tuple[str, str, str]]
+) -> dict[int, str]:
+    """The blocking findings, by their number from 1, whose quote does not hold (.github#116).
+
+    ``missing`` where one quotes nothing, ``not found`` where the document it names does not hold
+    its quote, or it names no document of the review. The quote and the document's text are
+    compared with every run of white space as one space and nothing else altered.
+    """
+    problems: dict[int, str] = {}
+    for number, finding in enumerate(findings, 1):
+        if finding.get("blocking") is not True:
+            continue
+        quote = " ".join(str(finding.get(QUOTE) or "").split())
+        named = named_document(finding.get("document"), documents)
+        if not quote:
+            problems[number] = "missing"
+        elif named is None or quote not in " ".join(named[1].split()):
+            problems[number] = "not found"
+    return problems
+
+
+def quote_problem(
+    findings: Sequence[Mapping[str, object]],
+    problems: Mapping[int, str],
+    documents: Sequence[tuple[str, str, str]],
+) -> str:
+    """The answer to a verdict whose blocking findings lack their quote: which finding and why."""
+    said = []
+    for number, why in problems.items():
+        named = named_document(findings[number - 1].get("document"), documents)
+        if why == "missing":
+            said.append(f"finding {number} quotes nothing")
+        elif named is None:
+            said.append(f"finding {number} names no document of this review")
+        else:
+            said.append(f"the quote of finding {number} does not stand in {named[0]}")
+    labels = ", ".join(label for label, _source, _text in documents)
+    return (
+        "a finding blocks only where quote holds, word for word, a sentence of the document it "
+        f"names: {'; '.join(said)}. Give that sentence and name the document by its label "
+        f"({labels}); a blocking finding without it stays as a finding that does not block"
+    )
+
+
 def _sentence(text: object) -> str:
     """``text`` on one line, ending with a full stop where it ends with none; empty stays."""
     flat = " ".join(str(text or "").split())
@@ -2706,6 +2839,7 @@ def _redacted(finding: Mapping[str, object]) -> dict[str, object]:
         "document": redact(str(finding.get("document") or "")),
         "file": redact(str(finding.get("file") or "")),
         "text": redact(str(finding.get("text") or "")),
+        **({QUOTE: redact(str(finding[QUOTE]))} if QUOTE in finding else {}),
         **({"reason": redact(str(finding["reason"]))} if "reason" in finding else {}),
     }
 
@@ -2916,7 +3050,10 @@ def _load_earlier(
         compared = json.loads((review / CHANGED_FILE).read_text(encoding="utf-8"))
         head, files, head_files = data["head"], compared["files"], compared["head_files"]
         decisions = data["decisions"]
-        findings = [{key: finding[key] for key in FINDING_KEYS} for finding in data["findings"]]
+        findings = [
+            {**{key: finding[key] for key in FINDING_KEYS}, **quoted(finding)}
+            for finding in data["findings"]
+        ]
         # A finding of a second run names the head that run judged (fix round 1 of #142).
         heads = [str(finding.get("judged") or head) for finding in data["findings"]]
         readable = (
@@ -3079,7 +3216,10 @@ def built_notice(built: Built, end: str) -> str:
 
 
 def _error_message(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
-    """The message of the error body where it has one, else the SDK's."""
+    """The message of the error body where it has one, else the SDK's.
+
+    ``refuses_key`` reads it for the balance; no output carries it (.github#121).
+    """
     body = getattr(exc, "body", None)
     if isinstance(body, dict) and isinstance(body.get("error"), dict):
         inner = body["error"].get("message")
@@ -3089,10 +3229,15 @@ def _error_message(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
 
 
 def api_error(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
-    """``API error: <class>: <message>``, the message from the error body where it has one."""
+    """``API error: <class>``, with ``(request <id>)`` where the error carries the request's id.
+
+    No text of the upstream's message (.github#121): it is the upstream's and not the
+    check's, and it can say what a public output does not carry. The job log and the job
+    summary carry this line alike, on a pull request, on a range and in a dry run.
+    """
     request_id = getattr(exc, "request_id", None)
     suffix = f" (request {one_line(request_id)})" if request_id else ""
-    return f"API error: {type(exc).__name__}: {one_line(_error_message(exc))}{suffix}"
+    return f"API error: {type(exc).__name__}{suffix}"
 
 
 def refuses_key(exc: anthropic.APIStatusError) -> bool:
@@ -3172,6 +3317,8 @@ def _loop(
     system = system_prompt(material, max_turns)
     messages: list[dict[str, object]] = [first_message(material)]
     reprompted = False
+    # Whether a verdict was answered once for its blocking findings without their quote.
+    asked = False
     while True:
         if outcome.turns >= max_turns:
             outcome.reason = f"the turn cap of {max_turns} was reached"
@@ -3235,13 +3382,17 @@ def _loop(
                 problem = verdict_problem(call.input) or earlier_problem(
                     call.input, material.earlier
                 )
+                unquoted: dict[int, str] = {}
                 if problem is None:
-                    outcome.findings = [dict(f) for f in call.input["findings"]]
-                    blocked = any(f["blocking"] for f in outcome.findings)
-                    outcome.verdict = "not ready" if blocked else str(call.input["verdict"])
-                    outcome.earlier = earlier_outcome(
-                        material.earlier, call.input.get("earlier") or [], outcome.findings
-                    )
+                    unquoted = unquoted_findings(call.input["findings"], material.documents)
+                    if unquoted and not asked:
+                        # Once, as a malformed verdict is answered (.github#116).
+                        asked = True
+                        problem = quote_problem(
+                            call.input["findings"], unquoted, material.documents
+                        )
+                if problem is None:
+                    accept(outcome, call.input, material, unquoted)
                     return
                 answer, is_error = f"invalid verdict: {problem}; call submit_verdict again", True
             else:
@@ -3255,6 +3406,34 @@ def _loop(
                 result["is_error"] = True
             results.append(result)
         messages.append({"role": "user", "content": results})
+
+
+def accept(
+    outcome: Outcome,
+    args: Mapping[str, object],
+    material: Material,
+    unquoted: Mapping[int, str],
+) -> None:
+    """The verdict of a valid ``submit_verdict`` into ``outcome``.
+
+    A blocking finding makes it ``not ready``. A finding of ``unquoted``, still without a quote
+    its document holds after the judge was asked again, stays and does not block, marked with
+    why (.github#116); where it took the last finding that blocked, the verdict is ``ready``.
+    """
+    findings = args["findings"] if isinstance(args["findings"], list) else []
+    outcome.findings = [
+        {**finding, "blocking": False, UNQUOTED: unquoted[number]}
+        if number in unquoted
+        else dict(finding)
+        for number, finding in enumerate(findings, 1)
+    ]
+    blocked = any(finding["blocking"] for finding in outcome.findings)
+    given = "ready" if unquoted else str(args["verdict"])
+    outcome.verdict = "not ready" if blocked else given
+    entries = args.get("earlier") or []
+    outcome.earlier = earlier_outcome(
+        material.earlier, entries if isinstance(entries, list) else [], outcome.findings
+    )
 
 
 def _own_checkout(workspace: Path) -> list[Path]:
@@ -3973,8 +4152,10 @@ def run_line(head: str, findings: Sequence[Mapping[str, object]]) -> str:
     """The comment's hidden last line: this run's head and findings, which ``run_state`` reads.
 
     The JSON has ``<`` and ``>`` escaped, so no text ends the HTML comment early (.github#95).
+    A finding carries its quote where it has one (step 6 of .github 0.5.0), and one without a
+    quote is written as before that step, with its five keys alone.
     """
-    run = {"head": head, "findings": [{key: f.get(key) for key in FINDING_KEYS} for f in findings]}
+    run = {"head": head, "findings": [finding_fields(f) for f in findings]}
     text = json.dumps(run, ensure_ascii=True, separators=(",", ":"))
     text = text.replace("<", "\\u003c").replace(">", "\\u003e")
     return f"<!-- conventions-run: {text} -->"
@@ -3999,7 +4180,9 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
     commit, what was judged, then the findings, each with the document and section it goes
     against and, after a run before, whether its file changed since the head judged before;
     then the findings of the run before, each with what became of it (``became``), and the
-    hidden last line (``run_line``). A blocking finding makes the verdict ``not ready``. A
+    hidden last line (``run_line``). Under a finding stand why it no longer blocks, where it
+    lost its quote (``UNQUOTED_LINES``), and the sentence it quotes (step 6 of .github
+    0.5.0). A blocking finding makes the verdict ``not ready``. A
     range's verdict file (its ``range`` of the kind ``range``) says what range was judged, and
     a finding without a file concerns the range; ``head`` is then the judged commit. Where the
     verdict file says what the run built on (``built``, step 4 of .github 0.5.0), a line after
@@ -4065,6 +4248,15 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
         mark = MARKS.get(finding.get("since"))
         mark = f" {mark}" if mark else ""
         lines.append(f"{number}. {_described(finding, whole)} Blocks: {blocks}.{mark}")
+        # Under it, within its item: why it no longer blocks, and the sentence it quotes, so a
+        # reader sees the rule that blocks (step 6 of .github 0.5.0).
+        under = " " * len(f"{number}. ")
+        note = UNQUOTED_LINES.get(str(finding.get(UNQUOTED)))
+        if note:
+            lines.append(f"{under}{note}")
+        quote = _flat(finding.get(QUOTE) or "")
+        if quote:
+            lines.append(f"{under}> {quote}")
     earlier = result.get("earlier") if isinstance(result.get("earlier"), dict) else {}
     before_head = earlier.get("head")
     if isinstance(before_head, str) and SHA.fullmatch(before_head):
@@ -4404,6 +4596,12 @@ def _report(
     for finding in outcome.redacted_findings():
         mark = MARKS.get(str(finding.get("since")))
         print(_listed(finding, whole) + (f" {mark}" if mark else ""))
+        note = UNQUOTED_LINES.get(str(finding.get(UNQUOTED)))
+        if note:
+            print(f"   {note}")
+        quote = one_line(str(finding.get(QUOTE) or ""), 2000)
+        if quote:
+            print(f"   > {quote}")
     earlier = outcome.redacted_earlier()
     if earlier is None:
         return
