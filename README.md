@@ -157,8 +157,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     README that links none passes with the notice "links no documents under ## Documents;
     nothing to judge" and makes no API call, since the root's `doctor` owns that contract.
   - **The read token** (https://github.com/xippios/.github/issues/62): `DOCUMENTS_READ_TOKEN`,
-    an optional secret of the caller, a token that reads the private repositories whose files
-    its README lists. The check uses it only where the calling repository is private, by
+    an optional secret of the workflow's own call, which a trigger file fills from the secret of
+    its workspace (the trigger files, under the wiring below): a token that reads the private
+    repositories whose files the caller's README lists. The check uses it only where the calling repository is private, by
     `github.event.repository.private` of the caller's event, as the human decided in
     https://github.com/xippios/.github/issues/83. The review's comment and its job summary
     quote the documents it judges by, so in a public repository they would publish a private
@@ -662,9 +663,9 @@ name of the event and the switch `WORKFLOW_CONVENTIONS`, which is on unless the 
 `off`: GitHub reads the repository's variable over the organization's and compares without
 case. So a pull request shows one skipped `range`, a push or a dispatch one skipped
 `conventions`, and on `off` neither job calls its workflow. Both jobs pass `ANTHROPIC_API_KEY`
-by name and leave the read token's line out, as most repositories take the file; a workspace
-whose repositories read private documents adds one line under each job's `secrets:`, filled from
-its own secret, as the web workspace's files do with
+by name and leave the read token's line out, as a repository that reads no private document
+takes the file; a workspace whose repositories read private documents adds one line under each
+job's `secrets:`, filled from its own secret, as the web workspace's files do with
 `DOCUMENTS_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}`. A repository's
 `.github/workflows/conventions.yml`:
 
