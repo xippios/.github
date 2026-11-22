@@ -399,18 +399,21 @@ at most {max_turns} turns, one turn being one response of yours.
    the documents leaves open is a finding that does not block, on every pull request alike.
    A finding blocks only where the range itself breaks the rule: in a line that it adds or
    changes, in a file that it adds or removes, in a commit of the pull request's own branch,
-   or in the description. A rule broken in a line that the range left as it was is a finding
-   that does not block, on every pull request alike, and it stays a finding. A finding on a
-   commit that the default branch already holds, its subject, its message or its place in
-   the order, does not block either, since no later commit mends it, and it stays a finding;
-   a finding on a commit of the pull request's own branch still blocks. Where the default
-   branch already holds part of the range, the first message names the commit up to which it
-   holds it, and the commits after that commit are the pull request's own. A finding against
-   a rule that a document states as one, where the range itself breaks it, blocks wherever a
-   decision on the pull request placed it: a decision of the opener that places it in a later
-   package or patch does not stop it from blocking. A departure from a recommendation, or a
-   document the change leaves stale, is a finding that does not block. Name the document and
-   the section the change goes against.
+   in the description, or in what it leaves out where a document asks something of the change
+   itself, such as a changelog entry, a raised version, a record or a test beside the behavior
+   it adds; code or text that the range left as it was and that does not follow a rule is no
+   such case, since it breaks the rule in lines that the range left. A rule broken in a line
+   that the range left as it was is a finding that does not block, on every pull request
+   alike, and it stays a finding. A finding on a commit that the default branch already
+   holds, its subject, its message or its place in the order, does not block either, since no
+   later commit mends it, and it stays a finding; a finding on a commit of the pull request's
+   own branch still blocks. Where the default branch already holds part of the range, the
+   first message names the pull request's own commits, and the default branch already holds
+   every other commit of the range. A finding against a rule that a document states as one,
+   where the range itself breaks it, blocks wherever a decision on the pull request placed it:
+   a decision of the opener that places it in a later package or patch does not stop it from
+   blocking. A departure from a recommendation, or a document the change leaves stale, is a
+   finding that does not block. Name the document and the section the change goes against.
 3. Judge the description (`body` in `{review}/pr.json`) by what the documents ask of a
    pull request, where they ask anything: its sections, its decisions, its proof. Read the
    `ci` result from `{review}/checks.json`; a `ci` still pending, or a file that reports
@@ -465,12 +468,21 @@ numbered from 1, with the opener's decisions on the pull request. Give each of t
 in `earlier`."""
 
 # Appended to the first message of a pull request where the default branch already holds part of
-# its range, as on a release pull request (step 6.3 of .github 0.5.0, .github#152): the judge
-# tells a commit that no later commit mends from one of the pull request's own branch. Where the
-# default branch holds none of it, the first message is as before.
+# its range, as on a release pull request (step 6.3 of .github 0.5.0, .github#152): it names the
+# pull request's own commits, so the judge tells a commit that no later commit mends from one of
+# the pull request's own branch, wherever the latter lies in the log. More than OWN_NAMED of them
+# are left to `meta.json`, and where none is the pull request's own, the message says so. Where
+# the default branch holds none of the range, the first message is as before.
 HELD_MESSAGE = """\
- The default branch already holds the range up to the commit {held}, and the commits after it \
-are the pull request's own."""
+ The default branch already holds every commit of the range but the pull request's own: \
+{commits}."""
+HELD_MANY_MESSAGE = """\
+ The default branch already holds every commit of the range but the pull request's own \
+{count} commits, which `{review}/meta.json` lists under `own`."""
+HELD_ALL_MESSAGE = """\
+ The default branch already holds every commit of the range, so none of them is the pull \
+request's own."""
+OWN_NAMED = 20
 
 # A review that builds on an earlier run (step 4 of .github 0.5.0): its instructions are those
 # above with this paragraph after them, and its first message is its own, so the texts of a run
@@ -549,9 +561,13 @@ at most {max_turns} turns, one turn being one response of yours.
    for word as the document that `document` names holds it. So a case that the wording of
    the documents leaves open is a finding that does not block, on every range alike. A
    finding blocks only where the range itself breaks the rule: in a line that it adds or
-   changes, in a file that it adds or removes, or in a commit that the default branch does not
-   hold yet. A rule broken in a line that the range left as it was is a finding that does not
-   block, on every range alike, and it stays a finding. A finding on a commit that the
+   changes, in a file that it adds or removes, in a commit that the default branch does not
+   hold yet, or in what it leaves out where a document asks something of the change itself,
+   such as a changelog entry, a record or a test beside the behavior it adds, though not the
+   release's own changes, which come after it; code or text that the range left as it was and
+   that does not follow a rule is no such case, since it breaks the rule in lines that the
+   range left. A rule broken in a line that the range left as it was is a finding that does
+   not block, on every range alike, and it stays a finding. A finding on a commit that the
    default branch already holds, its subject, its message or its place in the order, does not
    block either, since no later commit mends it, and it stays a finding. A range of the
    default branch holds no other commit; only a range dispatched on another branch holds
@@ -684,8 +700,9 @@ VERDICT_SCHEMA: dict[str, object] = {
                         "type": "string",
                         "description": "One sentence where a decision of the opener concerns "
                         "the finding: for a decided one, why the decision shows that no written "
-                        "rule is broken; for an open one, why the rule stands against it. "
-                        "Empty otherwise.",
+                        "rule is broken; for an open one, why the rule stands against it. One "
+                        "sentence too where a finding that blocked is carried by one that does "
+                        "not block: why it no longer blocks. Empty otherwise.",
                     },
                 },
                 "required": ["number", "state", "finding", "reason"],
@@ -1995,7 +2012,7 @@ def prepare(
         "version": version,
         "built": built.meta() if built is not None else None,
         "unread": unread,
-        "held": held_commit(workspace, main, since, head),
+        "own": own_commits(workspace, main, base, since, head),
     }
     (review / "meta.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
     for name in sorted(p.name for p in review.iterdir()):
@@ -2049,21 +2066,33 @@ def _merge_base(workspace: Path, base: str, head: str) -> str | None:
     return line if proc.returncode == 0 and SHA.fullmatch(line) else None
 
 
-def held_commit(workspace: Path, main: str, since: str, head: str) -> str | None:
-    """The commit up to which the default branch already holds the range, or None.
+def own_commits(workspace: Path, main: str, base: str, since: str, head: str) -> list[str] | None:
+    """The pull request's own commits where the default branch already holds part of its range.
 
-    It is the merge base of ``main`` and ``head`` where the range holds it, which is where that
-    merge base does not reach ``since``, the start of the range: the commits of the range up to
-    it are on the default branch, and those after it are the pull request's own (step 6.3 of
-    .github 0.5.0). None where the default branch holds no commit of the range, or where git
-    gives no answer.
+    ``main`` stands for the default branch, which holds the range up to the merge base of
+    ``main`` and ``head``. Where it holds the head itself, as after the pull request merged, the
+    merge base of ``base`` and ``head`` stands in its place, so a dry run of a merged pull
+    request is told what a run on the open one was. The own commits are the commits of the range
+    that this merge base does not reach, ``git rev-list head ^held ^since``, newest first, a
+    commit below a merge of the default branch into the pull request's branch among them (step
+    6.3 of .github 0.5.0). None where that merge base reaches no commit of the range, so the
+    whole range is the pull request's own, or where git gives no answer; an empty list where
+    the default branch holds every commit of the range.
     """
     held = _merge_base(workspace, main, head)
+    if held == head:
+        held = _merge_base(workspace, base, head)
     if held is None or held == since:
         return None
     # 1 is git's word for not an ancestor; any other answer names no commit.
     proc = _run(["git", "-C", str(workspace), "merge-base", "--is-ancestor", held, since])
-    return held if proc.returncode == 1 else None
+    if proc.returncode != 1:
+        return None
+    listed = _run(["git", "-C", str(workspace), "rev-list", head, f"^{held}", f"^{since}"])
+    commits = listed.stdout.decode("utf-8", errors="replace").split()
+    if listed.returncode != 0 or not all(SHA.fullmatch(sha) for sha in commits):
+        return None
+    return commits
 
 
 def _fresh_review(workspace: Path) -> Path:
@@ -2998,9 +3027,9 @@ class Material:
     # not be read where they could not (step 4 of .github 0.5.0).
     built: dict[str, object] | None = None
     unread: str | None = None
-    # The commit up to which the default branch already holds the range of a pull request
-    # (``held_commit``); None where it holds none of it, and on a range.
-    held: str | None = None
+    # The pull request's own commits where the default branch already holds part of its range
+    # (``own_commits``), empty where it holds all of it; None where it holds none, and on a range.
+    own: tuple[str, ...] | None = None
 
 
 def _label(path: Path, workspace: Path) -> str:
@@ -3020,17 +3049,17 @@ def load_material(workspace: Path, review: Path) -> Material:
         repo, pr, base, head = meta["repo"], meta["pr"], meta["base"], meta["head"]
         release, since, tag = bool(meta.get("release")), meta.get("since") or base, meta.get("tag")
         main = str(meta.get("main") or "main")
-        version, held = meta.get("version"), meta.get("held")
+        version, own = meta.get("version"), meta.get("own")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise PrepareError(f"{review_label}/meta.json is missing or unreadable") from exc
     if not (isinstance(repo, str) and REPO_NAME.fullmatch(repo) and isinstance(pr, int)):
         raise PrepareError(f"{review_label}/meta.json names no pull request")
     if not all(isinstance(sha, str) and SHA.fullmatch(sha) for sha in (base, head, since)):
         raise PrepareError(f"{review_label}/meta.json names no base and head")
-    if held is not None and not (isinstance(held, str) and SHA.fullmatch(held)):
-        raise PrepareError(
-            f"{review_label}/meta.json names no commit that the default branch holds"
-        )
+    if own is not None and not (
+        isinstance(own, list) and all(isinstance(sha, str) and SHA.fullmatch(sha) for sha in own)
+    ):
+        raise PrepareError(f"{review_label}/meta.json names no commits of the pull request's own")
     if tag is not None and not isinstance(tag, str):
         raise PrepareError(f"{review_label}/meta.json names no release tag")
     if version is not None and not (isinstance(version, str) and VERSION.fullmatch(version)):
@@ -3056,7 +3085,7 @@ def load_material(workspace: Path, review: Path) -> Material:
         head_files=head_files,
         built=built,
         unread=unread,
-        held=held,
+        own=None if own is None else tuple(own),
     )
 
 
@@ -3322,14 +3351,21 @@ def _built_message(material: Material, template: str, earlier: str) -> dict[str,
 
 
 def held_message(material: Material) -> str:
-    """The sentence that names where the default branch holds the range, or nothing.
+    """The sentence that names the pull request's own commits, or nothing.
 
-    Nothing where the default branch holds none of the range, and on a range, whose first
-    message is as step 3.1 and step 4 left it.
+    It names each of them up to OWN_NAMED, else their count and `meta.json`, which lists them,
+    and says so where the default branch holds every commit of the range. Nothing where it holds
+    none of the range, and on a range, whose first message is as step 3.1 and step 4 left it.
     """
-    if material.is_range or material.held is None:
+    own = material.own
+    if material.is_range or own is None:
         return ""
-    return HELD_MESSAGE.format(held=material.held)
+    if not own:
+        return HELD_ALL_MESSAGE
+    if len(own) > OWN_NAMED:
+        return HELD_MANY_MESSAGE.format(count=len(own), review=material.review_label)
+    named = own[0] if len(own) == 1 else ", ".join(own[:-1]) + " and " + own[-1]
+    return HELD_MESSAGE.format(commits=named)
 
 
 def run_named(built: Mapping[str, object]) -> str:
@@ -4792,7 +4828,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         sub.add_argument(
             "--main",
             default="origin/main",
-            help="the ref the README and its documents are read from (default origin/main)",
+            help=(
+                "the ref of the default branch: the README and its documents are read from it, "
+                "and a pull request's own commits are told from it (default origin/main)"
+            ),
         )
 
     main_option(prep)
