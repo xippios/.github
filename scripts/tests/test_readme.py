@@ -8,12 +8,14 @@ the gates, a bypass or a cost (coordinate-core#630, coordinate-core#631, .github
 links no private repository: of the organization's repositories it links this one alone and names
 the others in words (proof 1 of .github 0.3.0). It and the comment of `.github/CODEOWNERS` name the
 human by role, in words, as the house style names a member (.github#63); the rule line keeps the
-login, which is what GitHub reads.
+login, which is what GitHub reads. That comment and the docstrings of two tests state nothing of
+protection either (.github#125).
 
 The entry of each workflow opens with one short paragraph of one form, its parts in one order:
 what it checks, with its check, the events it runs on, what the calling file hands over, its
 permissions, and the variable that switches it, or that none does (step 2.1 of .github 0.5.0)."""
 
+import ast
 import re
 from pathlib import Path
 
@@ -148,6 +150,24 @@ def test_the_readme_and_codeowners_name_the_human_by_role() -> None:
         assert login not in README
         assert login not in comment
     assert "the human's" in comment
+    assert "kept by hand" in comment
+    # Nothing of protection, as the README says none (.github#125).
+    for text in PROTECTION:
+        assert text not in comment.lower(), text
+    for name in RULESETS:
+        assert name not in comment, name
+
+
+@pytest.mark.parametrize("name", ["test_codeowners.py", "test_retired.py"])
+def test_the_docstrings_of_two_tests_state_nothing_of_protection(name: str) -> None:
+    """The module docstrings that said how this repository is protected say it no more, as step
+    2.1 of .github 0.5.0 reworded the README (.github#125)."""
+    tree = ast.parse((ROOT / "scripts" / "tests" / name).read_text())
+    flat = " ".join((ast.get_docstring(tree) or "").split()).lower()
+    assert flat
+    for text in PROTECTION:
+        assert text not in flat, text
+    assert "coordinate#9" not in flat
 
 
 def test_ci_describes_this_repository() -> None:
