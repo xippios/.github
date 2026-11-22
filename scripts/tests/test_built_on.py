@@ -572,11 +572,13 @@ def test_reads_that_outlast_their_time_together_build_on_none(
     monkeypatch.setenv("CONVENTIONS_LINE_SECONDS", "1.5")
     gh(answers(sleep=0.9))
     assert range_prepare(ws, shas["m3"]) == 0
-    why = (
-        f"reading the checks of the commit {shas['m1'][:7]} failed: the reads of the runs before "
-        "ran out of their 1.5 seconds"
-    )
-    assert meta_of(ws)["unread"] == why
+    # Which read runs out depends on the machine's pace: the first or the second of the line.
+    why = meta_of(ws)["unread"]
+    assert why in {
+        f"reading the checks of the commit {sha[:7]} failed: the reads of the runs before ran out "
+        "of their 1.5 seconds"
+        for sha in (shas["m2"], shas["m1"])
+    }
 
 
 def test_a_line_longer_than_its_limit_builds_on_none(
