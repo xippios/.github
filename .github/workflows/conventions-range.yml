@@ -15,6 +15,38 @@ permissions:
   issues: read
 
 jobs:
+  gate:
+    name: gate
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      pr: ${{ steps.gate.outputs.pr }}
+    steps:
+      - name: Check out the script for the gate from xippios/.github
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: xippios/.github
+          ref: ${{ job.workflow_sha }}
+          path: .sdk-gates
+          persist-credentials: false
+
+      - name: Gate
+        id: gate
+        env:
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I "$GITHUB_WORKSPACE/.sdk-gates/scripts/conventions.py" range-gate
+
   range:
     name: range
     if: fromJSON('false')
