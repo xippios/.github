@@ -422,8 +422,8 @@ Everything up to that commit was judged by that run and is not judged again: the
 commits after that commit to the head, and `{review}/diff.patch` and `{review}/log.txt` hold
 them alone. Read the files around a change where you need their context, but a finding concerns
 what the range changed, or a document it leaves stale. The description and the checks are
-judged as on every run. Where the first message says that the earlier run was not ready,
-`{review}/earlier.json` holds its findings, and you give each of them its state as item 5 says.
+judged as on every run. Where the first message names findings of the runs before,
+`{review}/earlier.json` holds them, and you give each of them its state as item 5 says.
 """
 
 BUILT_MESSAGE = """\
@@ -433,9 +433,10 @@ judged again, so the range is the commits after it, from {built} to the head. It
 under `{review}/`, the {documents} under `{review}/documents/`. Read what you need with the \
 tools, then call `submit_verdict`."""
 
-# Appended where the run it builds on was not ready and gave findings.
+# Appended where the runs before gave findings, whatever their verdict: the run built on, the
+# pull request's own run before where it is another run, or both (fix round 1 of #142).
 BUILT_EARLIER_MESSAGE = """\
- That run gave {count}: `{review}/earlier.json` holds them, numbered from 1, with the opener's \
+ {runs} gave {count}: `{review}/earlier.json` holds them, numbered from 1, with the opener's \
 decisions on the pull request. Give each of them its state in `earlier`."""
 
 # The run on a range (step 3.1 of .github 0.5.0): its material says so in `meta.json`, and the
@@ -530,7 +531,7 @@ Everything up to that commit was judged by that run and is not judged again: the
 commits after that commit to the commit of this review, and `{review}/diff.patch` and
 `{review}/log.txt` hold them alone. Read the files around a change where you need their context,
 but a finding concerns what the range changed, or a document it leaves stale. Where the first
-message says that the earlier run was not ready, `{review}/earlier.json` holds its findings,
+message names findings of that run, whatever its verdict, `{review}/earlier.json` holds them,
 numbered from 1, each with `file_changed`, whether its file changed since that commit. Give each
 of them one state in `earlier`: `fixed` where the commit no longer holds what it names, `open`
 where it still stands; no finding is `decided`, since a range has no pull request and no opener.
@@ -1498,6 +1499,9 @@ class EarlierRun:
     findings: list[dict[str, object]]
     decisions: int = 0
     ready: bool | None = None
+    # The head that each finding's run judged, where ``earlier.json`` holds two runs' findings
+    # (fix round 1 of #142); None where all are ``head``'s.
+    heads: list[str] | None = None
 
 
 def finding_problem(finding: object) -> str | None:
@@ -1698,6 +1702,7 @@ def write_earlier(
     head: str,
     summary: str | None,
     given: EarlierRun | None = None,
+    runs: Sequence[EarlierRun] | None = None,
 ) -> None:
     """The run before, where the check's last comment on the pull request carries one.
 
@@ -1710,56 +1715,74 @@ def write_earlier(
         data = json.loads(pr_json)
     except ValueError:
         data = {}
-    run = given
-    if run is None:
-        body = check_comment(data)
-        if body is None:
+    if runs is None:
+        run = given
+        if run is None:
+            body = check_comment(data)
+            if body is None:
+                _notice(
+                    "conventions: no run before was found; the review judges as a first run",
+                    summary,
+                )
+                return
+            run = run_state(body)
+        if run is None:
             _notice(
-                "conventions: no run before was found; the review judges as a first run", summary
+                "conventions: the comment of the run before carries no findings this run reads; "
+                "the review judges as a first run",
+                summary,
             )
             return
-        run = run_state(body)
-    if run is None:
+        runs = [run]
+    findings: list[dict[str, object]] = []
+    seen: set[str] = set()
+    first: tuple[list[str] | None, list[str] | None] = (None, None)
+    for index, run in enumerate(runs):
+        changed, head_files = compare_trees(workspace, repo, run.head, head)
+        if index == 0:
+            first = (changed, head_files)
+        count = len(run.findings)
         _notice(
-            "conventions: the comment of the run before carries no findings this run reads; "
-            "the review judges as a first run",
+            f"conventions: the run before judged {run.head} and gave {count} "
+            f"finding{'' if count == 1 else 's'}",
             summary,
         )
-        return
-    changed, head_files = compare_trees(workspace, repo, run.head, head)
-    count = len(run.findings)
-    _notice(
-        f"conventions: the run before judged {run.head} and gave {count} "
-        f"finding{'' if count == 1 else 's'}",
-        summary,
-    )
-    if head_files is None:
-        _notice(
-            "conventions: the head's tree could not be read; the files are not compared with "
-            "the head the run before judged",
-            summary,
-        )
-    elif changed is None:
-        _notice(
-            f"conventions: the head the run before judged, {run.head}, could not be read; the "
-            "files are not compared with it",
-            summary,
-        )
-    findings = []
-    for number, finding in enumerate(run.findings, 1):
-        path = posixpath.normpath(str(finding["file"])) if finding["file"] else ""
-        # Only a file the comparison covered: changed, or a file of the head's tree that kept
-        # its text; the review's own material and a path of neither tree are not compared.
-        moved = None
-        if changed is not None and path in changed:
-            moved = True
-        elif changed is not None and head_files is not None and path in head_files:
-            moved = False
-        findings.append({"number": number, **finding, "file_changed": moved})
-    earlier = {"head": run.head, "findings": findings, "decisions": opener_decisions(data)}
+        if head_files is None:
+            _notice(
+                "conventions: the head's tree could not be read; the files are not compared with "
+                "the head the run before judged",
+                summary,
+            )
+        elif changed is None:
+            _notice(
+                f"conventions: the head the run before judged, {run.head}, could not be read; "
+                "the files are not compared with it",
+                summary,
+            )
+        for finding in run.findings:
+            # A finding that two runs gave, the second carrying the first's, is stated once.
+            key = json.dumps([finding.get(name) for name in FINDING_KEYS])
+            if key in seen:
+                continue
+            seen.add(key)
+            path = posixpath.normpath(str(finding["file"])) if finding["file"] else ""
+            # Only a file the comparison covered: changed, or a file of the head's tree that
+            # kept its text; the review's own material and a path of neither tree are not
+            # compared.
+            moved = None
+            if changed is not None and path in changed:
+                moved = True
+            elif changed is not None and head_files is not None and path in head_files:
+                moved = False
+            entry = {"number": len(findings) + 1, **finding, "file_changed": moved}
+            if run.head != runs[0].head:
+                entry["judged"] = run.head
+            findings.append(entry)
+    changed, head_files = first
+    earlier = {"head": runs[0].head, "findings": findings, "decisions": opener_decisions(data)}
     (review / EARLIER_FILE).write_text(json.dumps(earlier, indent=2) + "\n", encoding="utf-8")
     compared = {
-        "head": run.head,
+        "head": runs[0].head,
         "compared": changed is not None,
         "files": changed or [],
         "head_files": head_files,
@@ -1794,7 +1817,7 @@ def prepare(
     # The judged commit to build on (step 4 of .github 0.5.0), only where there is anything to
     # judge: after the start of the range as today, the tag's commit or the merge base.
     links = _links_documents(workspace, main, repo)
-    built, unread = None, None
+    built, unread, own = None, None, None
     if links:
         own = earlier if earlier is not None else _own_run(pr_json)
         start = since if tag is not None else _merge_base(workspace, base, head)
@@ -1873,10 +1896,16 @@ def prepare(
         # Read before the Verdict step rewrites the check's comment (.github#95); nothing
         # to judge needs no run before. ``earlier`` is a dry run's --earlier.
         write_earlier(workspace, repo, review, pr_json, head, summary, earlier)
-    elif count and built is not None and not built.ready:
-        # The run built on was not ready: its findings get their states (step 4).
-        given = EarlierRun(built.commit, built.findings)
-        write_earlier(workspace, repo, review, pr_json, head, summary, given)
+    elif count and built is not None:
+        # What the run builds on decides its range, never whether an earlier finding gets its
+        # state (fix round 1 of #142): the findings of the run built on get theirs whatever its
+        # verdict, and so do those of the pull request's own run before where it is another
+        # run, on this head, off the line or below the commit built on, each finding once.
+        runs = [EarlierRun(built.commit, built.findings)] if built.findings else []
+        if own is not None and built.by != BY_PULL:
+            runs.append(own)
+        if runs:
+            write_earlier(workspace, repo, review, pr_json, head, summary, runs=runs)
     _output("review", "true" if count else "false")
     return count
 
@@ -2009,9 +2038,9 @@ def prepare_range(
     count = write_documents(workspace, main, repo, review, summary, commit)
     if count and built is None:
         _notice(UNREAD.format(why=unread) if unread else NONE_JUDGED, summary)
-    elif count and built is not None and not built.ready:
-        # The run built on was not ready: its findings get their states, with no decision of an
-        # opener, since a range has no pull request.
+    elif count and built is not None and built.findings:
+        # The findings of the run built on get their states whatever its verdict, with no
+        # decision of an opener, since a range has no pull request (fix round 1 of #142).
         given = EarlierRun(built.commit, built.findings)
         write_earlier(workspace, repo, review, b"{}", commit, summary, given)
     _output("review", "true" if count else "false")
@@ -2453,6 +2482,11 @@ def earlier_outcome(
                 "finding": states[number]["finding"],
                 "reason": states[number]["reason"],
                 **({"unblocked": True} if number in unblocked else {}),
+                **(
+                    {"judged": earlier.heads[number - 1]}
+                    if earlier.heads and earlier.heads[number - 1] != earlier.head
+                    else {}
+                ),
             }
             for number, finding in enumerate(earlier.findings, 1)
         ],
@@ -2883,9 +2917,12 @@ def _load_earlier(
         head, files, head_files = data["head"], compared["files"], compared["head_files"]
         decisions = data["decisions"]
         findings = [{key: finding[key] for key in FINDING_KEYS} for finding in data["findings"]]
+        # A finding of a second run names the head that run judged (fix round 1 of #142).
+        heads = [str(finding.get("judged") or head) for finding in data["findings"]]
         readable = (
             isinstance(head, str)
             and SHA.fullmatch(head) is not None
+            and all(SHA.fullmatch(judged) for judged in heads)
             and compared["head"] == head
             and isinstance(compared["compared"], bool)
             and isinstance(files, list)
@@ -2900,7 +2937,7 @@ def _load_earlier(
     if not readable:
         raise PrepareError(f"{label}/{EARLIER_FILE} is unreadable")
     return (
-        EarlierRun(head, findings, len(decisions)),
+        EarlierRun(head, findings, len(decisions), heads=heads if set(heads) != {head} else None),
         frozenset(files) if compared["compared"] else None,
         None if head_files is None else frozenset(head_files),
     )
@@ -3004,8 +3041,19 @@ def _built_message(material: Material, template: str, earlier: str) -> dict[str,
     )
     if material.earlier is not None and material.earlier.findings:
         found = len(material.earlier.findings)
+        # Whose findings they are: the run built on, the pull request's own run before alone,
+        # or both (fix round 1 of #142).
+        heads = list(dict.fromkeys(material.earlier.heads or [material.earlier.head]))
+        if heads == [built.get("commit")]:
+            runs = "That run"
+        elif len(heads) == 1:
+            runs = f"The run before, which judged the commit {heads[0]},"
+        else:
+            runs = "The two runs before"
         text += earlier.format(
-            count=f"{found} finding{'' if found == 1 else 's'}", review=material.review_label
+            runs=runs,
+            count=f"{found} finding{'' if found == 1 else 's'}",
+            review=material.review_label,
         )
     return {"role": "user", "content": text}
 
@@ -4021,19 +4069,40 @@ def verdict_comment(result: Mapping[str, object], repo: str, head: str) -> tuple
     before_head = earlier.get("head")
     if isinstance(before_head, str) and SHA.fullmatch(before_head):
         before = [f for f in earlier.get("findings") or [] if isinstance(f, dict)]
-        judged_before = f"https://github.com/{repo}/commit/{before_head}"
-        lines.append("")
-        if before:
+        if not before:
+            judged_before = f"https://github.com/{repo}/commit/{before_head}"
+            lines += ["", f"The run before judged {judged_before} and gave no findings."]
+        # Each run's findings under the commit it judged, numbered on (fix round 1 of #142).
+        number = 0
+        for at, items in runs_before(before, before_head):
+            judged_before = f"https://github.com/{repo}/commit/{at}"
             lines += [
-                f"The run before judged {judged_before} and gave {_counted(len(before))}:",
+                "",
+                f"The run before judged {judged_before} and gave {_counted(len(items))}:",
                 "",
             ]
-        else:
-            lines.append(f"The run before judged {judged_before} and gave no findings.")
-        for number, finding in enumerate(before, 1):
-            lines.append(f"{number}. {_described(finding, whole)} {became(finding)}")
+            for finding in items:
+                number += 1
+                lines.append(f"{number}. {_described(finding, whole)} {became(finding)}")
     lines += ["", run_line(head, findings)]
     return redact("\n".join(lines) + "\n"), ready
+
+
+def runs_before(
+    findings: Sequence[Mapping[str, object]], head: str
+) -> list[tuple[str, list[Mapping[str, object]]]]:
+    """The findings of the runs before, grouped by the head each run judged, in their order.
+
+    A finding of a second run names its head in ``judged``; the others are ``head``'s.
+    """
+    groups: list[tuple[str, list[Mapping[str, object]]]] = []
+    for finding in findings:
+        judged = finding.get("judged")
+        at = judged if isinstance(judged, str) and SHA.fullmatch(judged) else head
+        if not groups or groups[-1][0] != at:
+            groups.append((at, []))
+        groups[-1][1].append(finding)
+    return groups
 
 
 def _gh(repo: str, *args: str, body: str | None = None) -> subprocess.CompletedProcess[str]:
@@ -4343,10 +4412,13 @@ def _report(
     if not before:
         print(f"The run before judged {head} and gave no findings.")
         return
-    noun = "finding" if len(before) == 1 else "findings"
-    print(f"The run before judged {head} and gave {len(before)} {noun}:")
-    for number, finding in enumerate(before, 1):
-        print(f"{number}. {_listed(finding)} {one_line(became(finding), 2000)}")
+    number = 0
+    for at, items in runs_before(before, str(earlier.get("head") or "")):
+        noun = "finding" if len(items) == 1 else "findings"
+        print(f"The run before judged {printable(at)} and gave {len(items)} {noun}:")
+        for finding in items:
+            number += 1
+            print(f"{number}. {_listed(finding)} {one_line(became(finding), 2000)}")
 
 
 def main(argv: Sequence[str] | None = None) -> int:

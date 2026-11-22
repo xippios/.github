@@ -272,7 +272,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     run before, or says that no run before was found, or that its comment does not read, and
     that the run judges as a first run. No permission, secret or input is added, so a caller
     changes nothing. Where the head that the run before judged lies on the first-parent line of
-    the new head, the run builds on it and judges only the commits after it (below).
+    the new head, the run builds on it and judges only the commits after it (below). Whatever
+    commit the run builds on, each finding of the run before gets its state, so a finding that
+    blocked never leaves the comment unsaid.
   - **What a run builds on**: before it writes its range, a run looks along the first parents
     of the head, from the head down to where its range starts, the last release tag on a release
     pull request or the merge base on any other, for the newest commit that a run judged, and
@@ -283,13 +285,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     two counts. A skipped check counts for nothing, and so does a check whose comment is missing
     or names another commit, since a failed check also stands for no verdict and for a step that
     failed before the review, and a run that ends green with no model call posts no comment.
-    Where that run was ready, the run judges the commits after the commit, and the description
-    and the checks as on every run. Where it was not, it judges them too and gives each finding
-    of that run its state, as after a run before, with the opener's decisions on this pull
-    request. Where no commit of the line was judged, the run judges the whole range as before.
-    A head that does not descend from a judged commit by its first parents, as on a branch cut
-    before it or after a rewritten history, builds on none for that commit, and so does a run on
-    the very head that the run before judged. The reads take at most 30 seconds a call, 120
+    The run judges the commits after the commit, and the description and the checks as on every
+    run, and each finding of that run, ready or not, gets its state, as after a run before, with
+    the opener's decisions on this pull request, so a ready run's findings stay in the comment.
+    The pull request's own run before keeps its states where it is another run, on the very
+    head, off the line or below the commit built on: both runs' findings get their states, each
+    finding once, and the comment lists each run's findings under the commit it judged. What a
+    run builds on decides the range it judges, never whether an earlier finding gets its state.
+    Where no commit of the line was judged, the run judges the whole range as before. A head
+    that does not descend from a judged commit by its first parents, as on a branch cut before
+    it or after a rewritten history, builds on none for that commit, and a run on the very head
+    that the run before judged never builds on that head. The reads take at most 30 seconds a call, 120
     seconds together and 100 commits of the line, with the workflow's token and its
     `checks: read`; where one fails or runs out, the run builds on none, judges the whole range
     and says in its job summary that it could not read the runs before, so a failed read never
@@ -398,8 +404,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     with its notice and makes no model call, as for a pull request.
   - **What a run builds on**: a run on a range builds on the newest commit of its line after the
     tag that a run on a range judged, as the review of a pull request does (above): it judges the
-    commits after that commit, and where that run was not ready, it gives each of its findings
-    its state, fixed or open, since a range has no opener whose decision settles one. A commit
+    commits after that commit, and it gives each of its findings its state, fixed or open,
+    whatever that run's verdict, since a range has no opener whose decision settles one. A commit
     counts as judged where its check `range / range` passed or failed and its run's comment, which
     names it in its hidden line, stands on the pull request whose merge made it with the same
     verdict; a skipped check, a missing comment, a comment of another commit, and the two cases
