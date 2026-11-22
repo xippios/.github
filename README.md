@@ -92,7 +92,13 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
   on a range and in a dry run (https://github.com/xippios/.github/issues/121). The job
   times out after 45 minutes, which leaves a review at effort `xhigh` the time of 160 turns on one
   key; a review the timeout ends returns no verdict and writes no summary line. A new push or edit
-  of the pull request cancels the run that still reviews its state before.
+  of the pull request cancels the run that still reviews its state before. Where the Gate lets a
+  review run, the step after it waits 60 seconds before the head is checked out and the material
+  prepared; a run that the Gate skips does not wait, and neither does a run on a range, since no
+  edit follows the merge it judges. A push or an edit that follows within that minute, as an edit
+  of the description often follows a push by seconds, cancels the run before it made a model call,
+  and the run that judges reads the pull request as it then stands
+  (https://github.com/xippios/.github/issues/147).
   - **The events**: the job runs on a pull request's opening, push, reopening and edit alone,
     the event `pull_request` with the types `opened`, `synchronize`, `reopened` and `edited`,
     and is skipped on any other event of its caller, such as a push to `main`, a dispatch or the
@@ -632,9 +638,11 @@ A context joins the caller's job id and the callee's job name, so a required che
 slash-joined context and a caller keeps the job ids above. The caller passes the review its
 secrets by name, never `secrets: inherit`: `ANTHROPIC_API_KEY`, and `DOCUMENTS_READ_TOKEN`,
 which the review needs only in a private repository whose README lists a private repository's
-document (the read token under `conventions.yml` above). A trigger file passes both, and a
-repository without the read token passes the empty string, which reads as none. A caller grants
-the permissions the workflow it calls asks for; a caller that grants less fails at the start.
+document (the read token under `conventions.yml` above). A trigger file fills
+`DOCUMENTS_READ_TOKEN` from the secret that its workspace keeps for reading its private
+repositories, as the web workspace does from `WEB_READ_TOKEN`, and a repository that reads no
+private document leaves the line out, which reads as none. A caller grants the permissions the
+workflow it calls asks for; a caller that grants less fails at the start.
 
 ### The trigger files
 
@@ -654,7 +662,11 @@ name of the event and the switch `WORKFLOW_CONVENTIONS`, which is on unless the 
 `off`: GitHub reads the repository's variable over the organization's and compares without
 case. So a pull request shows one skipped `range`, a push or a dispatch one skipped
 `conventions`, and on `off` neither job calls its workflow. Both jobs pass `ANTHROPIC_API_KEY`
-and `DOCUMENTS_READ_TOKEN` by name. A repository's `.github/workflows/conventions.yml`:
+by name and leave the read token's line out, as most repositories take the file; a workspace
+whose repositories read private documents adds one line under each job's `secrets:`, filled from
+its own secret, as the web workspace's files do with
+`DOCUMENTS_READ_TOKEN: ${{ secrets.WEB_READ_TOKEN }}`. A repository's
+`.github/workflows/conventions.yml`:
 
 ```yaml
 name: Conventions
@@ -679,7 +691,6 @@ jobs:
       checks: read
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
 
   range:
     if: github.event_name != 'pull_request' && vars.WORKFLOW_CONVENTIONS != 'off'
@@ -691,7 +702,6 @@ jobs:
       issues: read
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      DOCUMENTS_READ_TOKEN: ${{ secrets.DOCUMENTS_READ_TOKEN }}
 ```
 
 The trigger files `spelling.yml` and `adr-index.yml` run on a pull request's opening, push and
