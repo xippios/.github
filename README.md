@@ -190,7 +190,7 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     the commit its `uses:` resolved to (`@main`). The review no longer runs on this
     repository's own pull requests (C58). actionlint 1.7.12 does not know the property yet, so
     `.github/actionlint.yaml` ignores that one error in `conventions.yml` and in
-    `conventions-range.yml`, whose gate checks the script out the same way.
+    `conventions-range.yml`, whose two jobs check the script out the same way.
   - **Identity**: the review runs on the workflow token (`github.token`), so its comment
     comes from `github-actions[bot]`. It did so under the action too, whose Claude GitHub
     App token exchange skips every pull request whose calling workflow differs from the
@@ -303,18 +303,17 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     result or the prompt, and `conventions.py verdict` redacts anything that looks like a key
     or a GitHub token from the summary and the comment.
 - **`.github/workflows/conventions-range.yml`**, the conventions review of a range of commits,
-  judges no range yet, check `range / range`, which reports as skipped on every run, and tells
-  first whether the merge that made a commit completes a package, check `range / gate`. It runs
-  on a push to `main` and on a dispatch, the events of the trigger file `conventions.yml` that
-  are no pull request's (the trigger files, under the wiring below). The calling file hands over
+  judges the commits since the last release once a merge completes a package, check
+  `range / range`, after its gate tells whether a merge does, check `range / gate`. It runs on
+  a push to `main` and on a dispatch, the events of the trigger file `conventions.yml` that are
+  no pull request's (the trigger files, under the wiring below). The calling file hands over
   the secrets `ANTHROPIC_API_KEY` and `DOCUMENTS_READ_TOKEN`, both optional, as to
   `conventions.yml`, and no input. Permissions: `contents: read`, `pull-requests: write`,
   `checks: read`, `issues: read`. The variable `WORKFLOW_CONVENTIONS` switches it (the switch,
   under the wiring below).
 
   A trigger file grants these permissions from its start, since a caller that grants less than
-  a called workflow asks for fails at its start. The job `range` has a false condition, so no
-  runner starts for it until it gets its logic.
+  a called workflow asks for fails at its start.
   - **The gate** (`conventions.py range-gate`): the job `gate` runs on a push and on a dispatch
     alone, by its own condition, and needs no key and makes no model call. It checks the script
     out as `conventions.yml` does and runs it on the runner's `python3` with `-I`, on the
@@ -352,6 +351,51 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     parse or one of another shape, a GraphQL answer with errors and a read past its fiftieth
     page end the job red with a line that names the call and the class of the error, never
     its message, and `run` is never `true` then.
+  - **The range** (`conventions.py range-prepare`): the job `range` needs the job `gate` and
+    runs where the gate wrote `run` as `true`. It judges the commits since the last release tag
+    (`v*`) reachable from the commit of the event, with the judge, the effort, the turn cap and
+    the documents of the review of a release pull request, read as that review reads them: the
+    README's `## Documents` on the default branch, another repository's document at the release
+    that the commit's requirement admits, and the read token for a private caller alone. It
+    judges no pull request: its material holds no description and no checks and names no
+    release version, and the judge is told so, and that the release's own changes, the
+    version's bump, the changelog's section and the tag, come with the release pull request, so
+    their absence is no finding. Where no release tag is reachable from the commit, the range
+    holds every commit from the repository's first commit, and the job summary says so. A
+    README that links no documents passes with its notice and makes no model call, as for a
+    pull request. Each run judges the whole range as a first run, whatever comment stands on
+    the pull request.
+  - **The check** `range / range` on the commit of the event is in one of three states.
+    passed: the range was judged `ready`, or the README links no documents to judge by;
+    failed: the range was judged `not ready`, the review returned no verdict, or a step failed
+    before it, the step `Key` without a key among them; skipped: the job reports as skipped
+    where the gate did not let the range be judged or failed, and no runner starts for it. So a
+    check that passed stands for a judged range, a README without documents aside.
+  - **The verdict** (`conventions.py range-verdict`) goes to the job summary and, in the form
+    of the check's comment on a pull request with its hidden last line, whose head is the judged
+    commit, to one comment on the pull request whose merge made the commit, the gate's `pr`. A
+    second run on the same commit rewrites that comment, which it finds by its hidden line, and
+    the comment of the pull request's own review, which names its head, is never rewritten. A
+    finding that names no file concerns the range. Where the gate names no pull request, as on
+    a dispatch on a commit that no merge made, the job summary alone carries the verdict, and so
+    where that pull request is a release pull request, which only a dispatch can bring, since
+    it carries the comment of its own review. A read or a post that fails leaves its reason in
+    the job summary and a warning annotation, as for a pull request.
+  - **The key**: where `ANTHROPIC_API_KEY` is empty, the step `Key`, `conventions.py range-key`,
+    fails the job with the Gate's sentence before the commit is checked out. The keys of
+    several lines, the failover, the redaction and the public log hold as for a pull request,
+    by the same code.
+  - **The job** narrows the workflow token to `contents: read` and `pull-requests: write`,
+    times out after 45 minutes as the review of a pull request does, and runs in a concurrency
+    group of its repository and ref, in which a newer run cancels the older one. It checks the
+    script out and runs the step `Key`, then checks the commit out with its full history and no
+    credential kept, which empties the workspace, then the script again, uv, and one call each
+    of `range-prepare`, `review` and `range-verdict`, the values in `env:` blocks. Prepare
+    refuses a link in place of `.sdk-gates` before the script runs from there.
+  - **What a caller needs**: the trigger file `conventions.yml` with its job `range` and the
+    permissions it grants, the secret `ANTHROPIC_API_KEY`, release tags `v` and a version on
+    the commits a release ships, and a merge commit of each step's pull request on the default
+    branch, which the gate reads. Without the key the check fails.
 - **`.github/workflows/site-tests.yml`** runs a site's suite through the host xippios-web, the
   only test harness of the web platform, check `tests / tests`. It runs on a pull request and
   on a push to `main`, the events of the `ci.yml` that web-template renders into a site, which
@@ -648,6 +692,19 @@ echo:
 read -rs K && ANTHROPIC_API_KEY="$K" uv run --no-project \
   --exclude-newer 2026-10-29T00:00:00Z --with anthropic==2.3.0 \
   python <this clone>/scripts/conventions.py dry-run --repo xippios/<repo> --pr <n>
+unset K
+```
+
+`--commit <sha>` in place of `--pr <n>`, a full commit SHA, clones the repository at that
+commit and judges its range as the job `range` does: from the last release tag reachable from
+it, or from the repository's first commit, with no pull request, no description and no checks.
+It prints the summary line and the findings, posts nothing and takes no `--earlier`. No workflow
+can call a changed job `range` before its merge, so this is how a change of it is seen first:
+
+```sh
+read -rs K && ANTHROPIC_API_KEY="$K" uv run --no-project \
+  --exclude-newer 2026-10-29T00:00:00Z --with anthropic==2.3.0 \
+  python <this clone>/scripts/conventions.py dry-run --repo xippios/<repo> --commit <sha>
 unset K
 ```
 
