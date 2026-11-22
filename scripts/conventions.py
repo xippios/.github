@@ -402,7 +402,9 @@ at most {max_turns} turns, one turn being one response of yours.
    in the description, or in what it leaves out where a document asks something of the change
    itself, such as a changelog entry, a raised version, a record or a test beside the behavior
    it adds; code or text that the range left as it was and that does not follow a rule is no
-   such case, since it breaks the rule in lines that the range left. A rule broken in a line
+   such case, since it breaks the rule in lines that the range left, nor is what the
+   repository lacked before the range where a document asks it of every repository rather
+   than of the change, since the range left that as it was. A rule broken in a line
    that the range left as it was is a finding that does not block, on every pull request
    alike, and it stays a finding. A finding on a commit that the default branch already
    holds, its subject, its message or its place in the order, does not block either, since no
@@ -566,7 +568,9 @@ at most {max_turns} turns, one turn being one response of yours.
    such as a changelog entry, a record or a test beside the behavior it adds, though not the
    release's own changes, which come after it; code or text that the range left as it was and
    that does not follow a rule is no such case, since it breaks the rule in lines that the
-   range left. A rule broken in a line that the range left as it was is a finding that does
+   range left, nor is what the repository lacked before the range where a document asks it of
+   every repository rather than of the change, since the range left that as it was. A rule
+   broken in a line that the range left as it was is a finding that does
    not block, on every range alike, and it stays a finding. A finding on a commit that the
    default branch already holds, its subject, its message or its place in the order, does not
    block either, since no later commit mends it, and it stays a finding. A range of the
