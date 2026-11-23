@@ -346,6 +346,30 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     placed it. A decision of the opener that places it in a later package or patch does not
     stop it from blocking, and the judge's instructions say so. Of a finding of the run
     before that blocked, a decision settles nothing by itself, as the run before says.
+  - **What the range itself breaks** (https://github.com/xippios/.github/issues/151,
+    https://github.com/xippios/.github/issues/152): a finding blocks only where the range
+    itself breaks the rule, in a line that it adds or changes, in a file that it adds or
+    removes, in a commit of the pull request's own branch, in the description, or in what it
+    leaves out where a document asks something of the change itself, such as a changelog entry,
+    a raised version, a record or a test beside the behavior it adds. Code or text that the
+    range left as it was and that does not follow a rule is no such case, since it breaks the
+    rule in lines that the range left, nor is what the repository lacked before the range where
+    a document asks it of every repository rather than of the change, since the range left that
+    as it was. A rule broken in a line that the range left as it was does not
+    block, on every pull request alike, and neither does a finding on a commit that the default
+    branch already holds, its subject, its message or its place in the order, since no later
+    commit mends it. Both stay in the comment as findings that do not block. A placed finding
+    blocks where the range itself breaks its rule. So a release, whose range holds what the
+    default branch merged since the last release, is held to a rule on commits on its pull
+    request's own commits alone, where a commit can still be changed. Where the default branch
+    already holds part of the range, the first message names the pull request's own commits,
+    those of the range that the merge base of the default branch and the head does not reach,
+    a commit below a merge of the default branch among them, and says that the default branch
+    holds every other commit of the range; `meta.json` carries them as `own`. More than 20 are
+    left to `meta.json`, and where the default branch holds every commit of the range, the
+    first message says so. The judge's instructions hold both rules, and the script holds
+    neither by itself: it does not check that a finding lies on a line that the range changed,
+    and a finding names no commit.
   - **The line** (https://github.com/xippios/.github/issues/85): a finding names a line only
     where its file has that line at the head, counted as `read_file` counts lines; where it
     has not, as in a file the head lacks or one the tools refuse, the finding keeps its file
@@ -480,6 +504,23 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     where no finding blocks once these rules are applied, and `not ready` exactly where one
     blocks, whatever verdict the judge gave. A range has no pull request, so no decision
     places a finding of it.
+  - **What the range itself breaks** (https://github.com/xippios/.github/issues/151,
+    https://github.com/xippios/.github/issues/152): a finding of a range blocks only where the
+    range itself breaks the rule, in a line that it adds or changes, in a file that it adds or
+    removes, in a commit that the default branch does not hold yet, or in what it leaves out
+    where a document asks something of the change itself, such as a changelog entry, a record
+    or a test beside the behavior it adds, though not the release's own changes. Code or text
+    that the range left as it was and that does not follow a rule is no such case, since it
+    breaks the rule in lines that the range left, nor is what the repository lacked before the
+    range where a document asks it of every repository rather than of the change, since the
+    range left that as it was. A rule broken in a line that the range left as it
+    was does not block, on every range alike, and neither does a finding on a commit that the
+    default branch already holds, its subject, its message or its place in the order, since no
+    later commit mends it. Both stay in the comment as findings that do not block. A range of
+    the default branch holds no other commit, so a finding on the subject, the message or the
+    place in the order of one of its commits never blocks; only a dispatch on another branch
+    judges commits that the default branch does not hold yet. The judge's instructions hold
+    both rules, and the script holds neither by itself.
   - **The key**: where `ANTHROPIC_API_KEY` is empty, the step `Key`, `conventions.py range-key`,
     fails the job with the Gate's sentence before the commit is checked out. The keys of
     several lines, the failover, the redaction, the public log and the line of an API error,
@@ -773,9 +814,13 @@ uvx --from actionlint-py==1.7.12.25 actionlint
 ## Running the review locally
 
 A dry run clones the pull request into a temporary directory (or `--workdir`, kept), prepares
-the material as the workflow does, the documents from the clone's `origin/main` (`--main`
-names another ref) and a pull request labeled `release` or titled `<version> Release` on its
-release's range, with its version, and runs the review, then
+the material as the workflow does, the documents from the clone's `origin/main`, which also
+stands for the default branch from which the pull request's own commits are told (`--main`
+names another ref for both), and a pull request labeled `release` or titled `<version>
+Release` on its release's range, with its version, and runs the review. On a pull request
+that merged, whose head the default branch already holds, the pull request's own commits are
+read from the merge base of its base and its head, so the judge is told the commits that a
+run on the open pull request was told. It then
 prints the summary line and the findings, each with the document it goes
 against. A README that links no documents ends it there, green, as in the workflow. It reads
 the run before from the check's last comment as the workflow does, since that comment is the

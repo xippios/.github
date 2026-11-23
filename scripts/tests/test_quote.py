@@ -15,6 +15,13 @@ request placed it (.github#117, decided on .github#118): the judge's instruction
 script lets a finding of the run before that blocked stop blocking only as fixed or with the
 judge's reason, as it did before this step.
 
+A finding blocks only where the range itself breaks the rule (step 6.3 of .github 0.5.0): a rule
+broken in a line that the range left as it was does not block (.github#151), and neither does a
+finding on a commit that the default branch already holds (.github#152). Both stay findings. The
+judge's instructions of a pull request and of a range and the README say so, and the script holds
+neither by itself; a finding that blocked before and falls under one of them comes back open,
+carried by a finding that does not block, with the judge's reason.
+
 The line of a review without a verdict names an API error by its class and the request's id, and
 no text of the upstream's message, in the job log and the job summary alike, on a pull request, on
 a range and in a dry run (.github#121).
@@ -636,10 +643,11 @@ QUOTE_RULE = (
     "refusal, a form the record is held to, and only where `quote` holds the sentence that states "
     "the rule, word for word as the document that `document` names holds it."
 )
+# Step 6.3 of .github 0.5.0 narrowed it to what the range itself breaks, by six words.
 PLACED_RULE = (
-    "A finding against a rule that a document states as one blocks wherever a decision on the "
-    "pull request placed it: a decision of the opener that places it in a later package or patch "
-    "does not stop it from blocking."
+    "A finding against a rule that a document states as one, where the range itself breaks it, "
+    "blocks wherever a decision on the pull request placed it: a decision of the opener that "
+    "places it in a later package or patch does not stop it from blocking."
 )
 
 
@@ -1053,3 +1061,242 @@ def test_a_quote_shows_only_where_its_document_holds_it(
     # The hidden last line carries the quote as it is written today.
     run = json.loads(lines[-1].removeprefix("<!-- conventions-run: ").removesuffix(" -->"))
     assert run["findings"][0]["quote"] == given["quote"]
+
+
+# --- what the range itself breaks (step 6.3 of .github 0.5.0) -----------------------------
+
+# The rule of .github#151 and the rule of .github#152, as the judge's instructions of a pull
+# request state them, and the sentence that tells the judge where the first message names the
+# commits that the default branch already holds.
+# What the range leaves out where a document asks something of the change itself is a place of
+# its own, and code or text that the range left as it was is no such case (fix round 1 of #154),
+# nor is what the repository lacked before the range where a document asks it of every
+# repository rather than of the change (fix round 2 of #154).
+NOR_LACKED = (
+    ", nor is what the repository lacked before the range where a document asks it of every "
+    "repository rather than of the change, since the range left that as it was."
+)
+PULL_REQUEST_ONLY = (
+    "A finding blocks only where the range itself breaks the rule: in a line that it adds or "
+    "changes, in a file that it adds or removes, in a commit of the pull request's own branch, "
+    "in the description, or in what it leaves out where a document asks something of the change "
+    "itself, such as a changelog entry, a raised version, a record or a test beside the behavior "
+    "it adds; code or text that the range left as it was and that does not follow a rule is no "
+    "such case, since it breaks the rule in lines that the range left" + NOR_LACKED
+)
+UNCHANGED_LINE = (
+    "A rule broken in a line that the range left as it was is a finding that does not block, on "
+    "every pull request alike, and it stays a finding."
+)
+HELD_COMMIT = (
+    "A finding on a commit that the default branch already holds, its subject, its message or "
+    "its place in the order, does not block either, since no later commit mends it, and it stays "
+    "a finding; a finding on a commit of the pull request's own branch still blocks."
+)
+HELD_NAMED = (
+    "Where the default branch already holds part of the range, the first message names the pull "
+    "request's own commits, and the default branch already holds every other commit of the "
+    "range."
+)
+# The same two rules in a range's words: a range has no pull request and no description, and
+# on a dispatch on another branch it can hold commits that the default branch does not hold.
+RANGE_ONLY = (
+    "A finding blocks only where the range itself breaks the rule: in a line that it adds or "
+    "changes, in a file that it adds or removes, in a commit that the default branch does not "
+    "hold yet, or in what it leaves out where a document asks something of the change itself, "
+    "such as a changelog entry, a record or a test beside the behavior it adds, though not the "
+    "release's own changes, which come after it; code or text that the range left as it was and "
+    "that does not follow a rule is no such case, since it breaks the rule in lines that the "
+    "range left" + NOR_LACKED
+)
+RANGE_UNCHANGED_LINE = (
+    "A rule broken in a line that the range left as it was is a finding that does not block, on "
+    "every range alike, and it stays a finding."
+)
+RANGE_HELD_COMMIT = (
+    "A finding on a commit that the default branch already holds, its subject, its message or "
+    "its place in the order, does not block either, since no later commit mends it, and it stays "
+    "a finding."
+)
+RANGE_DISPATCH = (
+    "A range of the default branch holds no other commit; only a range dispatched on another "
+    "branch holds commits that the default branch does not hold yet."
+)
+# Item 5 of a pull request's instructions, which said that `reason` is empty where no decision
+# of the opener concerns the finding: the script asks a reason of a finding that blocked and is
+# carried by one that does not block, decision or none.
+NO_LONGER_REASON = (
+    "`reason` is empty where no decision of the opener concerns the finding, but where a finding "
+    "that blocked is carried by one that does not block: `reason` then says in one sentence why "
+    "it no longer blocks."
+)
+
+
+def test_the_judges_instructions_of_a_pull_request_hold_both_rules_and_step_6s_three() -> None:
+    text = flat(fr.INSTRUCTIONS)
+    item = text.split(" 2. ", 1)[1].split(" 3. ", 1)[0]
+    for sentence in (PULL_REQUEST_ONLY, UNCHANGED_LINE, HELD_COMMIT, HELD_NAMED):
+        assert sentence in item, sentence
+    # Step 6's three stay as they read, the placed rule held to what the range itself breaks.
+    assert QUOTE_RULE in item
+    assert (
+        "So a case that the wording of the documents leaves open is a finding that does not "
+        "block, on every pull request alike." in item
+    )
+    assert PLACED_RULE in item
+    # The two rules come after the rule of the quote and before the placed finding, which they
+    # narrow.
+    assert item.index(QUOTE_RULE) < item.index(PULL_REQUEST_ONLY) < item.index(PLACED_RULE)
+    assert NO_LONGER_REASON in text.split(" 5. ", 1)[1].split(" 6. ", 1)[0]
+    assert "`reason` is empty where no decision of the opener concerns the finding." not in text
+    assert "the commits after that commit" not in text
+
+
+def test_the_judges_instructions_of_a_range_hold_both_rules_in_a_ranges_words() -> None:
+    text = flat(fr.RANGE_INSTRUCTIONS)
+    item = text.split(" 2. ", 1)[1].split(" 3. ", 1)[0]
+    for sentence in (RANGE_ONLY, RANGE_UNCHANGED_LINE, RANGE_HELD_COMMIT, RANGE_DISPATCH):
+        assert sentence in item, sentence
+    assert QUOTE_RULE in item
+    assert "pull request" not in item
+    assert "description" not in item
+    # A range has no decision; its instructions of a run built on another say what `reason` is.
+    assert "decision" not in text
+    assert "`reason` then says in one sentence why it no longer blocks." in flat(
+        fr.RANGE_BUILT_INSTRUCTIONS
+    )
+
+
+def test_the_readme_says_both_rules_in_both_entries() -> None:
+    pull_request, ranged = entry("conventions.yml"), entry("conventions-range.yml")
+    for text in (pull_request, ranged):
+        assert "https://github.com/xippios/.github/issues/151" in text
+        assert "https://github.com/xippios/.github/issues/152" in text
+        assert (
+            "neither does a finding on a commit that the default branch already holds, its "
+            "subject, its message or its place in the order, since no later commit mends it"
+        ) in text
+        assert "Both stay in the comment as findings that do not block." in text
+        # A public repository's README cites no record that its reader cannot open.
+        bullet = text.split("- **What the range itself breaks**", 1)[1].split(" - **", 1)[0]
+        assert "coordinate-core" not in bullet
+        # What the range leaves out, and its counter-case (fix rounds 1 and 2 of #154).
+        assert (
+            "Code or text that the range left as it was and that does not follow a rule is no "
+            "such case, since it breaks the rule in lines that the range left" + NOR_LACKED
+        ) in text
+    assert (
+        "a finding blocks only where the range itself breaks the rule, in a line that it adds or "
+        "changes, in a file that it adds or removes, in a commit of the pull request's own "
+        "branch, in the description, or in what it leaves out where a document asks something of "
+        "the change itself, such as a changelog entry, a raised version, a record or a test "
+        "beside the behavior it adds."
+    ) in pull_request
+    assert (
+        "A rule broken in a line that the range left as it was does not block, on every pull "
+        "request alike" in pull_request
+    )
+    assert "A placed finding blocks where the range itself breaks its rule." in pull_request
+    assert (
+        "the first message names the pull request's own commits, those of the range that the "
+        "merge base of the default branch and the head does not reach, a commit below a merge of "
+        "the default branch among them, and says that the default branch holds every other "
+        "commit of the range; `meta.json` carries them as `own`."
+    ) in pull_request
+    assert "the first message names the commit up to which it holds it" not in pull_request
+    assert (
+        "The judge's instructions hold both rules, and the script holds neither by itself: it "
+        "does not check that a finding lies on a line that the range changed, and a finding names "
+        "no commit."
+    ) in pull_request
+    assert (
+        "a finding of a range blocks only where the range itself breaks the rule, in a line that "
+        "it adds or changes, in a file that it adds or removes, in a commit that the default "
+        "branch does not hold yet, or in what it leaves out where a document asks something of "
+        "the change itself, such as a changelog entry, a record or a test beside the behavior it "
+        "adds, though not the release's own changes."
+    ) in ranged
+    assert (
+        "A rule broken in a line that the range left as it was does not block, on every range "
+        "alike" in ranged
+    )
+    assert "only a dispatch on another branch judges commits that the default branch" in ranged
+    assert "The judge's instructions hold both rules, and the script holds neither by itself." in (
+        ranged
+    )
+
+
+REASON_DESCRIPTION = (
+    "One sentence where a decision of the opener concerns the finding: for a decided one, why the "
+    "decision shows that no written rule is broken; for an open one, why the rule stands against "
+    "it. One sentence too where a finding that blocked is carried by one that does not block: why "
+    "it no longer blocks. Empty otherwise."
+)
+
+
+@pytest.mark.parametrize("tools", [fr.TOOLS, fr.RANGE_TOOLS], ids=["pull request", "range"])
+def test_the_description_of_reason_says_the_carried_case_as_item_5_does(tools: list) -> None:
+    """The judge reads the description at the field: it asks the reason that the script asks
+    (finding 4 of the review of #154)."""
+    schema = next(tool for tool in tools if tool["name"] == "submit_verdict")["input_schema"]
+    entry_schema = schema["properties"]["earlier"]["items"]
+    assert entry_schema["properties"]["reason"]["description"] == REASON_DESCRIPTION
+
+
+MAIN_HELP = (
+    "the ref of the default branch: the README and its documents are read from it, and a pull "
+    "request's own commits are told from it (default origin/main)"
+)
+
+
+@pytest.mark.parametrize("command", ["prepare", "range-prepare", "dry-run"])
+def test_the_help_of_main_says_that_it_stands_for_the_default_branch(capsys, command: str) -> None:
+    """`--main` also decides the pull request's own commits, so its help and the README say that
+    it stands for the default branch (finding 5 of the review of #154)."""
+    with pytest.raises(SystemExit) as stop:
+        fr.main([command, "--help"])
+    assert stop.value.code == 0
+    assert MAIN_HELP in flat(capsys.readouterr().out)
+
+
+def test_the_readme_says_what_main_stands_for_and_what_a_merged_pull_request_is_told() -> None:
+    section = flat(README.split("## Running the review locally", 1)[1].split("\n## ", 1)[0])
+    assert (
+        "the documents from the clone's `origin/main`, which also stands for the default branch "
+        "from which the pull request's own commits are told (`--main` names another ref for "
+        "both)"
+    ) in section
+    assert (
+        "On a pull request that merged, whose head the default branch already holds, the pull "
+        "request's own commits are read from the merge base of its base and its head, so the "
+        "judge is told the commits that a run on the open pull request was told."
+    ) in section
+
+
+UNCHANGED = "The range left the line as it was, so the rule does not block it (.github#151)."
+
+
+def test_a_finding_that_blocked_on_a_range_comes_back_open_and_no_longer_blocks(
+    range_workspace: Path, tmp_path: Path, api
+) -> None:
+    """A finding that blocked before this step and now falls under one of the two rules comes
+    back open, carried by a finding that does not block, with the judge's reason why: the run
+    ends ready, and the comment prints the reason. On a pull request the suite holds the same
+    path in test_conventions.py and test_conventions_workflow.py."""
+    before = finding(file="", line=None, text="A step's commit cites in a form the style refuses.")
+    with_earlier(range_workspace, [before])
+    carrier = finding(blocking=False, quote=None, file="", line=None, text="Still, on main.")
+    client = api(message([submit("ready", [carrier], [state(1, "open", 1, UNCHANGED)])]))
+    code, result = review(range_workspace, tmp_path)
+    assert code == 0
+    assert len(client.messages.requests) == 1
+    assert result["verdict"] == "ready"
+    assert result["range"]["kind"] == "range"
+    carried = result["earlier"]["findings"][0]
+    assert carried["unblocked"] is True
+    lines = comment_lines(result)
+    assert lines[1].startswith(("**Findings.**", "**Approved.**"))
+    assert any(
+        line.endswith(f"Open: finding 1 above. It blocked before and no longer blocks: {UNCHANGED}")
+        for line in lines
+    ), lines
