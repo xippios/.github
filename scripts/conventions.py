@@ -66,11 +66,12 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   per line, and the review tries them in that order, each on a client of its own (.github#87):
   it runs on one key from its first turn to its verdict, and where the API refuses the key or
   its account, at its first request or a later one, it starts again from its first turn on
-  the next key (``refuses_key``). A request that fails on an overload, an error of the server
-  or a lost connection is sent again on its key, up to three times, 30, 60 and 120 seconds
-  apart, before the attempt ends (``transient``, ``_respond``, .github#158). The summary line
-  names the key the review ended on by its position, ``key=2/3``, and counts the tokens of
-  every attempt. After a run before, the
+  the next key (``refuses_key``), where an error event of the stream whose message names the
+  balance refuses it too (.github#163). A request that fails on an overload, an error of the
+  server or a lost connection is sent again on its key, up to three times, 30, 60 and 120
+  seconds apart, before the attempt ends (``transient``, ``_respond``, .github#158). The
+  summary line names the key the review ended on by its position, ``key=2/3``, and counts the
+  tokens of every attempt. After a run before, the
   review gives each of its findings one state, ``fixed``, ``decided`` or ``open``, and the
   script refuses another (``earlier_problem``); each new finding then says whether its file
   changed since the head judged before. A finding names a line only where its file has that
@@ -82,8 +83,8 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   keeps blocking (``carriers``). The quote of every finding is checked by that rule
   (``quote_standing``), and the comment shows one only where it stands (``shown_quote``).
   The verdict is ``ready`` exactly where no finding blocks then
-  (``accept``). An API error is named by its class and the request's id alone (``api_error``,
-  .github#121).
+  (``accept``). An API error is named by its class, the type its body gives where that is a
+  code (``error_named``, .github#163), and the request's id alone (``api_error``, .github#121).
 - ``verdict`` reads the verdict file of ``review`` and writes the check's comment to the job
   summary, the log and the pull request.
 - ``range-gate`` reads the environment of the job ``gate`` of conventions-range.yml, with the
@@ -180,8 +181,13 @@ REFUSING_STATUSES = frozenset({401, 402, 403, 429})
 REFUSING_TYPES = frozenset(
     {"authentication_error", "permission_error", "billing_error", "rate_limit_error"}
 )
-# A 400 refuses the account too where its message names the balance.
+# An error refuses the account too where its message names the balance, whatever its status and
+# its type: a 400 before the stream, or an error event of the stream under its status 200
+# (.github#163).
 BALANCE = re.compile(r"credit balance", re.IGNORECASE)
+# The type of an error that its body gives, as the lines of an error of the API name it beside the
+# error's class: a code of the API's, and no other text of the body (.github#121, .github#163).
+ERROR_TYPE = re.compile(r"[a-z_]{1,40}")
 # A request that fails on an overload, an error of the server or a lost connection is sent
 # again, the same request on the same key, after each of these waits in seconds (.github#158).
 # The SDK tries no stream again once it has begun, so an error event of the stream reaches the
@@ -3405,7 +3411,9 @@ def built_notice(built: Built, end: str) -> str:
 def _error_message(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
     """The message of the error body where it has one, else the SDK's.
 
-    ``refuses_key`` reads it for the balance; no output carries it (.github#121).
+    The body is ``{"type": "error", "error": {"type": …, "message": …}}`` for a status error
+    and for an error event of the stream alike, which the SDK gives as one under the stream's
+    status 200. ``refuses_key`` reads it for the balance; no output carries it (.github#121).
     """
     body = getattr(exc, "body", None)
     if isinstance(body, dict) and isinstance(body.get("error"), dict):
@@ -3415,30 +3423,51 @@ def _error_message(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
     return getattr(exc, "message", None) or str(exc)
 
 
+def error_named(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
+    """The error's class, ``<class> of type <type>`` where its body gives a type (.github#163).
+
+    The type is the body's ``error.type``, such as ``overloaded_error``, and is named only where
+    it is a code of lowercase letters and underscores (``ERROR_TYPE``); a body that gives none or
+    another text adds nothing. Every line that names an error of the API names it so: the
+    reason of ``api_error``, the job log's line of a try and that of a key moved past, and the
+    reason where the API refused every key. No text of the message (.github#121).
+    """
+    name = type(exc).__name__
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict) and isinstance(body.get("error"), dict):
+        kind = body["error"].get("type")
+        if isinstance(kind, str) and ERROR_TYPE.fullmatch(kind):
+            return f"{name} of type {kind}"
+    return name
+
+
 def api_error(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
     """``API error: <class>``, with ``(request <id>)`` where the error carries the request's id.
 
-    No text of the upstream's message (.github#121): it is the upstream's and not the
-    check's, and it can say what a public output does not carry. The job log and the job
-    summary carry this line alike, on a pull request, on a range and in a dry run.
+    The class as ``error_named`` names it, with the type of the error's body where that is a
+    code (.github#163). No text of the upstream's message (.github#121): it is the upstream's
+    and not the check's, and it can say what a public output does not carry. The job log and
+    the job summary carry this line alike, on a pull request, on a range and in a dry run.
     """
     request_id = getattr(exc, "request_id", None)
     suffix = f" (request {one_line(request_id)})" if request_id else ""
-    return f"API error: {type(exc).__name__}{suffix}"
+    return f"API error: {error_named(exc)}{suffix}"
 
 
 def refuses_key(exc: anthropic.APIStatusError) -> bool:
     """Whether the API refused the key or its account (.github#87).
 
-    An authentication, permission or billing error, a rate limit, or a 400 whose message names
-    the balance; any other error ends the review on its key.
+    An authentication, permission or billing error, a rate limit, or an error whose message
+    names the balance, whatever its status and its type: a 400 before the stream, or an error
+    event of the stream, which arrives under the stream's status 200 (.github#163). It is judged
+    before ``transient``. Any other error moves the review to no other key.
     """
     body = exc.body if isinstance(exc.body, dict) else {}
     error = body.get("error") if isinstance(body.get("error"), dict) else {}
     kind = error.get("type")
     if exc.status_code in REFUSING_STATUSES or (isinstance(kind, str) and kind in REFUSING_TYPES):
         return True
-    return exc.status_code == 400 and BALANCE.search(_error_message(exc)) is not None
+    return BALANCE.search(_error_message(exc)) is not None
 
 
 def transient(exc: anthropic.AnthropicError | httpx2.HTTPError) -> bool:
@@ -3483,9 +3512,9 @@ def run_review(
     stop without a verdict, or the turn cap. Where the API refuses the key or its account, the
     review starts again from its first turn on the next key; no conversation moves to another
     key. The outcome is the last attempt's, with the tokens of every attempt. Where the API
-    refused every key, its reason names each by its position and error class, or with one key
-    gives that key's error as before. An unexpected error is no verdict too, with the counters
-    so far and the error's class only: the job log is public.
+    refused every key, its reason names each by its position and its error as ``error_named``
+    names it, or with one key gives that key's error as before. An unexpected error is no
+    verdict too, with the counters so far and the error's class only: the job log is public.
     """
     count = len(keys)
     usage = Usage()
@@ -3495,7 +3524,7 @@ def run_review(
         try:
             _loop(make_client(key), material, outcome, max_turns=max_turns, hidden=hidden)
         except KeyRefused as refused:
-            name = type(refused.error).__name__
+            name = error_named(refused.error)
             refusals.append(f"key {position} {name}")
             if position < count:
                 print(
@@ -3620,10 +3649,12 @@ def _respond(client: Client, outcome: Outcome, **request: object) -> anthropic.t
     On an overload, an error of the server or a lost connection (``transient``), the script
     waits and sends the same request again, on the same key with the same conversation, so the
     cache still serves its prefix: up to three times, after the waits of ``WAITS``
-    (.github#158). A try is no turn, and the job log names each by its turn, the error's class
-    and the wait. A refusal of the key or its account raises ``KeyRefused`` at once, with no
-    try. Any other error, or that of the last try, ends the attempt: None, with the reason in
-    ``outcome``, the error's class and the request's id (.github#121), and the tries made.
+    (.github#158). A try is no turn, and the job log names each by its turn, the error as
+    ``error_named`` names it and the wait. A refusal of the key or its account raises
+    ``KeyRefused`` at once, with no try, an error event of the stream whose message names the
+    balance among them (.github#163). Any other error, or that of the last try, ends the
+    attempt: None, with the reason in ``outcome``, the error as ``api_error`` names it
+    (.github#121), and the tries made.
     """
     import anthropic
     import httpx2
@@ -3647,7 +3678,7 @@ def _respond(client: Client, outcome: Outcome, **request: object) -> anthropic.t
                     outcome.reason += f" after {tries} {'try' if tries == 1 else 'tries'}"
                 return None
             print(
-                f"conventions: turn {outcome.turns + 1} failed ({type(exc).__name__}); "
+                f"conventions: turn {outcome.turns + 1} failed ({error_named(exc)}); "
                 f"try {tries + 1}/{len(WAITS)} in {WAITS[tries]} s",
                 file=sys.stderr,
                 flush=True,
