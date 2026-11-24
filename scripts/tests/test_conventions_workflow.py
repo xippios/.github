@@ -891,6 +891,31 @@ def test_the_readme_lays_out_the_keys_of_the_secret() -> None:
     assert "says nothing of keys" in text
 
 
+def test_the_readme_says_a_refusal_inside_the_stream_and_the_type_of_an_error() -> None:
+    """The item on the keys says that an error whose message names the balance refuses the key
+    whatever its status, an error event of the stream among them, and that each line of an error
+    of the API names its type where its body gives a code, and no text of it (.github#163)."""
+    section = README.split("**`.github/workflows/conventions.yml`**", 1)[1]
+    item = section.split("- **The keys**", 1)[1].split("\n  - **", 1)[0]
+    text = " ".join(item.split())
+    assert "a 400 whose message names the balance" not in text
+    assert (
+        "and an error whose message names the balance of the account, whatever its status and "
+        "its type: a 400 before the stream, or an error event of the stream under the stream's "
+        "status 200 (https://github.com/xippios/.github/issues/163)" in text
+    )
+    assert "`API error: APIStatusError of type overloaded_error (request req_…) after 3 tries`" in (
+        text
+    )
+    assert (
+        "Every line that names an error of the API by its class, in the job log and the summary "
+        "alike, names beside it the type that the error's body gives, as `of type "
+        "overloaded_error`, where that type is a code of lowercase letters and underscores, and "
+        "no type where the body gives none or another text; no line carries the error's message "
+        "(https://github.com/xippios/.github/issues/121)." in text
+    )
+
+
 def test_the_readme_and_the_docstring_name_the_judge_the_script_runs() -> None:
     """The README's sentence on the judge and on the turn cap and the script's docstring name
     the model, the effort and the turn cap that the script runs with (.github#93)."""

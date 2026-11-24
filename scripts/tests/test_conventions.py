@@ -637,17 +637,20 @@ CREDIT = (
 def test_an_api_error_is_no_verdict_with_its_class(
     workspace: Path, tmp_path: Path, api, capsys, error, name
 ) -> None:
-    """The line names the class and, where the error carries one, the request's id, and no
-    text of the upstream's message (.github#121). An error that is tried again names its tries
-    too (.github#158, below)."""
+    """The line names the class, the type that the body gives as a code (.github#163), here the
+    scripted body's, and, where the error carries one, the request's id, and no text of the
+    upstream's message (.github#121). An error that is tried again names its tries too
+    (.github#158, below)."""
     api(error)
     code, result = run_review(workspace, tmp_path)
     out = capsys.readouterr().out
     assert code == 2
     assert result["verdict"] is None
     suffix = " (request req_test1)" if isinstance(error, anthropic.APIStatusError) else ""
-    assert result["reason"] == f"API error: {name}{suffix}"
-    assert out.startswith(f"conventions: no verdict (API error: {name}{suffix}) ")
+    assert result["reason"] == f"API error: {name} of type error_type{suffix}"
+    assert out.startswith(
+        f"conventions: no verdict (API error: {name} of type error_type{suffix}) "
+    )
     assert "turns=0 tool_calls=0 input=0 " in out
     assert fr._error_message(error) not in out
 
@@ -655,15 +658,16 @@ def test_an_api_error_is_no_verdict_with_its_class(
 def test_the_credit_message_reaches_neither_the_log_nor_the_summary(
     workspace: Path, tmp_path: Path, api, monkeypatch: pytest.MonkeyPatch, capsys
 ) -> None:
-    """The upstream's message is its text and not the check's: the line names the class and the
-    request's id alone (.github#121)."""
+    """The upstream's message is its text and not the check's: the line names the class, the
+    type and the request's id alone (.github#121, .github#163)."""
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     api(status_error(anthropic.BadRequestError, 400, CREDIT))
     run_review(workspace, tmp_path)
     captured = capsys.readouterr()
-    assert "(API error: BadRequestError (request req_test1)) turns=0" in captured.out
-    assert "(API error: BadRequestError (request req_test1)) turns=0" in summary.read_text()
+    named = "(API error: BadRequestError of type error_type (request req_test1)) turns=0"
+    assert named in captured.out
+    assert named in summary.read_text()
     for text in (captured.out, captured.err, summary.read_text()):
         assert "credit balance" not in text
         assert "Plans & Billing" not in text
@@ -689,7 +693,7 @@ def test_an_api_error_message_never_reaches_the_line(
     code, result = run_review(workspace, tmp_path)
     out = capsys.readouterr().out
     assert code == 2
-    assert result["reason"] == "API error: BadRequestError (request req_test1)"
+    assert result["reason"] == "API error: BadRequestError of type error_type (request req_test1)"
     assert FAKE_KEY not in out
     assert "bad key" not in out
     assert "x" * 10 not in out
@@ -701,7 +705,7 @@ def test_an_api_error_message_never_reaches_the_line(
         # An error event of a type that is not tried again ends the attempt at once.
         (
             status_error(anthropic.APIStatusError, 200, "Overloaded"),
-            "APIStatusError (request req_test1)",
+            "APIStatusError of type error_type (request req_test1)",
         ),
         # A connection lost while the stream is read ends it once its tries are spent.
         (
@@ -796,6 +800,15 @@ def error_name(error) -> str:
     return type(error.error if isinstance(error, MidStream) else error).__name__
 
 
+def error_named(error) -> str:
+    """A scripted error as the lines of the review name it: its class and, where its body gives
+    a type, ``of type`` and that type; every scripted type below is a code (.github#163)."""
+    inner = error.error if isinstance(error, MidStream) else error
+    body = getattr(inner, "body", None)
+    kind = body.get("error", {}).get("type") if isinstance(body, dict) else None
+    return f"{error_name(error)} of type {kind}" if kind else error_name(error)
+
+
 def test_the_secret_holds_its_keys_one_per_line_in_order() -> None:
     assert fr.keys_of(f"{KEYS[1]}\n\n  {KEYS[0]}  \r\n{KEYS[2]}\n") == [KEYS[1], KEYS[0], KEYS[2]]
     assert fr.keys_of(KEYS[0]) == [KEYS[0]]
@@ -836,7 +849,7 @@ def test_a_refused_key_moves_the_review_to_the_next(
     assert result["summary"].endswith(" model=claude-opus-5-5 effort=xhigh key=2/3")
     assert captured.out == result["summary"] + "\n"
     assert (
-        f"conventions: key 1/3 refused ({error_name(error)}); the review starts again on key 2/3\n"
+        f"conventions: key 1/3 refused ({error_named(error)}); the review starts again on key 2/3\n"
     ) in captured.err
     assert waits == []
     assert len(clients[KEYS[0]].messages.requests) == 1
@@ -951,7 +964,9 @@ def test_one_key_refused_ends_as_before_on_key_1_of_1(
     api(REFUSED)
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert result["reason"] == "API error: AuthenticationError (request req_test1)"
+    assert result["reason"] == (
+        "API error: AuthenticationError of type authentication_error (request req_test1)"
+    )
     assert result["summary"].endswith(" key=1/1")
     assert "refused" not in capsys.readouterr().err
 
@@ -975,9 +990,11 @@ def test_every_key_refused_is_no_verdict_naming_each_by_position_and_class(
     assert code == 2
     assert made == list(KEYS)
     assert result["verdict"] is None
+    # Each key by its position, its error's class and the type of the error's body (.github#163).
     assert result["reason"] == (
-        "API error on every key: key 1 AuthenticationError, key 2 BadRequestError, "
-        "key 3 RateLimitError"
+        "API error on every key: key 1 AuthenticationError of type authentication_error, "
+        "key 2 BadRequestError of type invalid_request_error, "
+        "key 3 RateLimitError of type rate_limit_error"
     )
     assert result["usage"]["input_tokens"] == 7
     assert result["summary"].startswith(f"conventions: no verdict ({result['reason']}) turns=0 ")
@@ -1023,7 +1040,9 @@ def test_every_key_of_the_secret_is_redacted_whatever_its_form(
     captured = capsys.readouterr()
     assert code == 2
     assert made == list(KEYS[:2])
-    assert result["reason"] == "API error: InternalServerError (request req_test1) after 3 tries"
+    assert result["reason"] == (
+        "API error: InternalServerError of type api_error (request req_test1) after 3 tries"
+    )
     written = (tmp_path / "verdict.json").read_text()
     for key in KEYS:
         assert key not in captured.out + captured.err + written + summary.read_text()
@@ -1092,7 +1111,7 @@ def test_an_error_that_a_try_mends_costs_no_turn(
 ) -> None:
     """The same request again on the same key after 30 seconds, and the review goes on from that
     turn: the try is no turn, and the job log says that the turn failed, by the error's class
-    alone, and when it is tried again."""
+    and the type of its body (.github#163) alone, and when it is tried again."""
     clients, made = keyed(
         [listing((7, 3, 0, 0)), error, message([verdict()], usage=(5, 2, 0, 0))], []
     )
@@ -1112,7 +1131,7 @@ def test_an_error_that_a_try_mends_costs_no_turn(
     assert requests[2] == requests[1]
     assert lines(captured.err) == [
         "conventions: turn 1 stop_reason=tool_use tool_calls=1 tools=list_files",
-        f"conventions: turn 2 failed ({error_name(error)}); try 1/3 in 30 s",
+        f"conventions: turn 2 failed ({error_named(error)}); try 1/3 in 30 s",
         "conventions: turn 2 stop_reason=tool_use tool_calls=1 tools=submit_verdict",
     ]
     assert SAID not in captured.out + captured.err
@@ -1130,15 +1149,15 @@ def test_an_error_that_outlasts_the_three_tries_is_no_verdict(
     error,
 ) -> None:
     """Three tries, 30, 60 and 120 seconds apart, then no verdict as before, on that key alone:
-    the line names the error's class, the request's id and the tries, never the upstream's
-    message (.github#121)."""
+    the line names the error's class, the type of its body (.github#163), the request's id and
+    the tries, never the upstream's message (.github#121)."""
     summary = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
     # A fifth answer that no request reaches: the tries stop at three.
     clients, made = keyed([error] * 4 + [message([verdict()])], [message([verdict()])])
     code, result = run_review(workspace, tmp_path)
     captured = capsys.readouterr()
-    name = error_name(error)
+    name = error_named(error)
     inner = error.error if isinstance(error, MidStream) else error
     request = " (request req_test1)" if isinstance(inner, anthropic.APIStatusError) else ""
     assert code == 2
@@ -1174,10 +1193,10 @@ def test_each_turn_has_three_tries_of_its_own(
     assert result["turns"] == 2
     assert waits == [30, 60, 30]
     assert lines(capsys.readouterr().err) == [
-        "conventions: turn 1 failed (APIStatusError); try 1/3 in 30 s",
+        "conventions: turn 1 failed (APIStatusError of type overloaded_error); try 1/3 in 30 s",
         "conventions: turn 1 failed (APIConnectionError); try 2/3 in 60 s",
         "conventions: turn 1 stop_reason=tool_use tool_calls=1 tools=list_files",
-        "conventions: turn 2 failed (APIStatusError); try 1/3 in 30 s",
+        "conventions: turn 2 failed (APIStatusError of type overloaded_error); try 1/3 in 30 s",
         "conventions: turn 2 stop_reason=tool_use tool_calls=1 tools=submit_verdict",
     ]
 
@@ -1204,7 +1223,7 @@ def test_an_error_that_is_not_tried_again_ends_the_attempt_at_once(
     captured = capsys.readouterr()
     assert code == 2
     assert made == [KEYS[0]]
-    assert result["reason"] == f"API error: {error_name(error)} (request req_test1)"
+    assert result["reason"] == f"API error: {error_named(error)} (request req_test1)"
     assert result["summary"].endswith(" key=1/2")
     assert waits == []
     assert len(clients[KEYS[0]].messages.requests) == 1
@@ -1221,7 +1240,9 @@ def test_an_error_on_a_try_that_is_not_tried_again_names_the_tries_made(
     )
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert result["reason"] == "API error: BadRequestError (request req_test1) after 1 try"
+    assert result["reason"] == (
+        "API error: BadRequestError of type invalid_request_error (request req_test1) after 1 try"
+    )
     assert waits == [30]
 
 
@@ -1239,11 +1260,201 @@ def test_a_refusal_on_a_try_moves_the_review_to_the_next_key(
     assert result["summary"].endswith(" key=2/2")
     assert waits == [30]
     assert len(clients[KEYS[1]].messages.requests[0]["messages"]) == 1
-    tried = "conventions: turn 2 failed (APIStatusError); try 1/3 in 30 s\n"
-    moved = "conventions: key 1/2 refused (APIStatusError); the review starts again on key 2/2\n"
+    tried = (
+        "conventions: turn 2 failed (APIStatusError of type overloaded_error); try 1/3 in 30 s\n"
+    )
+    moved = (
+        "conventions: key 1/2 refused (APIStatusError of type rate_limit_error); "
+        "the review starts again on key 2/2\n"
+    )
     assert tried in err
     assert moved in err
     assert err.index(tried) < err.index(moved)
+
+
+# --- a refusal inside the stream, and the type of an error (.github#163) -----------------
+
+
+def with_body(cls, status, body):
+    """The SDK's error of ``status`` with ``body`` as it is, as the SDK builds one."""
+    response = httpx2.Response(status, request=REQUEST, headers={"request-id": "req_test1"})
+    return cls(f"Error code: {status} - {body}", response=response, body=body)
+
+
+# An error whose message names the balance refuses the key's account whatever its status and its
+# type: a 400 before the stream as before, an error event of the stream under the stream's status
+# 200, of a type that is tried again among them, since a refusal is judged first, an event whose
+# data is no JSON, which the SDK gives as its text, and an error of the server.
+BALANCE_ERRORS = [
+    status_error(anthropic.BadRequestError, 400, CREDIT, "invalid_request_error"),
+    MidStream(status_error(anthropic.APIStatusError, 200, CREDIT, "invalid_request_error")),
+    MidStream(status_error(anthropic.APIStatusError, 200, CREDIT, "overloaded_error")),
+    MidStream(with_body(anthropic.APIStatusError, 200, CREDIT)),
+    status_error(anthropic.InternalServerError, 500, CREDIT, "api_error"),
+]
+BALANCE_IDS = ["400", "event", "overloaded_error event", "event of text", "500"]
+
+
+@pytest.mark.parametrize("error", BALANCE_ERRORS, ids=BALANCE_IDS)
+def test_an_error_that_names_the_balance_moves_the_review_to_the_next_key(
+    workspace: Path,
+    tmp_path: Path,
+    keyed,
+    waits: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    error,
+) -> None:
+    """At a later turn too, the review starts again from its first turn on the next key, with no
+    try, and the job log names the key it moved past by the error's class and type alone, never
+    by its message (.github#121)."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    clients, made = keyed([listing(), error, message([verdict()])], [message([verdict()])], [])
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert made == list(KEYS[:2])
+    assert result["verdict"] == "ready"
+    assert result["summary"].endswith(" key=2/3")
+    assert waits == []
+    assert len(clients[KEYS[0]].messages.requests) == 2
+    assert len(clients[KEYS[1]].messages.requests[0]["messages"]) == 1
+    assert " failed (" not in captured.err
+    assert (
+        f"conventions: key 1/3 refused ({error_named(error)}); the review starts again on key 2/3\n"
+    ) in captured.err
+    for text in (captured.out, captured.err, summary.read_text()):
+        assert "credit balance" not in text
+
+
+@pytest.mark.parametrize("error", BALANCE_ERRORS[:2], ids=BALANCE_IDS[:2])
+def test_the_message_of_a_400_and_of_an_error_event_is_read_from_the_body(error) -> None:
+    """The message of the error body, ``{"type": "error", "error": {"type": …, "message": …}}``,
+    which the SDK gives a 400 and an error event of the stream alike."""
+    inner = error.error if isinstance(error, MidStream) else error
+    assert fr._error_message(inner) == CREDIT
+
+
+@pytest.mark.parametrize("kind", sorted(fr.TRANSIENT_TYPES))
+def test_an_error_event_that_does_not_name_the_balance_is_tried_again_by_its_type(
+    workspace: Path, tmp_path: Path, keyed, waits: list[int], capsys, kind
+) -> None:
+    """As before (.github#158): a try on the same key, whose line names the event's type."""
+    event = MidStream(status_error(anthropic.APIStatusError, 200, SAID, kind))
+    _, made = keyed([event, message([verdict()])], [message([verdict()])])
+    code, result = run_review(workspace, tmp_path)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert made == [KEYS[0]]
+    assert result["summary"].endswith(" key=1/2")
+    assert waits == [30]
+    assert f"conventions: turn 1 failed (APIStatusError of type {kind}); try 1/3 in 30 s\n" in err
+    assert "refused" not in err
+
+
+def test_an_error_event_that_does_not_name_the_balance_ends_the_attempt_by_its_type(
+    workspace: Path, tmp_path: Path, keyed, waits: list[int], capsys
+) -> None:
+    """As before: an event of a type that is not tried again ends the attempt on its key."""
+    event = MidStream(status_error(anthropic.APIStatusError, 200, SAID, "invalid_request_error"))
+    _, made = keyed([event, message([verdict()])], [message([verdict()])])
+    code, result = run_review(workspace, tmp_path)
+    err = capsys.readouterr().err
+    assert code == 2
+    assert made == [KEYS[0]]
+    assert result["reason"] == (
+        "API error: APIStatusError of type invalid_request_error (request req_test1)"
+    )
+    assert result["summary"].endswith(" key=1/2")
+    assert waits == []
+    assert "refused" not in err
+
+
+def error_body(kind) -> dict:
+    return {"type": "error", "error": {"type": kind, "message": SAID}}
+
+
+# The bodies of the errors below and the words that the lines add to the error's class: the type
+# where the body gives one as a code of lowercase letters and underscores, up to 40 of them, and
+# nothing where it gives none, or another text, which is the upstream's.
+BODIES = [
+    (error_body("overloaded_error"), " of type overloaded_error"),
+    (error_body("x" * 40), " of type " + "x" * 40),
+    ({"type": "error", "error": {"message": SAID}}, ""),
+    ({"detail": SAID}, ""),
+    (SAID, ""),
+    (None, ""),
+    (error_body("x" * 41), ""),
+    (error_body("Overloaded"), ""),
+    (error_body("overloaded error"), ""),
+    (error_body(f"overloaded_error: {SAID}"), ""),
+    (error_body("overloaded_error\n"), ""),
+    (error_body("error_2"), ""),
+    (error_body("error-type"), ""),
+    (error_body(""), ""),
+    (error_body(529), ""),
+]
+BODY_IDS = [
+    "code",
+    "40 letters",
+    "no type",
+    "no error",
+    "text",
+    "none",
+    "41 letters",
+    "capital",
+    "space",
+    "message",
+    "newline",
+    "digit",
+    "hyphen",
+    "empty",
+    "number",
+]
+
+
+@pytest.mark.parametrize(("body", "typed"), BODIES, ids=BODY_IDS)
+def test_each_line_of_an_api_error_names_the_type_its_body_gives_as_a_code(
+    workspace: Path,
+    tmp_path: Path,
+    keyed,
+    waits: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    body,
+    typed: str,
+) -> None:
+    """The line of a try, that of a key moved past and the summary line name the error by its
+    class and, beside it, the type, in one form; no text of the body otherwise (.github#121)."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    keyed(
+        [
+            with_body(anthropic.InternalServerError, 500, body),
+            with_body(anthropic.AuthenticationError, 401, body),
+        ],
+        [with_body(anthropic.BadRequestError, 400, body)],
+    )
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert waits == [30]
+    moved = f"conventions: key 1/2 refused (AuthenticationError{typed}); the review starts again"
+    assert lines(captured.err, "conventions: ") == [
+        f"conventions: turn 1 failed (InternalServerError{typed}); try 1/3 in 30 s",
+        f"{moved} on key 2/2",
+    ]
+    reason = f"API error: BadRequestError{typed} (request req_test1)"
+    assert result["reason"] == reason
+    assert result["summary"].startswith(f"conventions: no verdict ({reason}) turns=0 ")
+    assert result["summary"].endswith(" key=2/2")
+    assert result["summary"] in summary.read_text()
+    kind = body["error"].get("type") if isinstance(body, dict) and "error" in body else None
+    for text in (captured.out, captured.err, summary.read_text()):
+        assert SAID not in text
+        if not typed and isinstance(kind, str) and kind:
+            assert kind not in text
 
 
 # --- the sandbox -------------------------------------------------------------------------
