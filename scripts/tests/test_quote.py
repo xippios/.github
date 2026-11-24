@@ -22,9 +22,9 @@ judge's instructions of a pull request and of a range and the README say so, and
 neither by itself; a finding that blocked before and falls under one of them comes back open,
 carried by a finding that does not block, with the judge's reason.
 
-The line of a review without a verdict names an API error by its class and the request's id, and
-no text of the upstream's message, in the job log and the job summary alike, on a pull request, on
-a range and in a dry run (.github#121).
+The line of a review without a verdict names an API error by its class, the type that its body
+gives as a code (.github#163) and the request's id, and no text of the upstream's message, in the
+job log and the job summary alike, on a pull request, on a range and in a dry run (.github#121).
 
 The tests run the script's commands with a fake Messages client; no test needs a key or the
 network."""
@@ -60,7 +60,9 @@ RULE = "Every change of `src/` comes with its test, in the same commit."
 CORE_RULE = "A changelog entry never names a commit."
 MISSING = "It does not block: it quotes no sentence of the document it names."
 NOT_FOUND = "It does not block: its quote was not found in the document it names."
-UPSTREAM = "Your credit balance is too low to access the API; go to the billing page."
+# The upstream's message, which no line carries (.github#121). It names no balance: a message
+# that names it refuses the key, whatever the status of its error (.github#163).
+UPSTREAM = "Your organization is over its usage limit; go to the billing page."
 
 
 def finding(
@@ -693,14 +695,17 @@ def response(status: int) -> httpx2.Response:
 # An error that is tried again ends the review once its three tries are spent, and the line
 # names them (.github#158); the script of each test holds the error four times.
 ERRORS = [
-    (status_error(anthropic.BadRequestError, 400, UPSTREAM), "BadRequestError (request req_test1)"),
+    (
+        status_error(anthropic.BadRequestError, 400, UPSTREAM),
+        "BadRequestError of type error_type (request req_test1)",
+    ),
     (
         anthropic.InternalServerError(UPSTREAM, response=response(503), body=UPSTREAM),
         "InternalServerError (request req_test1) after 3 tries",
     ),
     (
         MidStream(status_error(anthropic.APIStatusError, 200, UPSTREAM, "overloaded_error")),
-        "APIStatusError (request req_test1) after 3 tries",
+        "APIStatusError of type overloaded_error (request req_test1) after 3 tries",
     ),
     (
         anthropic.APIConnectionError(message=UPSTREAM, request=REQUEST),
@@ -715,7 +720,7 @@ IDS = ["status", "body without an error", "error event", "connection", "lost str
 
 
 def no_upstream(text: str) -> None:
-    assert "credit balance" not in text
+    assert "usage limit" not in text
     assert "billing" not in text
 
 
@@ -775,7 +780,10 @@ def test_the_line_of_an_api_error_names_its_class_and_request_in_a_dry_run(
     code = fr.main(["dry-run", "--repo", REPO, target, value, "--out", str(out)])
     captured = capsys.readouterr()
     assert code == 2
-    line = "conventions: no verdict (API error: BadRequestError (request req_test1)) turns=0 "
+    line = (
+        "conventions: no verdict "
+        "(API error: BadRequestError of type error_type (request req_test1)) turns=0 "
+    )
     assert captured.out.startswith(line)
     assert summary.read_text().startswith(line)
     for text in (captured.out, captured.err, summary.read_text(), out.read_text()):
@@ -795,7 +803,7 @@ def test_a_try_mends_an_error_on_a_pull_request_on_a_range_and_in_a_dry_run(
     target: str,
 ) -> None:
     """Every review runs the one loop, so each tries a request again after an error event of
-    the stream (.github#158), and its log names the error's class alone."""
+    the stream (.github#158), and its log names the error's class and type alone (.github#163)."""
     ws = range_workspace if target in {"range", "--commit"} else workspace
     api(
         MidStream(status_error(anthropic.APIStatusError, 200, UPSTREAM, "overloaded_error")),
@@ -810,7 +818,8 @@ def test_a_try_mends_an_error_on_a_pull_request_on_a_range_and_in_a_dry_run(
     captured = capsys.readouterr()
     assert code == 0
     assert waits == [30]
-    assert "conventions: turn 1 failed (APIStatusError); try 1/3 in 30 s\n" in captured.err
+    tried = "conventions: turn 1 failed (APIStatusError of type overloaded_error); try 1/3 in 30 s"
+    assert f"{tried}\n" in captured.err
     assert "conventions: verdict=ready findings=0 blocking=0 turns=1 " in captured.out
     for text in (captured.out, captured.err, summary.read_text()):
         no_upstream(text)

@@ -232,7 +232,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     key. A refusal is the API's authentication, permission or billing error or its rate
     limit, known by the status (401, 403, 402, 429) or by the error type that an error event
     of the stream carries (`authentication_error`, `permission_error`, `billing_error`,
-    `rate_limit_error`), and a 400 whose message names the balance of the account. A 429
+    `rate_limit_error`), and an error whose message names the balance of the account, whatever
+    its status and its type: a 400 before the stream, or an error event of the stream under the
+    stream's status 200 (https://github.com/xippios/.github/issues/163). A 429
     reaches the script only once the SDK's own retries are spent, while the SDK retries no
     stream it has begun, so a `rate_limit_error` that an error event of the stream carries
     moves the review to the next key at once. An overload, an error of the server or a lost
@@ -242,7 +244,8 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     waits 30, 60 and 120 seconds and sends the same request again on the same key with the same
     conversation, up to three times, and the review goes on from that turn; a try counts as no
     turn, the job log names each by its turn and the error's class, and where the tries are
-    spent the line names them, as `API error: APIStatusError (request req_…) after 3 tries`. Any
+    spent the line names them, as
+    `API error: APIStatusError of type overloaded_error (request req_…) after 3 tries`. Any
     other end without a verdict (a server error or a lost connection once its tries are spent,
     any other 400, a refusal of the model, a `max_tokens` stop, the turn cap) tries no other
     key. The summary line names the key the review ended on by its position, `key=2/3`, and
@@ -250,9 +253,14 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     turns and tool calls are the last attempt's, and the job log names each key the review
     moved past by its position and error class. Where the API refused every key, the review
     has no verdict, and its line names each key by its position and the SDK's error class;
-    with one key it names that key's error by its class and the request's id. No output
-    carries a key: the script redacts every key of the secret, whatever its form, from all it
-    prints and writes, and
+    with one key it names that key's error by its class and the request's id. Every line that
+    names an error of the API by its class, in the job log and the summary alike, names beside
+    it the type that the error's body gives, as `of type overloaded_error`, where that type is a
+    code of up to 40 lowercase letters and underscores, and no type where the body gives none or
+    another text; no line carries the error's message
+    (https://github.com/xippios/.github/issues/121).
+    No output carries a key: the script redacts every key of the secret, whatever its form,
+    from all it prints and writes, and
     the PR comment says nothing of keys. A secret with one key reviews as before, and a
     caller's `gates.yml` passes the secret as it did.
   - **The run before** (https://github.com/xippios/.github/issues/95): `prepare` reads the
