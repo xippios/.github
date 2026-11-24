@@ -631,17 +631,15 @@ CREDIT = (
         ),
         (status_error(anthropic.BadRequestError, 400, CREDIT), "BadRequestError"),
         (status_error(anthropic.RateLimitError, 429, "rate limited"), "RateLimitError"),
-        (status_error(anthropic.InternalServerError, 500, "internal"), "InternalServerError"),
         (status_error(anthropic.APIStatusError, 418, "teapot"), "APIStatusError"),
-        (anthropic.APIConnectionError(request=REQUEST), "APIConnectionError"),
-        (anthropic.APITimeoutError(request=REQUEST), "APITimeoutError"),
     ],
 )
 def test_an_api_error_is_no_verdict_with_its_class(
     workspace: Path, tmp_path: Path, api, capsys, error, name
 ) -> None:
     """The line names the class and, where the error carries one, the request's id, and no
-    text of the upstream's message (.github#121)."""
+    text of the upstream's message (.github#121). An error that is tried again names its tries
+    too (.github#158, below)."""
     api(error)
     code, result = run_review(workspace, tmp_path)
     out = capsys.readouterr().out
@@ -676,10 +674,12 @@ def test_an_error_body_without_a_message_names_the_class_alone(
     workspace: Path, tmp_path: Path, api, body
 ) -> None:
     response = httpx2.Response(503, request=REQUEST, headers={"request-id": "req_test1"})
-    api(anthropic.InternalServerError("upstream connect error", response=response, body=body))
+    error = anthropic.InternalServerError("upstream connect error", response=response, body=body)
+    # An error of the server is tried again by its status, whatever its body (.github#158).
+    api(*[error] * 4)
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    assert result["reason"] == "API error: InternalServerError (request req_test1)"
+    assert result["reason"] == "API error: InternalServerError (request req_test1) after 3 tries"
 
 
 def test_an_api_error_message_never_reaches_the_line(
@@ -696,26 +696,28 @@ def test_an_api_error_message_never_reaches_the_line(
 
 
 @pytest.mark.parametrize(
-    ("error", "name"),
+    ("error", "named"),
     [
-        (status_error(anthropic.APIStatusError, 200, "Overloaded"), "APIStatusError"),
+        # An error event of a type that is not tried again ends the attempt at once.
+        (
+            status_error(anthropic.APIStatusError, 200, "Overloaded"),
+            "APIStatusError (request req_test1)",
+        ),
+        # A connection lost while the stream is read ends it once its tries are spent.
         (
             httpx2.RemoteProtocolError("peer closed connection", request=REQUEST),
-            "RemoteProtocolError",
+            "RemoteProtocolError after 3 tries",
         ),
     ],
 )
 def test_an_error_while_the_stream_is_read_is_no_verdict(
-    workspace: Path, tmp_path: Path, api, capsys, error, name
+    workspace: Path, tmp_path: Path, api, capsys, error, named
 ) -> None:
-    api(MidStream(error))
+    api(*[MidStream(error)] * 4)
     code, result = run_review(workspace, tmp_path)
     assert code == 2
-    suffix = " (request req_test1)" if isinstance(error, anthropic.APIStatusError) else ""
-    assert result["reason"] == f"API error: {name}{suffix}"
-    assert capsys.readouterr().out.startswith(
-        f"conventions: no verdict (API error: {name}{suffix})"
-    )
+    assert result["reason"] == f"API error: {named}"
+    assert capsys.readouterr().out.startswith(f"conventions: no verdict (API error: {named})")
 
 
 def test_an_error_after_some_turns_keeps_their_usage(workspace: Path, tmp_path: Path, api) -> None:
@@ -822,9 +824,10 @@ REFUSALS = [
 
 @pytest.mark.parametrize("error", REFUSALS, ids=lambda error: error_name(error))
 def test_a_refused_key_moves_the_review_to_the_next(
-    workspace: Path, tmp_path: Path, keyed, capsys, error
+    workspace: Path, tmp_path: Path, keyed, waits: list[int], capsys, error
 ) -> None:
-    _, made = keyed([error], [message([verdict()], usage=(5, 2, 0, 0))], [])
+    """A refusal moves to the next key at once: the request is not tried again (.github#158)."""
+    clients, made = keyed([error], [message([verdict()], usage=(5, 2, 0, 0))], [])
     code, result = run_review(workspace, tmp_path)
     captured = capsys.readouterr()
     assert code == 0
@@ -835,6 +838,9 @@ def test_a_refused_key_moves_the_review_to_the_next(
     assert (
         f"conventions: key 1/3 refused ({error_name(error)}); the review starts again on key 2/3\n"
     ) in captured.err
+    assert waits == []
+    assert len(clients[KEYS[0]].messages.requests) == 1
+    assert " failed (" not in captured.err
 
 
 def test_the_keys_are_tried_in_the_secrets_order(workspace: Path, tmp_path: Path, keyed) -> None:
@@ -894,7 +900,9 @@ NOT_REFUSALS = [
 def test_an_api_error_that_refuses_no_key_tries_no_other(
     workspace: Path, tmp_path: Path, keyed, capsys, error
 ) -> None:
-    _, made = keyed([error], [])
+    """Neither an error that is tried again, once its tries are spent (.github#158), nor one that
+    is not moves the review to another key."""
+    _, made = keyed([error] * 4, [])
     code, result = run_review(workspace, tmp_path)
     assert code == 2
     assert made == [KEYS[0]]
@@ -1007,18 +1015,235 @@ def test_every_key_of_the_secret_is_redacted_whatever_its_form(
     plain = KEYS[2]
     assert not fr.KEY.search(plain)
     echoed = f"echo {plain} and {KEYS[0]}"
+    # Tried again three times (.github#158): the lines of the tries carry no key either.
     _, made = keyed(
-        [REFUSED], [status_error(anthropic.InternalServerError, 500, echoed, "api_error")], []
+        [REFUSED], [status_error(anthropic.InternalServerError, 500, echoed, "api_error")] * 4, []
     )
     code, result = run_review(workspace, tmp_path)
     captured = capsys.readouterr()
     assert code == 2
     assert made == list(KEYS[:2])
-    assert result["reason"] == "API error: InternalServerError (request req_test1)"
+    assert result["reason"] == "API error: InternalServerError (request req_test1) after 3 tries"
     written = (tmp_path / "verdict.json").read_text()
     for key in KEYS:
         assert key not in captured.out + captured.err + written + summary.read_text()
     assert fr.redact(f"a {plain} b") == "a [redacted] b"
+
+
+# --- a request tried again (.github#158) -------------------------------------------------
+
+# The upstream's message of the errors below, which no output carries (.github#121).
+SAID = "the upstream's own words"
+# The errors a request is tried again on: an error event of the stream whose type is an overload,
+# an error of the API or its timeout, which arrives under the stream's status 200, since the SDK
+# tries no stream again once it has begun; an error of the server before the stream, once the
+# SDK's own retries are spent; and a connection lost before the stream or while it is read.
+TRANSIENT = [
+    MidStream(status_error(anthropic.APIStatusError, 200, SAID, "overloaded_error")),
+    MidStream(status_error(anthropic.APIStatusError, 200, SAID, "api_error")),
+    # The type of the API's 504, a timeout of the server.
+    MidStream(status_error(anthropic.APIStatusError, 200, SAID, "timeout_error")),
+    status_error(anthropic.InternalServerError, 500, SAID, "api_error"),
+    status_error(anthropic.InternalServerError, 502, SAID, "api_error"),
+    status_error(anthropic.OverloadedError, 529, SAID, "overloaded_error"),
+    anthropic.APIConnectionError(message=SAID, request=REQUEST),
+    anthropic.APITimeoutError(request=REQUEST),
+    MidStream(httpx2.RemoteProtocolError(SAID, request=REQUEST)),
+    MidStream(httpx2.ReadTimeout(SAID, request=REQUEST)),
+]
+TRANSIENT_IDS = [
+    "overloaded event",
+    "api_error event",
+    "timeout_error event",
+    "500",
+    "502",
+    "529",
+    "connection",
+    "timeout",
+    "lost stream",
+    "read timeout",
+]
+# The errors a request is not tried again on, which end the attempt at once as before: a status
+# of 400 to 499 whatever the type of its body, and an error event of another type.
+NOT_TRIED = [
+    status_error(anthropic.BadRequestError, 400, SAID, "invalid_request_error"),
+    status_error(anthropic.BadRequestError, 400, SAID, "api_error"),
+    status_error(anthropic.NotFoundError, 404, SAID, "not_found_error"),
+    status_error(anthropic.RequestTooLargeError, 413, SAID, "request_too_large"),
+    status_error(anthropic.UnprocessableEntityError, 422, SAID, "invalid_request_error"),
+    MidStream(status_error(anthropic.APIStatusError, 200, SAID, "invalid_request_error")),
+]
+NOT_TRIED_IDS = ["400", "400 api_error", "404", "413", "422", "invalid event"]
+OVERLOADED = MidStream(status_error(anthropic.APIStatusError, 200, SAID, "overloaded_error"))
+
+
+def lines(err: str, start: str = "conventions: turn ") -> list[str]:
+    """The lines of the job log that start with ``start``: by default, those of the turns."""
+    return [line for line in err.splitlines() if line.startswith(start)]
+
+
+def listing(usage=(10, 1, 0, 0)):
+    return message([call("toolu_1", "list_files", {"pattern": "**"})], usage=usage)
+
+
+@pytest.mark.parametrize("error", TRANSIENT, ids=TRANSIENT_IDS)
+def test_an_error_that_a_try_mends_costs_no_turn(
+    workspace: Path, tmp_path: Path, keyed, waits: list[int], capsys, error
+) -> None:
+    """The same request again on the same key after 30 seconds, and the review goes on from that
+    turn: the try is no turn, and the job log says that the turn failed, by the error's class
+    alone, and when it is tried again."""
+    clients, made = keyed(
+        [listing((7, 3, 0, 0)), error, message([verdict()], usage=(5, 2, 0, 0))], []
+    )
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert made == [KEYS[0]]
+    assert result["verdict"] == "ready"
+    assert result["turns"] == 2
+    assert result["tool_calls"] == {"list_files": 1, "submit_verdict": 1}
+    assert result["usage"]["input_tokens"] == 12
+    assert result["summary"].endswith(" key=1/2")
+    assert waits == [30]
+    requests = clients[KEYS[0]].messages.requests
+    assert len(requests) == 3
+    # The same conversation and the same arguments, so the cache still serves the prefix.
+    assert requests[2] == requests[1]
+    assert lines(captured.err) == [
+        "conventions: turn 1 stop_reason=tool_use tool_calls=1 tools=list_files",
+        f"conventions: turn 2 failed ({error_name(error)}); try 1/3 in 30 s",
+        "conventions: turn 2 stop_reason=tool_use tool_calls=1 tools=submit_verdict",
+    ]
+    assert SAID not in captured.out + captured.err
+    assert "refused" not in captured.err
+
+
+@pytest.mark.parametrize("error", TRANSIENT, ids=TRANSIENT_IDS)
+def test_an_error_that_outlasts_the_three_tries_is_no_verdict(
+    workspace: Path,
+    tmp_path: Path,
+    keyed,
+    waits: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    error,
+) -> None:
+    """Three tries, 30, 60 and 120 seconds apart, then no verdict as before, on that key alone:
+    the line names the error's class, the request's id and the tries, never the upstream's
+    message (.github#121)."""
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    # A fifth answer that no request reaches: the tries stop at three.
+    clients, made = keyed([error] * 4 + [message([verdict()])], [message([verdict()])])
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    name = error_name(error)
+    inner = error.error if isinstance(error, MidStream) else error
+    request = " (request req_test1)" if isinstance(inner, anthropic.APIStatusError) else ""
+    assert code == 2
+    assert made == [KEYS[0]]
+    assert result["verdict"] is None
+    assert result["reason"] == f"API error: {name}{request} after 3 tries"
+    assert result["turns"] == 0
+    assert result["summary"].startswith(f"conventions: no verdict ({result['reason']}) turns=0 ")
+    assert result["summary"].endswith(" key=1/2")
+    assert result["summary"] in summary.read_text()
+    assert waits == [30, 60, 120]
+    requests = clients[KEYS[0]].messages.requests
+    assert len(requests) == 4
+    assert all(again == requests[0] for again in requests[1:])
+    assert lines(captured.err) == [
+        f"conventions: turn 1 failed ({name}); try 1/3 in 30 s",
+        f"conventions: turn 1 failed ({name}); try 2/3 in 60 s",
+        f"conventions: turn 1 failed ({name}); try 3/3 in 120 s",
+    ]
+    for text in (captured.out, captured.err, summary.read_text()):
+        assert fr._error_message(inner) not in text
+
+
+def test_each_turn_has_three_tries_of_its_own(
+    workspace: Path, tmp_path: Path, api, waits: list[int], capsys
+) -> None:
+    """The tries count per request: a turn after a mended one has its three again, and an error
+    of another class on a try is tried again in its turn."""
+    lost = anthropic.APIConnectionError(request=REQUEST)
+    api(OVERLOADED, lost, listing(), OVERLOADED, message([verdict()]))
+    code, result = run_review(workspace, tmp_path)
+    assert code == 0
+    assert result["turns"] == 2
+    assert waits == [30, 60, 30]
+    assert lines(capsys.readouterr().err) == [
+        "conventions: turn 1 failed (APIStatusError); try 1/3 in 30 s",
+        "conventions: turn 1 failed (APIConnectionError); try 2/3 in 60 s",
+        "conventions: turn 1 stop_reason=tool_use tool_calls=1 tools=list_files",
+        "conventions: turn 2 failed (APIStatusError); try 1/3 in 30 s",
+        "conventions: turn 2 stop_reason=tool_use tool_calls=1 tools=submit_verdict",
+    ]
+
+
+def test_a_try_counts_against_no_turn_cap(
+    workspace: Path, tmp_path: Path, api, waits: list[int]
+) -> None:
+    api(listing(), OVERLOADED, OVERLOADED, OVERLOADED, message([verdict()]))
+    code, result = run_review(workspace, tmp_path, "--max-turns", "2")
+    assert code == 0
+    assert result["verdict"] == "ready"
+    assert result["turns"] == 2
+    assert waits == [30, 60, 120]
+
+
+@pytest.mark.parametrize("error", NOT_TRIED, ids=NOT_TRIED_IDS)
+def test_an_error_that_is_not_tried_again_ends_the_attempt_at_once(
+    workspace: Path, tmp_path: Path, keyed, waits: list[int], capsys, error
+) -> None:
+    """A request the API refuses as it stands, and an error event of another type, end the
+    attempt as before: no wait, no try and no other key."""
+    clients, made = keyed([error, message([verdict()])], [message([verdict()])])
+    code, result = run_review(workspace, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 2
+    assert made == [KEYS[0]]
+    assert result["reason"] == f"API error: {error_name(error)} (request req_test1)"
+    assert result["summary"].endswith(" key=1/2")
+    assert waits == []
+    assert len(clients[KEYS[0]].messages.requests) == 1
+    assert " failed (" not in captured.err
+
+
+def test_an_error_on_a_try_that_is_not_tried_again_names_the_tries_made(
+    workspace: Path, tmp_path: Path, api, waits: list[int]
+) -> None:
+    api(
+        OVERLOADED,
+        status_error(anthropic.BadRequestError, 400, SAID, "invalid_request_error"),
+        message([verdict()]),
+    )
+    code, result = run_review(workspace, tmp_path)
+    assert code == 2
+    assert result["reason"] == "API error: BadRequestError (request req_test1) after 1 try"
+    assert waits == [30]
+
+
+def test_a_refusal_on_a_try_moves_the_review_to_the_next_key(
+    workspace: Path, tmp_path: Path, keyed, waits: list[int], capsys
+) -> None:
+    """A try that the API refuses for the key or its account moves the review to the next key
+    from its first turn, as any refusal does, with no further try."""
+    refused = MidStream(status_error(anthropic.APIStatusError, 200, SAID, "rate_limit_error"))
+    clients, made = keyed([listing(), OVERLOADED, refused], [message([verdict()])])
+    code, result = run_review(workspace, tmp_path)
+    err = capsys.readouterr().err
+    assert code == 0
+    assert made == list(KEYS[:2])
+    assert result["summary"].endswith(" key=2/2")
+    assert waits == [30]
+    assert len(clients[KEYS[1]].messages.requests[0]["messages"]) == 1
+    tried = "conventions: turn 2 failed (APIStatusError); try 1/3 in 30 s\n"
+    moved = "conventions: key 1/2 refused (APIStatusError); the review starts again on key 2/2\n"
+    assert tried in err
+    assert moved in err
+    assert err.index(tried) < err.index(moved)
 
 
 # --- the sandbox -------------------------------------------------------------------------

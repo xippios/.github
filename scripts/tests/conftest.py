@@ -24,3 +24,14 @@ def isolated_git(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
     # The caller's read token (.github#62): a test that wants one sets it.
     monkeypatch.delenv("DOCUMENTS_READ_TOKEN", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """The seconds the review waits before it tries a request again (.github#158), recorded in
+    place of the sleep, so no test sleeps; a test that reads them asks for this fixture."""
+    import conventions
+
+    seen: list[int] = []
+    monkeypatch.setattr(conventions, "wait", seen.append, raising=False)
+    return seen
