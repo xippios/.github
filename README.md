@@ -256,8 +256,9 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     with one key it names that key's error by its class and the request's id. Every line that
     names an error of the API by its class, in the job log and the summary alike, names beside
     it the type that the error's body gives, as `of type overloaded_error`, where that type is a
-    code of lowercase letters and underscores, and no type where the body gives none or another
-    text; no line carries the error's message (https://github.com/xippios/.github/issues/121).
+    code of up to 40 lowercase letters and underscores, and no type where the body gives none or
+    another text; no line carries the error's message
+    (https://github.com/xippios/.github/issues/121).
     No output carries a key: the script redacts every key of the secret, whatever its form,
     from all it prints and writes, and
     the PR comment says nothing of keys. A secret with one key reviews as before, and a

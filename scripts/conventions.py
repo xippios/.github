@@ -3427,16 +3427,18 @@ def error_named(exc: anthropic.AnthropicError | httpx2.HTTPError) -> str:
     """The error's class, ``<class> of type <type>`` where its body gives a type (.github#163).
 
     The type is the body's ``error.type``, such as ``overloaded_error``, and is named only where
-    it is a code of lowercase letters and underscores (``ERROR_TYPE``); a body that gives none or
-    another text adds nothing. Every line that names an error of the API names it so: the
-    reason of ``api_error``, the job log's line of a try and that of a key moved past, and the
-    reason where the API refused every key. No text of the message (.github#121).
+    it is a code of up to 40 lowercase letters and underscores (``ERROR_TYPE``) that ``redact``
+    leaves as it is; a body that gives none or another text adds nothing, and so does a code
+    with the form of a key or a token. Every line that names an error of the API names it so:
+    the reason of ``api_error``, the job log's line of a try and that of a key moved past, which
+    do not pass ``redact``, and the reason where the API refused every key. No text of the
+    message (.github#121).
     """
     name = type(exc).__name__
     body = getattr(exc, "body", None)
     if isinstance(body, dict) and isinstance(body.get("error"), dict):
         kind = body["error"].get("type")
-        if isinstance(kind, str) and ERROR_TYPE.fullmatch(kind):
+        if isinstance(kind, str) and ERROR_TYPE.fullmatch(kind) and redact(kind) == kind:
             return f"{name} of type {kind}"
     return name
 
