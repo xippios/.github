@@ -1034,13 +1034,15 @@ def test_every_key_of_the_secret_is_redacted_whatever_its_form(
 
 # The upstream's message of the errors below, which no output carries (.github#121).
 SAID = "the upstream's own words"
-# The errors a request is tried again on: an error event of the stream whose type is an overload
-# or an error of the API, which arrives under the stream's status 200, since the SDK tries no
-# stream again once it has begun; an error of the server before the stream, once the SDK's own
-# retries are spent; and a connection lost before the stream or while it is read.
+# The errors a request is tried again on: an error event of the stream whose type is an overload,
+# an error of the API or its timeout, which arrives under the stream's status 200, since the SDK
+# tries no stream again once it has begun; an error of the server before the stream, once the
+# SDK's own retries are spent; and a connection lost before the stream or while it is read.
 TRANSIENT = [
     MidStream(status_error(anthropic.APIStatusError, 200, SAID, "overloaded_error")),
     MidStream(status_error(anthropic.APIStatusError, 200, SAID, "api_error")),
+    # The type of the API's 504, a timeout of the server.
+    MidStream(status_error(anthropic.APIStatusError, 200, SAID, "timeout_error")),
     status_error(anthropic.InternalServerError, 500, SAID, "api_error"),
     status_error(anthropic.InternalServerError, 502, SAID, "api_error"),
     status_error(anthropic.OverloadedError, 529, SAID, "overloaded_error"),
@@ -1052,6 +1054,7 @@ TRANSIENT = [
 TRANSIENT_IDS = [
     "overloaded event",
     "api_error event",
+    "timeout_error event",
     "500",
     "502",
     "529",
