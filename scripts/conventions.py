@@ -185,9 +185,10 @@ BALANCE = re.compile(r"credit balance", re.IGNORECASE)
 # A request that fails on an overload, an error of the server or a lost connection is sent
 # again, the same request on the same key, after each of these waits in seconds (.github#158).
 # The SDK tries no stream again once it has begun, so an error event of the stream reaches the
-# script at once, under the stream's status 200 and with its type: these two are tried again.
+# script at once, under the stream's status 200 and with its type: these three are tried again,
+# an overload, an error of the API and its timeout, the type of its 504.
 WAITS = (30, 60, 120)
-TRANSIENT_TYPES = frozenset({"overloaded_error", "api_error"})
+TRANSIENT_TYPES = frozenset({"overloaded_error", "api_error", "timeout_error"})
 # The caller's optional read token (.github#62): another repository's file that GitHub does
 # not find with the workflow's token, a private repository's included, is read again with it.
 # No subprocess gets the variable; the one read that needs the token gets it as its GH_TOKEN.
