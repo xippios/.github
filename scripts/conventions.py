@@ -66,8 +66,11 @@ and without uv; the review imports ``anthropic`` where it calls the API.
   per line, and the review tries them in that order, each on a client of its own (.github#87):
   it runs on one key from its first turn to its verdict, and where the API refuses the key or
   its account, at its first request or a later one, it starts again from its first turn on
-  the next key (``refuses_key``). The summary line names the key the review ended on by its
-  position, ``key=2/3``, and counts the tokens of every attempt. After a run before, the
+  the next key (``refuses_key``). A request that fails on an overload, an error of the server
+  or a lost connection is sent again on its key, up to three times, 30, 60 and 120 seconds
+  apart, before the attempt ends (``transient``, ``_respond``, .github#158). The summary line
+  names the key the review ended on by its position, ``key=2/3``, and counts the tokens of
+  every attempt. After a run before, the
   review gives each of its findings one state, ``fixed``, ``decided`` or ``open``, and the
   script refuses another (``earlier_problem``); each new finding then says whether its file
   changed since the head judged before. A finding names a line only where its file has that
@@ -179,6 +182,12 @@ REFUSING_TYPES = frozenset(
 )
 # A 400 refuses the account too where its message names the balance.
 BALANCE = re.compile(r"credit balance", re.IGNORECASE)
+# A request that fails on an overload, an error of the server or a lost connection is sent
+# again, the same request on the same key, after each of these waits in seconds (.github#158).
+# The SDK tries no stream again once it has begun, so an error event of the stream reaches the
+# script at once, under the stream's status 200 and with its type: these two are tried again.
+WAITS = (30, 60, 120)
+TRANSIENT_TYPES = frozenset({"overloaded_error", "api_error"})
 # The caller's optional read token (.github#62): another repository's file that GitHub does
 # not find with the workflow's token, a private repository's included, is read again with it.
 # No subprocess gets the variable; the one read that needs the token gets it as its GH_TOKEN.
@@ -3431,6 +3440,33 @@ def refuses_key(exc: anthropic.APIStatusError) -> bool:
     return exc.status_code == 400 and BALANCE.search(_error_message(exc)) is not None
 
 
+def transient(exc: anthropic.AnthropicError | httpx2.HTTPError) -> bool:
+    """Whether a request that failed with ``exc`` is tried again (.github#158).
+
+    An overload, an error of the server or a lost connection: a status of 500 and above, which
+    reaches the script once the SDK's own retries are spent; an error event of the stream whose
+    type is one of ``TRANSIENT_TYPES``; the SDK's connection error, its timeout among them; and
+    an httpx2 error, a connection lost while the stream is read. A status of 400 to 499 never
+    is, whatever its body says; ``refuses_key`` judges a refusal first.
+    """
+    import anthropic
+    import httpx2
+
+    if isinstance(exc, anthropic.APIStatusError):
+        if exc.status_code >= 400:
+            return exc.status_code >= 500
+        body = exc.body if isinstance(exc.body, dict) else {}
+        error = body.get("error") if isinstance(body.get("error"), dict) else {}
+        kind = error.get("type")
+        return isinstance(kind, str) and kind in TRANSIENT_TYPES
+    return isinstance(exc, anthropic.APIConnectionError | httpx2.HTTPError)
+
+
+def wait(seconds: int) -> None:
+    """Wait ``seconds`` before a request is tried again; the tests record the waits instead."""
+    time.sleep(seconds)
+
+
 def run_review(
     keys: Sequence[str],
     material: Material,
@@ -3486,9 +3522,6 @@ def _loop(
     max_turns: int,
     hidden: Sequence[Path],
 ) -> None:
-    import anthropic
-    import httpx2
-
     model, effort = outcome.model, outcome.effort
     sandbox = Sandbox(material.workspace, hidden)
     system = system_prompt(material, max_turns)
@@ -3500,26 +3533,18 @@ def _loop(
         if outcome.turns >= max_turns:
             outcome.reason = f"the turn cap of {max_turns} was reached"
             return
-        try:
-            with client.messages.stream(
-                model=model,
-                max_tokens=MAX_TOKENS,
-                system=system,
-                tools=RANGE_TOOLS if material.is_range else TOOLS,
-                messages=messages,
-                output_config={"effort": effort},
-                cache_control={"type": "ephemeral"},
-            ) as stream:
-                response = stream.get_final_message()
-        # The SDK's classes, most specific first, are subclasses of AnthropicError; the
-        # summary names the class the SDK raised (AuthenticationError, BadRequestError, ...).
-        # An error event in the stream arrives as one of them; a connection lost while the
-        # stream is read arrives as an httpx2 error. A refusal of the key or its account
-        # leaves this attempt for the next key.
-        except (anthropic.AnthropicError, httpx2.HTTPError) as exc:
-            if isinstance(exc, anthropic.APIStatusError) and refuses_key(exc):
-                raise KeyRefused(exc) from exc
-            outcome.reason = api_error(exc)
+        response = _respond(
+            client,
+            outcome,
+            model=model,
+            max_tokens=MAX_TOKENS,
+            system=system,
+            tools=RANGE_TOOLS if material.is_range else TOOLS,
+            messages=messages,
+            output_config={"effort": effort},
+            cache_control={"type": "ephemeral"},
+        )
+        if response is None:
             return
         outcome.turns += 1
         outcome.usage.add(response.usage)
@@ -3586,6 +3611,48 @@ def _loop(
                 result["is_error"] = True
             results.append(result)
         messages.append({"role": "user", "content": results})
+
+
+def _respond(client: Client, outcome: Outcome, **request: object) -> anthropic.types.Message | None:
+    """The response to the next turn's ``request``, tried again where it failed in passing.
+
+    On an overload, an error of the server or a lost connection (``transient``), the script
+    waits and sends the same request again, on the same key with the same conversation, so the
+    cache still serves its prefix: up to three times, after the waits of ``WAITS``
+    (.github#158). A try is no turn, and the job log names each by its turn, the error's class
+    and the wait. A refusal of the key or its account raises ``KeyRefused`` at once, with no
+    try. Any other error, or that of the last try, ends the attempt: None, with the reason in
+    ``outcome``, the error's class and the request's id (.github#121), and the tries made.
+    """
+    import anthropic
+    import httpx2
+
+    tries = 0
+    while True:
+        try:
+            with client.messages.stream(**request) as stream:
+                return stream.get_final_message()
+        # The SDK's classes, most specific first, are subclasses of AnthropicError; the
+        # summary names the class the SDK raised (AuthenticationError, BadRequestError, ...).
+        # An error event in the stream arrives as one of them; a connection lost while the
+        # stream is read arrives as an httpx2 error. A refusal of the key or its account
+        # leaves this attempt for the next key.
+        except (anthropic.AnthropicError, httpx2.HTTPError) as exc:
+            if isinstance(exc, anthropic.APIStatusError) and refuses_key(exc):
+                raise KeyRefused(exc) from exc
+            if tries == len(WAITS) or not transient(exc):
+                outcome.reason = api_error(exc)
+                if tries:
+                    outcome.reason += f" after {tries} {'try' if tries == 1 else 'tries'}"
+                return None
+            print(
+                f"conventions: turn {outcome.turns + 1} failed ({type(exc).__name__}); "
+                f"try {tries + 1}/{len(WAITS)} in {WAITS[tries]} s",
+                file=sys.stderr,
+                flush=True,
+            )
+            wait(WAITS[tries])
+            tries += 1
 
 
 def accept(

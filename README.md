@@ -233,10 +233,18 @@ https://github.com/xippios/.github/issues/33. `config.yml` stays by hand.
     `rate_limit_error`), and a 400 whose message names the balance of the account. A 429
     reaches the script only once the SDK's own retries are spent, while the SDK retries no
     stream it has begun, so a `rate_limit_error` that an error event of the stream carries
-    moves the review to the next key at once. Any other end without
-    a verdict (a server error, a lost connection, any other 400, a refusal of the model, a
-    `max_tokens` stop, the turn cap) tries no other key. The summary line names the key the
-    review ended on by its position, `key=2/3`, and counts the tokens of every attempt; its
+    moves the review to the next key at once. An overload, an error of the server or a lost
+    connection is tried again (https://github.com/xippios/.github/issues/158): a status of 500
+    and above, an error event of the stream of the type `overloaded_error` or `api_error`, or
+    a connection lost before the stream or while it is read. The script waits 30, 60 and 120
+    seconds and sends the same request again on the same key with the same conversation, up to
+    three times, and the review goes on from that turn; a try counts as no turn, the job log
+    names each by its turn and the error's class, and where the tries are spent the line names
+    them, as `API error: APIStatusError (request req_…) after 3 tries`. Any other end without
+    a verdict (a server error or a lost connection once its tries are spent, any other 400, a
+    refusal of the model, a `max_tokens` stop, the turn cap) tries no other key. The summary
+    line names the key the review ended on by its position, `key=2/3`, and counts the tokens
+    of every attempt; its
     turns and tool calls are the last attempt's, and the job log names each key the review
     moved past by its position and error class. Where the API refused every key, the review
     has no verdict, and its line names each key by its position and the SDK's error class;
