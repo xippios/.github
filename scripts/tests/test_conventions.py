@@ -1375,9 +1375,15 @@ def error_body(kind) -> dict:
     return {"type": "error", "error": {"type": kind, "message": SAID}}
 
 
+# A code of lowercase letters and underscores that has the form of a GitHub token, so `redact`
+# changes it; built at run time, as FAKE_TOKEN (finding 2 of the review of #168).
+TOKEN_TYPE = "gh" + "o_" + "review_error"
+
+
 # The bodies of the errors below and the words that the lines add to the error's class: the type
 # where the body gives one as a code of lowercase letters and underscores, up to 40 of them, and
-# nothing where it gives none, or another text, which is the upstream's.
+# nothing where it gives none, or another text, which is the upstream's, or a code that `redact`
+# changes, which no line names then, in the job log or the summary.
 BODIES = [
     (error_body("overloaded_error"), " of type overloaded_error"),
     (error_body("x" * 40), " of type " + "x" * 40),
@@ -1394,6 +1400,7 @@ BODIES = [
     (error_body("error-type"), ""),
     (error_body(""), ""),
     (error_body(529), ""),
+    (error_body(TOKEN_TYPE), ""),
 ]
 BODY_IDS = [
     "code",
@@ -1411,6 +1418,7 @@ BODY_IDS = [
     "hyphen",
     "empty",
     "number",
+    "redacted",
 ]
 
 
@@ -1453,8 +1461,19 @@ def test_each_line_of_an_api_error_names_the_type_its_body_gives_as_a_code(
     kind = body["error"].get("type") if isinstance(body, dict) and "error" in body else None
     for text in (captured.out, captured.err, summary.read_text()):
         assert SAID not in text
+        assert fr.REDACTED not in text
         if not typed and isinstance(kind, str) and kind:
             assert kind not in text
+
+
+def test_a_type_that_redact_changes_is_named_in_no_line() -> None:
+    """A code that has the form of a token is no type that a line names, the job log's lines,
+    which do not pass `redact`, and the summary line alike (finding 2 of the review of #168)."""
+    error = with_body(anthropic.APIStatusError, 200, error_body(TOKEN_TYPE))
+    assert fr.ERROR_TYPE.fullmatch(TOKEN_TYPE)
+    assert fr.redact(TOKEN_TYPE) != TOKEN_TYPE
+    assert fr.error_named(error) == "APIStatusError"
+    assert fr.api_error(error) == "API error: APIStatusError (request req_test1)"
 
 
 # --- the sandbox -------------------------------------------------------------------------

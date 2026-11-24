@@ -910,9 +910,9 @@ def test_the_readme_says_a_refusal_inside_the_stream_and_the_type_of_an_error() 
     assert (
         "Every line that names an error of the API by its class, in the job log and the summary "
         "alike, names beside it the type that the error's body gives, as `of type "
-        "overloaded_error`, where that type is a code of lowercase letters and underscores, and "
-        "no type where the body gives none or another text; no line carries the error's message "
-        "(https://github.com/xippios/.github/issues/121)." in text
+        "overloaded_error`, where that type is a code of up to 40 lowercase letters and "
+        "underscores, and no type where the body gives none or another text; no line carries "
+        "the error's message (https://github.com/xippios/.github/issues/121)." in text
     )
 
 
