@@ -690,18 +690,26 @@ def response(status: int) -> httpx2.Response:
     return httpx2.Response(status, request=REQUEST, headers={"request-id": "req_test1"})
 
 
+# An error that is tried again ends the review once its three tries are spent, and the line
+# names them (.github#158); the script of each test holds the error four times.
 ERRORS = [
     (status_error(anthropic.BadRequestError, 400, UPSTREAM), "BadRequestError (request req_test1)"),
     (
         anthropic.InternalServerError(UPSTREAM, response=response(503), body=UPSTREAM),
-        "InternalServerError (request req_test1)",
+        "InternalServerError (request req_test1) after 3 tries",
     ),
     (
         MidStream(status_error(anthropic.APIStatusError, 200, UPSTREAM, "overloaded_error")),
-        "APIStatusError (request req_test1)",
+        "APIStatusError (request req_test1) after 3 tries",
     ),
-    (anthropic.APIConnectionError(message=UPSTREAM, request=REQUEST), "APIConnectionError"),
-    (MidStream(httpx2.RemoteProtocolError(UPSTREAM, request=REQUEST)), "RemoteProtocolError"),
+    (
+        anthropic.APIConnectionError(message=UPSTREAM, request=REQUEST),
+        "APIConnectionError after 3 tries",
+    ),
+    (
+        MidStream(httpx2.RemoteProtocolError(UPSTREAM, request=REQUEST)),
+        "RemoteProtocolError after 3 tries",
+    ),
 ]
 IDS = ["status", "body without an error", "error event", "connection", "lost stream"]
 
@@ -715,7 +723,7 @@ def no_upstream(text: str) -> None:
 def test_the_line_of_an_api_error_names_its_class_and_request_on_a_pull_request(
     workspace: Path, tmp_path: Path, api, summary: Path, capsys, error, named: str
 ) -> None:
-    api(error)
+    api(*[error] * 4)
     code, result = review(workspace, tmp_path)
     captured = capsys.readouterr()
     assert code == 2
@@ -734,7 +742,7 @@ def test_the_line_of_an_api_error_names_its_class_and_request_on_a_pull_request(
 def test_the_line_of_an_api_error_names_its_class_and_request_on_a_range(
     range_workspace: Path, tmp_path: Path, api, summary: Path, capsys, error, named: str
 ) -> None:
-    api(error)
+    api(*[error] * 4)
     code, result = review(range_workspace, tmp_path)
     captured = capsys.readouterr()
     assert code == 2
@@ -771,6 +779,40 @@ def test_the_line_of_an_api_error_names_its_class_and_request_in_a_dry_run(
     assert captured.out.startswith(line)
     assert summary.read_text().startswith(line)
     for text in (captured.out, captured.err, summary.read_text(), out.read_text()):
+        no_upstream(text)
+
+
+@pytest.mark.parametrize("target", ["pull request", "range", "--pr", "--commit"])
+def test_a_try_mends_an_error_on_a_pull_request_on_a_range_and_in_a_dry_run(
+    workspace: Path,
+    range_workspace: Path,
+    tmp_path: Path,
+    api,
+    summary: Path,
+    waits: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys,
+    target: str,
+) -> None:
+    """Every review runs the one loop, so each tries a request again after an error event of
+    the stream (.github#158), and its log names the error's class alone."""
+    ws = range_workspace if target in {"range", "--commit"} else workspace
+    api(
+        MidStream(status_error(anthropic.APIStatusError, 200, UPSTREAM, "overloaded_error")),
+        message([submit("ready", [])]),
+    )
+    if target.startswith("--"):
+        monkeypatch.setattr(fr, "_prepare", lambda args, summary: (ws, 2))
+        monkeypatch.setattr(fr, "_prepare_range", lambda args, summary: (ws, 2))
+        code = fr.main(["dry-run", "--repo", REPO, target, "7" if target == "--pr" else HEAD])
+    else:
+        code, _ = review(ws, tmp_path)
+    captured = capsys.readouterr()
+    assert code == 0
+    assert waits == [30]
+    assert "conventions: turn 1 failed (APIStatusError); try 1/3 in 30 s\n" in captured.err
+    assert "conventions: verdict=ready findings=0 blocking=0 turns=1 " in captured.out
+    for text in (captured.out, captured.err, summary.read_text()):
         no_upstream(text)
 
 
