@@ -1,4 +1,4 @@
-# Written by coordinate from docs/style/issues.md of coordinate-core v0.7.3 (C73, C74).
+# Written by coordinate from docs/style/issues.md of coordinate-core v0.8.5 (https://github.com/xippios/coordinate-core/blob/main/docs/adr/C073-the-style-of-the-record.md, https://github.com/xippios/coordinate-core/blob/main/docs/adr/C074-issue-types.md).
 # Edit that style and adopt its release; never this file.
 name: Question
 description: "A question for the human, recommendation first; the answer is the decision (G5). Title: the question, with its question mark."
@@ -10,6 +10,13 @@ body:
     attributes:
       label: "Recommendation"
       description: "the first sentence names the option the asker would take, then up to three say why."
+    validations:
+      required: true
+  - type: textarea
+    id: checked
+    attributes:
+      label: "Checked"
+      description: "each fact of the outside world that the recommendation rests on, such as a registry, a server, an organization's policy or another workspace, one bullet each with the command or the page that showed it. A recommendation that rests on none says so in one sentence and names what it rests on, as in `No fact outside: the recommendation rests on the record it cites.` `question new` refuses a question without it (https://github.com/xippios/coordinate-core/issues/1872)."
     validations:
       required: true
   - type: textarea
